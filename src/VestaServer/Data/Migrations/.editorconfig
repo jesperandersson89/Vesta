@@ -1,0 +1,3 @@
+[*.cs]
+# EF Core generates block-scoped namespaces in migrations — allow it
+dotnet_diagnostic.IDE0161.severity = none

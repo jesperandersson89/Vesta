@@ -1,15 +1,45 @@
 using System.Net.WebSockets;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using VestaCore.Storage;
 using VestaServer.Connections;
+using VestaServer.Data;
+using VestaServer.Storage;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // Register services
-builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+string? connectionString = builder.Configuration.GetConnectionString("Vesta");
+
+if (!string.IsNullOrEmpty(connectionString))
+{
+    // PostgreSQL mode: EF Core for migrations, raw Npgsql for event hot path
+    builder.Services.AddDbContext<VestaDbContext>(options =>
+        options.UseNpgsql(connectionString));
+
+    builder.Services.AddSingleton<NpgsqlDataSource>(_ =>
+        NpgsqlDataSource.Create(connectionString));
+
+    builder.Services.AddSingleton<IEventStore, NpgsqlEventStore>();
+}
+else
+{
+    // In-memory fallback (for tests or when no DB configured)
+    builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+}
+
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddTransient<ProtocolHandler>();
 
 WebApplication app = builder.Build();
+
+// Apply pending migrations on startup (only when using PostgreSQL)
+if (!string.IsNullOrEmpty(connectionString))
+{
+    using IServiceScope scope = app.Services.CreateScope();
+    VestaDbContext dbContext = scope.ServiceProvider.GetRequiredService<VestaDbContext>();
+    await dbContext.Database.MigrateAsync();
+}
 
 app.UseWebSockets();
 
