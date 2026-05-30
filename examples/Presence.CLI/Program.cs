@@ -177,7 +177,8 @@ async Task SendHeartbeatAsync()
         Timestamp: DateTimeOffset.UtcNow,
         ClientId: clientId,
         EventType: "app.presence.heartbeat",
-        Payload: payload);
+        Payload: payload,
+        Replace: true);
 
     // Apply our own heartbeat locally immediately (server won't echo it to us)
     presence.Apply(evt);

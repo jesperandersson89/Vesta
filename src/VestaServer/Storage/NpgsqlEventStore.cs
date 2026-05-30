@@ -21,6 +21,20 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
         // Ensure channel exists (implicit creation per protocol spec)
         await EnsureChannelExistsAsync(connection, transaction, evt.ChannelId, cancellationToken);
 
+        // If Replace=true, remove all previous events of same (channel_id, client_id, event_type)
+        if (evt.Replace)
+        {
+            const string deleteSql = """
+                DELETE FROM events
+                WHERE channel_id = $1 AND client_id = $2 AND event_type = $3
+                """;
+            await using NpgsqlCommand deleteCmd = new(deleteSql, connection, transaction);
+            deleteCmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = evt.ChannelId });
+            deleteCmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = evt.ClientId });
+            deleteCmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = evt.EventType });
+            await deleteCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         // Atomically get next sequence for this channel
         long sequence = await GetNextSequenceAsync(connection, transaction, evt.ChannelId, cancellationToken);
 

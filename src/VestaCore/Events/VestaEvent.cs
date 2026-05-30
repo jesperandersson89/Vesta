@@ -14,5 +14,7 @@ public sealed record VestaEvent(
     string EventType,           // e.g. "app.todo.item-added"
     JsonElement Payload,        // Arbitrary structured data
     Guid? ParentId = null,      // Optional causal link to a previous event
-    string? Signature = null    // base64url Ed25519 signature (null when unsigned)
+    string? Signature = null,   // base64url Ed25519 signature (null when unsigned)
+    bool Replace = false        // Transport hint: replace previous event of same (channelId, clientId, eventType)
+                                // Not signed — stripped from storage after processing
 );

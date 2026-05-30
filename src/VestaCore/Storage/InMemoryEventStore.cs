@@ -51,6 +51,7 @@ public sealed class InMemoryEventStore : IEventStore
     private sealed class ChannelLog
     {
         private readonly List<SequencedEvent> _events = [];
+        private readonly HashSet<Guid> _superseded = [];
         private readonly object _lock = new();
         private long _nextSequence = 1;
 
@@ -69,6 +70,19 @@ public sealed class InMemoryEventStore : IEventStore
         {
             lock (_lock)
             {
+                if (evt.Replace)
+                {
+                    // Mark all previous events of same (clientId, eventType) as superseded
+                    foreach (SequencedEvent existing in _events)
+                    {
+                        if (existing.Event.ClientId == evt.ClientId &&
+                            existing.Event.EventType == evt.EventType)
+                        {
+                            _superseded.Add(existing.Event.Id);
+                        }
+                    }
+                }
+
                 long sequence = _nextSequence++;
                 SequencedEvent sequenced = new(evt, sequence, DateTimeOffset.UtcNow);
                 _events.Add(sequenced);
@@ -80,17 +94,15 @@ public sealed class InMemoryEventStore : IEventStore
         {
             lock (_lock)
             {
-                // Sequences are 1-based and contiguous, so index = sequence - 1
-                int startIndex = (int)(fromSequence - 1);
-
-                if (startIndex < 0)
-                    startIndex = 0;
-
-                if (startIndex >= _events.Count)
-                    return Array.Empty<SequencedEvent>();
-
-                int count = Math.Min(limit, _events.Count - startIndex);
-                return _events.GetRange(startIndex, count).AsReadOnly();
+                List<SequencedEvent> results = [];
+                foreach (SequencedEvent evt in _events)
+                {
+                    if (evt.Sequence < fromSequence) continue;
+                    if (_superseded.Contains(evt.Event.Id)) continue;
+                    results.Add(evt);
+                    if (results.Count >= limit) break;
+                }
+                return results.AsReadOnly();
             }
         }
     }
