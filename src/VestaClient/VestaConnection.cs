@@ -148,40 +148,48 @@ public sealed class VestaConnection : IAsyncDisposable
 
     /// <summary>
     /// Gracefully disconnect from the server.
+    /// Sends a close frame and waits for the receive loop to finish naturally.
     /// </summary>
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
-        _receiveCts?.Cancel();
-
         if (_socket.State == WebSocketState.Open)
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client disconnecting", cancellationToken);
+            // Send close frame without waiting for the response here —
+            // the receive loop will see the server's close response and exit.
+            await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client disconnecting", cancellationToken);
         }
 
+        // Wait for the receive loop to finish (it will exit when it sees the close frame)
         if (_receiveLoop is not null)
         {
-            try { await _receiveLoop; } catch (OperationCanceledException) { }
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            try { await _receiveLoop.WaitAsync(timeout.Token); }
+            catch (OperationCanceledException) { /* timed out waiting — force it */ }
         }
+
+        _receiveCts?.Cancel();
     }
 
     public async ValueTask DisposeAsync()
     {
-        _receiveCts?.Cancel();
-
         if (_socket.State == WebSocketState.Open)
         {
             try
             {
-                await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disposing", CancellationToken.None);
+                await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Disposing", CancellationToken.None);
             }
             catch { /* best effort */ }
         }
 
+        // Give the receive loop a moment to exit cleanly
         if (_receiveLoop is not null)
         {
-            try { await _receiveLoop; } catch { /* best effort */ }
+            try { await _receiveLoop.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch { /* best effort */ }
         }
 
+        _receiveCts?.Cancel();
         _receiveCts?.Dispose();
         _sendLock.Dispose();
         _socket.Dispose();

@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using VestaCore.Channels;
 using VestaCore.Events;
@@ -41,6 +42,11 @@ public sealed class ProtocolHandler(
         catch (OperationCanceledException)
         {
             // Normal shutdown
+        }
+        catch (WebSocketException)
+        {
+            // Client disconnected without completing close handshake — not an error
+            logger.LogDebug("Client {ConnectionId} disconnected abruptly", connection.ConnectionId);
         }
         catch (Exception ex)
         {
