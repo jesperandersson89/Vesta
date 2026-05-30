@@ -1,0 +1,7 @@
+﻿<Project Sdk="Microsoft.NET.Sdk"><!-- Properties inherited from Directory.Build.props -->
+
+
+  <ItemGroup>
+    <ProjectReference Include="..\VestaCore\VestaCore.csproj" />
+  </ItemGroup>
+</Project>
