@@ -36,10 +36,10 @@ using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
 Console.WriteLine("╔══════════════════════════════════════════╗");
 Console.WriteLine("║         Vesta Chat Room Example          ║");
 Console.WriteLine("╠══════════════════════════════════════════╣");
-Console.WriteLine($"║  User:     {username,-29}║");
-Console.WriteLine($"║  Server:   {serverUrl,-29}║");
-Console.WriteLine($"║  Channel:  {channel,-29}║");
-Console.WriteLine($"║  Identity: {clientId[..16]}...{"",-12}║");
+Console.WriteLine($"║  User:     {username,-30}║");
+Console.WriteLine($"║  Server:   {serverUrl,-30}║");
+Console.WriteLine($"║  Channel:  {channel,-30}║");
+Console.WriteLine($"║  Identity: {clientId[..16]}...{"",-11}║");
 Console.WriteLine("╚══════════════════════════════════════════╝");
 Console.WriteLine();
 
@@ -100,6 +100,36 @@ connection.OnEvent += (EventMessage evt) =>
     // Don't echo back our own messages
     if (evt.Event.ClientId == clientId)
         return;
+
+    if (evt.Event.EventType == "app.chat.join")
+    {
+        string joiner = evt.Event.Payload.TryGetProperty("sender", out JsonElement s)
+            ? s.GetString() ?? "someone"
+            : "someone";
+        string joinTime = evt.Event.Timestamp.ToLocalTime().ToString("HH:mm");
+        PrintAboveInput(() =>
+        {
+            Console.ForegroundColor = ConsoleColor.Magenta;
+            Console.WriteLine($"  {joinTime} * {joiner} joined the chat");
+            Console.ResetColor();
+        });
+        return;
+    }
+
+    if (evt.Event.EventType == "app.chat.leave")
+    {
+        string leaver = evt.Event.Payload.TryGetProperty("sender", out JsonElement s)
+            ? s.GetString() ?? "someone"
+            : "someone";
+        string leaveTime = evt.Event.Timestamp.ToLocalTime().ToString("HH:mm");
+        PrintAboveInput(() =>
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.WriteLine($"  {leaveTime} * {leaver} left the chat");
+            Console.ResetColor();
+        });
+        return;
+    }
 
     PrintAboveInput(() => DisplayMessage(evt.Event, live: true));
 };
@@ -162,6 +192,20 @@ try
 
     isConnected = true;
 
+    // Publish a join event so others see we connected
+    JsonElement joinPayload = JsonDocument.Parse(
+        JsonSerializer.Serialize(new { sender = username })).RootElement;
+
+    VestaEvent joinEvt = new(
+        Id: Guid.NewGuid(),
+        ChannelId: channel,
+        Timestamp: DateTimeOffset.UtcNow,
+        ClientId: clientId,
+        EventType: "app.chat.join",
+        Payload: joinPayload);
+
+    await connection.PublishAsync(joinEvt);
+
     Console.ForegroundColor = ConsoleColor.Green;
     Console.WriteLine($"Connected to server: {connection.ServerId}");
     Console.ResetColor();
@@ -217,7 +261,6 @@ try
             string input = inputBuffer.ToString();
             inputBuffer.Clear();
 
-            // Move to next line
             Console.WriteLine();
 
             if (!string.IsNullOrWhiteSpace(input))
@@ -234,6 +277,13 @@ try
                     Payload: payload);
 
                 await connection.PublishAsync(evt, cts.Token);
+
+                // Display own message with timestamp
+                string time = evt.Timestamp.ToLocalTime().ToString("HH:mm");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write($"  {time} [✓ {username}] ");
+                Console.ResetColor();
+                Console.WriteLine(input);
 
                 if (!isConnected)
                 {
@@ -284,6 +334,20 @@ catch (OperationCanceledException) { /* Ctrl+C */ }
 Console.WriteLine("\nDisconnecting...");
 if (isConnected)
 {
+    // Publish a leave event so others see we disconnected
+    JsonElement leavePayload = JsonDocument.Parse(
+        JsonSerializer.Serialize(new { sender = username })).RootElement;
+
+    VestaEvent leaveEvt = new(
+        Id: Guid.NewGuid(),
+        ChannelId: channel,
+        Timestamp: DateTimeOffset.UtcNow,
+        ClientId: clientId,
+        EventType: "app.chat.leave",
+        Payload: leavePayload);
+
+    await connection.PublishAsync(leaveEvt);
+    await Task.Delay(100); // Brief delay to let the message send before closing
     await connection.DisconnectAsync();
 }
 Console.WriteLine("Goodbye!");
@@ -302,6 +366,7 @@ static void DisplayMessage(VestaEvent evt, bool live)
         : evt.Payload.GetRawText();
 
     string signedIndicator = evt.Signature is not null ? "✓" : "?";
+    string time = evt.Timestamp.ToLocalTime().ToString("HH:mm");
 
     if (live)
     {
@@ -312,7 +377,7 @@ static void DisplayMessage(VestaEvent evt, bool live)
         Console.ForegroundColor = ConsoleColor.DarkGray;
     }
 
-    Console.Write($"  [{signedIndicator} {sender}] ");
+    Console.Write($"  {time} [{signedIndicator} {sender}] ");
     Console.ResetColor();
     Console.WriteLine(text);
 }

@@ -8,6 +8,12 @@ using VestaServer.Storage;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+int shutdownSeconds = builder.Configuration.GetValue<int>("ShutdownTimeoutSeconds", 3);
+builder.Host.ConfigureHostOptions(options =>
+{
+    options.ShutdownTimeout = TimeSpan.FromSeconds(shutdownSeconds);
+});
+
 // Register services
 string? connectionString = builder.Configuration.GetConnectionString("Vesta");
 
@@ -58,6 +64,11 @@ app.Map("/ws", async (HttpContext context, ProtocolHandler handler) =>
     using ClientConnection connection = new(socket);
 
     await handler.HandleConnectionAsync(connection, context.RequestAborted);
+});
+
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    app.Logger.LogInformation($"Shutting down ({shutdownSeconds}s timeout)...");
 });
 
 app.Run();
