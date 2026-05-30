@@ -1,0 +1,55 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+publish/
+
+## .NET
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+project.lock.json
+
+## NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+## IDE
+.vs/
+.vscode/
+*.swp
+*~
+.idea/
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## User secrets
+secrets.json
+
+## Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+## Node (for vesta-client-js)
+node_modules/
+dist/
+*.tsbuildinfo
+
+## Docker
+docker-compose.override.yml
+
+## Environment
+.env
+.env.local
+.env.*.local
