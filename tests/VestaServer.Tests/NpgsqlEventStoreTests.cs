@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Testcontainers.PostgreSql;
 using VestaCore.Events;
 using VestaServer.Data;
 using VestaServer.Storage;
@@ -8,31 +9,27 @@ using VestaServer.Storage;
 namespace VestaServer.Tests;
 
 /// <summary>
-/// Integration tests for NpgsqlEventStore against the local PostgreSQL instance.
-/// Requires PostgreSQL running on localhost:5432 with username=postgres, password=vesta.
-/// Creates and drops a unique test database per test class run.
+/// Integration tests for NpgsqlEventStore against a real PostgreSQL instance via Testcontainers.
+/// Requires Docker to be running.
 /// </summary>
 public sealed class NpgsqlEventStoreTests : IAsyncLifetime
 {
-    private const string BaseConnectionString = "Host=localhost;Port=5432;Username=postgres;Password=vesta";
-    private readonly string _testDbName = $"vesta_test_{Guid.NewGuid():N}"[..32];
+    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18")
+        .Build();
 
     private NpgsqlDataSource _dataSource = null!;
     private NpgsqlEventStore _store = null!;
 
     public async Task InitializeAsync()
     {
-        // Create a unique test database
-        await using NpgsqlDataSource adminSource = NpgsqlDataSource.Create($"{BaseConnectionString};Database=postgres");
-        await using NpgsqlCommand createDb = adminSource.CreateCommand($"CREATE DATABASE \"{_testDbName}\"");
-        await createDb.ExecuteNonQueryAsync();
+        await _postgres.StartAsync();
 
-        string testConnectionString = $"{BaseConnectionString};Database={_testDbName}";
-        _dataSource = NpgsqlDataSource.Create(testConnectionString);
+        string connectionString = _postgres.GetConnectionString();
+        _dataSource = NpgsqlDataSource.Create(connectionString);
 
         // Apply EF Core migrations to set up schema
         DbContextOptionsBuilder<VestaDbContext> optionsBuilder = new();
-        optionsBuilder.UseNpgsql(testConnectionString);
+        optionsBuilder.UseNpgsql(connectionString);
         await using VestaDbContext dbContext = new(optionsBuilder.Options);
         await dbContext.Database.MigrateAsync();
 
@@ -42,12 +39,7 @@ public sealed class NpgsqlEventStoreTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _dataSource.DisposeAsync();
-
-        // Drop the test database
-        await using NpgsqlDataSource adminSource = NpgsqlDataSource.Create($"{BaseConnectionString};Database=postgres");
-        await using NpgsqlCommand dropDb = adminSource.CreateCommand(
-            $"DROP DATABASE IF EXISTS \"{_testDbName}\" WITH (FORCE)");
-        await dropDb.ExecuteNonQueryAsync();
+        await _postgres.DisposeAsync();
     }
 
     [Fact]

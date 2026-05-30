@@ -99,3 +99,9 @@ Vesta/
 - When adding a new protocol message, update both the C# types AND the message type documentation
 - Run `dotnet build` after changes to verify compilation
 - Event payloads are always `JsonElement` or `JsonDocument` — never strongly-typed app models in core
+
+## Problem Handling
+
+- **Stop and ask** when encountering environment/infrastructure problems (Docker not running, database not reachable, missing tools, permission errors, etc.) — do NOT silently work around them
+- Do not substitute a different tool or approach just because the expected one isn't available — ask the user to fix the environment first
+- If a test or command fails due to external dependencies being unavailable, report the issue clearly and wait for confirmation before proceeding
