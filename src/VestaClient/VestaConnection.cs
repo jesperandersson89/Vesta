@@ -25,6 +25,7 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly IClientEventStore? _localStore;
     private readonly VestaIdentity? _identity;
+    private readonly Dictionary<Guid, VestaEvent> _pendingPublishes = new();
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
     private Uri? _serverUri;
@@ -149,11 +150,29 @@ public sealed class VestaConnection : IAsyncDisposable
         _socket = new ClientWebSocket();
         await _socket.ConnectAsync(_serverUri!, cancellationToken);
 
-        // If we have a local store but no explicit lastSequences, use stored positions for catch-up
-        IReadOnlyDictionary<string, long> sequences = lastSequences ?? new Dictionary<string, long>();
-        if (lastSequences is null && _localStore is not null)
+        // Build lastSequences for catch-up: include ALL subscribed channels.
+        // Channels with no local position get 0 (meaning "send me everything").
+        Dictionary<string, long> sequences = new();
+        if (lastSequences is not null)
         {
-            sequences = await _localStore.GetChannelPositionsAsync(cancellationToken);
+            foreach (KeyValuePair<string, long> kvp in lastSequences)
+            {
+                sequences[kvp.Key] = kvp.Value;
+            }
+        }
+        else if (_localStore is not null)
+        {
+            IReadOnlyDictionary<string, long> positions = await _localStore.GetChannelPositionsAsync(cancellationToken);
+            foreach (KeyValuePair<string, long> kvp in positions)
+            {
+                sequences[kvp.Key] = kvp.Value;
+            }
+        }
+
+        // Ensure every subscribed channel has an entry (default to 0 = full catch-up)
+        foreach (string ch in _channels!)
+        {
+            sequences.TryAdd(ch, 0);
         }
 
         // Send HELLO
@@ -216,6 +235,7 @@ public sealed class VestaConnection : IAsyncDisposable
 
         if (IsConnected)
         {
+            _pendingPublishes[eventToPublish.Id] = eventToPublish;
             PublishMessage message = new(eventToPublish.ChannelId, eventToPublish);
             await SendAsync(message, cancellationToken);
         }
@@ -420,7 +440,7 @@ public sealed class VestaConnection : IAsyncDisposable
                 OnEventsBatch?.Invoke(batch);
                 break;
             case AckMessage ack:
-                ConfirmOutboxEntry(ack);
+                CacheEventOnAck(ack);
                 OnAck?.Invoke(ack);
                 break;
             case ErrorMessage error:
@@ -442,9 +462,18 @@ public sealed class VestaConnection : IAsyncDisposable
         _ = _localStore.StoreEventsAsync(batch.Events);
     }
 
-    private void ConfirmOutboxEntry(AckMessage ack)
+    private void CacheEventOnAck(AckMessage ack)
     {
         if (_localStore is null) return;
+
+        // If we have the published event in flight, cache it locally with the server-assigned sequence
+        if (_pendingPublishes.Remove(ack.EventId, out VestaEvent? publishedEvent))
+        {
+            SequencedEvent sequenced = new(publishedEvent, ack.Sequence, DateTimeOffset.UtcNow);
+            _ = _localStore.StoreEventAsync(sequenced);
+        }
+
+        // Also confirm outbox entry if it came from there
         _ = _localStore.MarkOutboxConfirmedAsync(ack.EventId);
     }
 
@@ -455,6 +484,7 @@ public sealed class VestaConnection : IAsyncDisposable
         IReadOnlyList<OutboxEntry> pending = await _localStore.GetPendingOutboxAsync(cancellationToken);
         foreach (OutboxEntry entry in pending)
         {
+            _pendingPublishes[entry.Event.Id] = entry.Event;
             PublishMessage message = new(entry.Event.ChannelId, entry.Event);
             await SendAsync(message, cancellationToken);
             await _localStore.MarkOutboxSentAsync(entry.Event.Id, cancellationToken);

@@ -1088,3 +1088,52 @@ Refined step-by-step build order. The key insight: **get the protocol loop worki
 - Step 10 is the payoff — building real apps that prove the SDK works.
 
 Each step has a clear "it works" signal — no half-finished layers.
+
+---
+
+## Example App Pattern
+
+Examples are **real applications**, not protocol demos. They exist to prove the SDK works for actual use cases and to serve as reference implementations for developers building on Vesta.
+
+### Requirements for Every Example
+
+Each example app must demonstrate all of the following:
+
+| Requirement | What it means |
+|-------------|---------------|
+| **Durable identity** | Uses `VestaIdentity.LoadOrCreate(path)` — identity persists across runs, user is always the same "person" |
+| **Local event cache** | Uses `SqliteClientEventStore` (or equivalent) — events received from the server are persisted locally |
+| **Offline behavior** | Works meaningfully without a server connection — queues events to outbox, displays cached state |
+| **Projection / state reconstruction** | Rebuilds application state from the event log on startup (not just displaying raw events) |
+| **Clear event schemas** | Documents the event types and payload shapes the app uses (in code comments or a section in the README) |
+
+### Structure of an Example
+
+```
+examples/MyApp.CLI/
+├── MyApp.CLI.csproj          # References VestaClient + VestaCore
+├── Program.cs                # Entry point — wiring, connection, UI loop
+├── State/                    # (optional) Projection/reducer classes
+│   └── MyAppState.cs
+└── README.md                 # What it does, how to run, event schema docs
+```
+
+### Event Schema Documentation
+
+Each example should declare its event types clearly, either in a README or as doc comments:
+
+```
+Channel: "myapp/todos"
+Event types:
+  - app.todo.item-added    { title: string, id: string }
+  - app.todo.item-toggled  { id: string, done: bool }
+  - app.todo.item-removed  { id: string }
+```
+
+### Anti-Patterns (What Examples Should NOT Be)
+
+- ❌ A thin wrapper that just prints raw JSON from the server
+- ❌ Ephemeral state that disappears on restart (no local cache)
+- ❌ Anonymous / throwaway identity per session
+- ❌ Only works while connected — crashes or shows nothing offline
+- ❌ Undocumented payload shapes that require reading source to understand
