@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using VestaClient.Storage;
 using VestaCore.Events;
+using VestaCore.Identity;
 using VestaCore.Protocol;
 using VestaCore.Serialization;
 
@@ -19,6 +20,7 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly string _clientId;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly IClientEventStore? _localStore;
+    private readonly VestaIdentity? _identity;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
 
@@ -62,10 +64,11 @@ public sealed class VestaConnection : IAsyncDisposable
     /// </summary>
     public bool IsConnected => _socket.State == WebSocketState.Open;
 
-    public VestaConnection(string clientId, IClientEventStore? localStore = null)
+    public VestaConnection(string clientId, IClientEventStore? localStore = null, VestaIdentity? identity = null)
     {
         _clientId = clientId;
         _localStore = localStore;
+        _identity = identity;
     }
 
     /// <summary>
@@ -87,10 +90,15 @@ public sealed class VestaConnection : IAsyncDisposable
         }
 
         // Send HELLO
+        string? publicKeyBase64Url = _identity is not null
+            ? Convert.ToBase64String(_identity.PublicKey).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+            : null;
+
         HelloMessage hello = new(
             ClientId: _clientId,
             Channels: channels.ToList(),
-            LastSequences: sequences);
+            LastSequences: sequences,
+            PublicKey: publicKeyBase64Url);
 
         await SendAsync(hello, cancellationToken);
 
@@ -130,17 +138,23 @@ public sealed class VestaConnection : IAsyncDisposable
     /// Publish an event to a channel.
     /// If connected, sends immediately. If disconnected and a local store is configured,
     /// enqueues to the outbox for sync on reconnect.
+    /// Events are automatically signed if an identity is configured.
     /// </summary>
     public async Task PublishAsync(VestaEvent evt, CancellationToken cancellationToken = default)
     {
+        // Auto-sign if identity is present and event is not already signed
+        VestaEvent eventToPublish = (_identity is not null && evt.Signature is null)
+            ? EventSigner.SignEvent(evt, _identity)
+            : evt;
+
         if (IsConnected)
         {
-            PublishMessage message = new(evt.ChannelId, evt);
+            PublishMessage message = new(eventToPublish.ChannelId, eventToPublish);
             await SendAsync(message, cancellationToken);
         }
         else if (_localStore is not null)
         {
-            await _localStore.EnqueueOutboxAsync(evt, cancellationToken);
+            await _localStore.EnqueueOutboxAsync(eventToPublish, cancellationToken);
         }
         else
         {

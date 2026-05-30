@@ -1,5 +1,12 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk"><!-- All shared properties (TFM, nullable, etc.) come from Directory.Build.props -->
 
-  <!-- All shared properties (TFM, nullable, etc.) come from Directory.Build.props -->
 
+  <ItemGroup>
+    <PackageReference Include="jsoncanonicalizer" Version="1.0.0" />
+    <PackageReference Include="NSec.Cryptography" Version="26.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VestaCore.Tests" />
+  </ItemGroup>
 </Project>

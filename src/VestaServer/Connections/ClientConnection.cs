@@ -17,6 +17,7 @@ public sealed class ClientConnection : IDisposable
 
     public string ConnectionId { get; } = Guid.NewGuid().ToString("N")[..12];
     public string? ClientId { get; set; }
+    public byte[]? PublicKey { get; set; }
     public HashSet<string> Subscriptions { get; } = [];
 
     public ClientConnection(WebSocket socket)

@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using VestaCore.Channels;
 using VestaCore.Events;
+using VestaCore.Identity;
 using VestaCore.Protocol;
 using VestaCore.Storage;
 
@@ -102,6 +103,23 @@ public sealed class ProtocolHandler(
     {
         connection.ClientId = hello.ClientId;
 
+        // If a public key is provided, validate it matches the clientId and store it
+        if (!string.IsNullOrEmpty(hello.PublicKey))
+        {
+            byte[] publicKeyBytes = Base64UrlDecode(hello.PublicKey);
+            string derivedClientId = VestaIdentity.DeriveClientId(publicKeyBytes);
+
+            if (derivedClientId != hello.ClientId)
+            {
+                await connection.SendAsync(
+                    new ErrorMessage("IDENTITY_MISMATCH", "PublicKey does not match clientId"),
+                    cancellationToken);
+                return;
+            }
+
+            connection.PublicKey = publicKeyBytes;
+        }
+
         // Subscribe to requested channels
         foreach (string channelId in hello.Channels)
         {
@@ -154,6 +172,26 @@ public sealed class ProtocolHandler(
                 new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{publish.ChannelId}'"),
                 cancellationToken);
             return;
+        }
+
+        // Verify signature if public key is known
+        if (connection.PublicKey is not null)
+        {
+            if (string.IsNullOrEmpty(publish.Event.Signature))
+            {
+                await connection.SendAsync(
+                    new ErrorMessage("SIGNATURE_REQUIRED", "Events must be signed when public key is registered"),
+                    cancellationToken);
+                return;
+            }
+
+            if (!EventSigner.VerifyEvent(publish.Event, connection.PublicKey))
+            {
+                await connection.SendAsync(
+                    new ErrorMessage("INVALID_SIGNATURE", "Event signature verification failed"),
+                    cancellationToken);
+                return;
+            }
         }
 
         // Store the event
@@ -244,5 +282,17 @@ public sealed class ProtocolHandler(
         await connection.SendAsync(
             new EventsBatchMessage(fetch.ChannelId, events),
             cancellationToken);
+    }
+
+    private static byte[] Base64UrlDecode(string base64Url)
+    {
+        string base64 = base64Url
+            .Replace('-', '+')
+            .Replace('_', '/');
+
+        int padding = (4 - base64.Length % 4) % 4;
+        base64 += new string('=', padding);
+
+        return Convert.FromBase64String(base64);
     }
 }
