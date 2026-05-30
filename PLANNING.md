@@ -1137,3 +1137,19 @@ Event types:
 - ❌ Anonymous / throwaway identity per session
 - ❌ Only works while connected — crashes or shows nothing offline
 - ❌ Undocumented payload shapes that require reading source to understand
+
+---
+
+## TODO
+
+Known gaps and deferred work, in rough priority order.
+
+| # | Area | What's missing | Notes |
+|---|------|----------------|-------|
+| 1 | **Ephemeral events / TTL** | Server stores presence heartbeats forever. Need to: (1) add `expires_at` column to `events` table, (2) parse `metadata.ttlSeconds` from payload on PUBLISH and compute `expires_at`, (3) filter expired events out of `GetEventsAsync` catch-up queries, (4) background cleanup job to delete expired rows. | Presence.CLI currently fills PostgreSQL unboundedly. Design is in PLANNING.md § Ephemeral Events & Presence. |
+| 2 | **`VestaEvent` metadata field** | The protocol spec mentions `metadata.ttlSeconds` but `VestaEvent` has no `Metadata` field. The TTL is currently smuggled into `Payload`, which is wrong — payload is app data, metadata is protocol-level. | Add `JsonElement? Metadata` to `VestaEvent`. Update signing (metadata is NOT signed — it's transport-level). Update server to read `metadata.ttlSeconds`. |
+| 3 | **SDK conflict resolution primitives** | `EventReducer<T>`, `AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>` are described in PLANNING.md but not implemented. Currently each example rolls its own projection. | Would let `TodoListState` and `PresenceState` be replaced with composed SDK primitives. |
+| 4 | **Channel access control** | All channels are open. No shared-secret or invite-only mode implemented. | PLANNING.md § Authentication & Identity has the schema (`channel_access` table). |
+| 5 | **Server-side signature verification** | Server accepts events with any or no signature. The `ProtocolHandler` verifies the public key matches the `clientId` on HELLO but does not verify event signatures on PUBLISH. | Should reject PUBLISH if signature is invalid or missing when the client registered a public key. |
+| 6 | **JS browser client** | `clients/vesta-client-js/` and `examples/chat-web/` are planned but not started. | Would prove the protocol works cross-language in a browser. |
+| 7 | **Python client** | `clients/vesta-client-py/` and `examples/todo-py/` are planned but not started. | Same as above for Python. |
