@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Protocol;
 using VestaCore.Serialization;
@@ -17,6 +18,7 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly JsonSerializerOptions _jsonOptions = VestaJsonOptions.Default;
     private readonly string _clientId;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly IClientEventStore? _localStore;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
 
@@ -60,9 +62,10 @@ public sealed class VestaConnection : IAsyncDisposable
     /// </summary>
     public bool IsConnected => _socket.State == WebSocketState.Open;
 
-    public VestaConnection(string clientId)
+    public VestaConnection(string clientId, IClientEventStore? localStore = null)
     {
         _clientId = clientId;
+        _localStore = localStore;
     }
 
     /// <summary>
@@ -76,11 +79,18 @@ public sealed class VestaConnection : IAsyncDisposable
     {
         await _socket.ConnectAsync(serverUri, cancellationToken);
 
+        // If we have a local store but no explicit lastSequences, use stored positions for catch-up
+        IReadOnlyDictionary<string, long> sequences = lastSequences ?? new Dictionary<string, long>();
+        if (lastSequences is null && _localStore is not null)
+        {
+            sequences = await _localStore.GetChannelPositionsAsync(cancellationToken);
+        }
+
         // Send HELLO
         HelloMessage hello = new(
             ClientId: _clientId,
             Channels: channels.ToList(),
-            LastSequences: lastSequences ?? new Dictionary<string, long>());
+            LastSequences: sequences);
 
         await SendAsync(hello, cancellationToken);
 
@@ -108,15 +118,34 @@ public sealed class VestaConnection : IAsyncDisposable
         // Start the background receive loop
         _receiveCts = new CancellationTokenSource();
         _receiveLoop = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+
+        // Flush any pending outbox events
+        if (_localStore is not null)
+        {
+            await FlushOutboxAsync(cancellationToken);
+        }
     }
 
     /// <summary>
     /// Publish an event to a channel.
+    /// If connected, sends immediately. If disconnected and a local store is configured,
+    /// enqueues to the outbox for sync on reconnect.
     /// </summary>
     public async Task PublishAsync(VestaEvent evt, CancellationToken cancellationToken = default)
     {
-        PublishMessage message = new(evt.ChannelId, evt);
-        await SendAsync(message, cancellationToken);
+        if (IsConnected)
+        {
+            PublishMessage message = new(evt.ChannelId, evt);
+            await SendAsync(message, cancellationToken);
+        }
+        else if (_localStore is not null)
+        {
+            await _localStore.EnqueueOutboxAsync(evt, cancellationToken);
+        }
+        else
+        {
+            throw new InvalidOperationException("Not connected and no local store configured for offline publishing");
+        }
     }
 
     /// <summary>
@@ -262,17 +291,52 @@ public sealed class VestaConnection : IAsyncDisposable
         switch (message)
         {
             case EventMessage evt:
+                CacheEventLocally(evt);
                 OnEvent?.Invoke(evt);
                 break;
             case EventsBatchMessage batch:
+                CacheBatchLocally(batch);
                 OnEventsBatch?.Invoke(batch);
                 break;
             case AckMessage ack:
+                ConfirmOutboxEntry(ack);
                 OnAck?.Invoke(ack);
                 break;
             case ErrorMessage error:
                 OnError?.Invoke(error);
                 break;
+        }
+    }
+
+    private void CacheEventLocally(EventMessage eventMessage)
+    {
+        if (_localStore is null) return;
+        SequencedEvent sequenced = new(eventMessage.Event, eventMessage.Sequence, DateTimeOffset.UtcNow);
+        _ = _localStore.StoreEventAsync(sequenced);
+    }
+
+    private void CacheBatchLocally(EventsBatchMessage batch)
+    {
+        if (_localStore is null) return;
+        _ = _localStore.StoreEventsAsync(batch.Events);
+    }
+
+    private void ConfirmOutboxEntry(AckMessage ack)
+    {
+        if (_localStore is null) return;
+        _ = _localStore.MarkOutboxConfirmedAsync(ack.EventId);
+    }
+
+    private async Task FlushOutboxAsync(CancellationToken cancellationToken)
+    {
+        if (_localStore is null) return;
+
+        IReadOnlyList<OutboxEntry> pending = await _localStore.GetPendingOutboxAsync(cancellationToken);
+        foreach (OutboxEntry entry in pending)
+        {
+            PublishMessage message = new(entry.Event.ChannelId, entry.Event);
+            await SendAsync(message, cancellationToken);
+            await _localStore.MarkOutboxSentAsync(entry.Event.Id, cancellationToken);
         }
     }
 }

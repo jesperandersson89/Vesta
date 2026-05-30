@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Protocol;
 using VestaCore.Serialization;
@@ -16,6 +17,7 @@ public sealed class VestaTestClient : IAsyncDisposable
     private readonly JsonSerializerOptions _jsonOptions = VestaJsonOptions.Default;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly string _clientId;
+    private readonly IClientEventStore? _localStore;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
 
@@ -59,10 +61,11 @@ public sealed class VestaTestClient : IAsyncDisposable
     /// </summary>
     public bool IsConnected => _socket.State == WebSocketState.Open;
 
-    public VestaTestClient(WebSocket socket, string clientId)
+    public VestaTestClient(WebSocket socket, string clientId, IClientEventStore? localStore = null)
     {
         _socket = socket;
         _clientId = clientId;
+        _localStore = localStore;
     }
 
     /// <summary>
@@ -254,17 +257,39 @@ public sealed class VestaTestClient : IAsyncDisposable
         switch (message)
         {
             case EventMessage evt:
+                CacheEventLocally(evt);
                 OnEvent?.Invoke(evt);
                 break;
             case EventsBatchMessage batch:
+                CacheBatchLocally(batch);
                 OnEventsBatch?.Invoke(batch);
                 break;
             case AckMessage ack:
+                ConfirmOutboxEntry(ack);
                 OnAck?.Invoke(ack);
                 break;
             case ErrorMessage error:
                 OnError?.Invoke(error);
                 break;
         }
+    }
+
+    private void CacheEventLocally(EventMessage eventMessage)
+    {
+        if (_localStore is null) return;
+        SequencedEvent sequenced = new(eventMessage.Event, eventMessage.Sequence, DateTimeOffset.UtcNow);
+        _ = _localStore.StoreEventAsync(sequenced);
+    }
+
+    private void CacheBatchLocally(EventsBatchMessage batch)
+    {
+        if (_localStore is null) return;
+        _ = _localStore.StoreEventsAsync(batch.Events);
+    }
+
+    private void ConfirmOutboxEntry(AckMessage ack)
+    {
+        if (_localStore is null) return;
+        _ = _localStore.MarkOutboxConfirmedAsync(ack.EventId);
     }
 }
