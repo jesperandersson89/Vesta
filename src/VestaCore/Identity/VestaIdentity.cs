@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using NSec.Cryptography;
+using VestaCore.Utilities;
 
 namespace VestaCore.Identity;
 
@@ -90,11 +92,44 @@ public sealed class VestaIdentity : IDisposable
     public static string DeriveClientId(byte[] publicKey)
     {
         byte[] hash = SHA256.HashData(publicKey);
-        string base64Url = Convert.ToBase64String(hash)
-            .Replace('+', '-')
-            .Replace('/', '_')
-            .TrimEnd('=');
-        return base64Url[..22];
+        return Base64Url.Encode(hash)[..22];
+    }
+
+    /// <summary>
+    /// Load an identity from a JSON file, or generate a new one and persist it.
+    /// The file format is: { "publicKey": "...", "privateKey": "...", "clientId": "..." }
+    /// with keys encoded as base64url. Additional properties in the file are preserved on load.
+    /// </summary>
+    /// <param name="filePath">Path to the identity JSON file.</param>
+    /// <returns>The loaded or newly generated identity.</returns>
+    public static VestaIdentity LoadOrCreate(string filePath)
+    {
+        if (File.Exists(filePath))
+        {
+            string json = File.ReadAllText(filePath);
+            JsonDocument doc = JsonDocument.Parse(json);
+            string privateKeyBase64 = doc.RootElement.GetProperty("privateKey").GetString()!;
+            byte[] privateKey = Base64Url.Decode(privateKeyBase64);
+            return FromPrivateKey(privateKey);
+        }
+
+        VestaIdentity identity = Generate();
+
+        string identityJson = JsonSerializer.Serialize(new
+        {
+            publicKey = Base64Url.Encode(identity.PublicKey),
+            privateKey = Base64Url.Encode(identity.ExportPrivateKey()),
+            clientId = identity.ClientId
+        }, new JsonSerializerOptions { WriteIndented = true });
+
+        string? directory = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(filePath, identityJson);
+        return identity;
     }
 
     public void Dispose()

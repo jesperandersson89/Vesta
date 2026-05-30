@@ -5,6 +5,7 @@ using VestaCore.Events;
 using VestaCore.Identity;
 using VestaCore.Protocol;
 using VestaCore.Storage;
+using VestaCore.Utilities;
 
 namespace VestaServer.Connections;
 
@@ -106,7 +107,7 @@ public sealed class ProtocolHandler(
         // If a public key is provided, validate it matches the clientId and store it
         if (!string.IsNullOrEmpty(hello.PublicKey))
         {
-            byte[] publicKeyBytes = Base64UrlDecode(hello.PublicKey);
+            byte[] publicKeyBytes = Base64Url.Decode(hello.PublicKey);
             string derivedClientId = VestaIdentity.DeriveClientId(publicKeyBytes);
 
             if (derivedClientId != hello.ClientId)
@@ -284,15 +285,5 @@ public sealed class ProtocolHandler(
             cancellationToken);
     }
 
-    private static byte[] Base64UrlDecode(string base64Url)
-    {
-        string base64 = base64Url
-            .Replace('-', '+')
-            .Replace('_', '/');
 
-        int padding = (4 - base64.Length % 4) % 4;
-        base64 += new string('=', padding);
-
-        return Convert.FromBase64String(base64);
-    }
 }

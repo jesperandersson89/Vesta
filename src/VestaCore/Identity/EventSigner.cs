@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Org.Webpki.JsonCanonicalizer;
 using VestaCore.Events;
+using VestaCore.Utilities;
 
 namespace VestaCore.Identity;
 
@@ -25,7 +26,7 @@ public static class EventSigner
 
         byte[] signingInput = BuildSigningInput(vestaEvent);
         byte[] signatureBytes = identity.Sign(signingInput);
-        string signature = Base64UrlEncode(signatureBytes);
+        string signature = Base64Url.Encode(signatureBytes);
 
         return vestaEvent with { Signature = signature };
     }
@@ -42,7 +43,7 @@ public static class EventSigner
         }
 
         byte[] signingInput = BuildSigningInput(vestaEvent);
-        byte[] signatureBytes = Base64UrlDecode(vestaEvent.Signature);
+        byte[] signatureBytes = Base64Url.Decode(vestaEvent.Signature);
 
         return VestaIdentity.VerifyWithPublicKey(publicKey, signingInput, signatureBytes);
     }
@@ -93,23 +94,5 @@ public static class EventSigner
         return utc.ToString("yyyy-MM-ddTHH:mm:ssZ");
     }
 
-    private static string Base64UrlEncode(byte[] data)
-    {
-        return Convert.ToBase64String(data)
-            .Replace('+', '-')
-            .Replace('/', '_')
-            .TrimEnd('=');
-    }
 
-    private static byte[] Base64UrlDecode(string base64Url)
-    {
-        string base64 = base64Url
-            .Replace('-', '+')
-            .Replace('_', '/');
-
-        int padding = (4 - base64.Length % 4) % 4;
-        base64 += new string('=', padding);
-
-        return Convert.FromBase64String(base64);
-    }
 }

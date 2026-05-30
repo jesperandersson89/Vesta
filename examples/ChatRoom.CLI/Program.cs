@@ -26,8 +26,12 @@ string identityPath = Path.Combine(vestaDir, $"chat-{username}-identity.json");
 string dbPath = Path.Combine(vestaDir, $"chat-{username}.db");
 
 // ─── Identity ────────────────────────────────────────────────────────────────
-VestaIdentity identity = LoadOrCreateIdentity(identityPath, username);
+VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
+
+Console.ForegroundColor = ConsoleColor.DarkGray;
+Console.WriteLine($"Identity: {Path.GetFileName(identityPath)} ({clientId[..16]}...)");
+Console.ResetColor();
 
 // ─── Local Store (SQLite) ────────────────────────────────────────────────────
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
@@ -93,7 +97,10 @@ void PrintAboveInput(Action printAction)
 }
 
 // ─── Connect ─────────────────────────────────────────────────────────────────
-await using VestaConnection connection = new(clientId, localStore, identity);
+await using VestaConnection connection = new(clientId, localStore, identity)
+{
+    AutoReconnect = true
+};
 
 connection.OnEvent += (EventMessage evt) =>
 {
@@ -147,7 +154,21 @@ connection.OnEventsBatch += (EventsBatchMessage batch) =>
 
         foreach (SequencedEvent seq in batch.Events)
         {
-            DisplayMessage(seq.Event, live: false);
+            if (seq.Event.EventType is "app.chat.join" or "app.chat.leave")
+            {
+                string who = seq.Event.Payload.TryGetProperty("sender", out JsonElement s)
+                    ? s.GetString() ?? "someone"
+                    : "someone";
+                string time = seq.Event.Timestamp.ToLocalTime().ToString("HH:mm");
+                string action = seq.Event.EventType == "app.chat.join" ? "joined" : "left";
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"  {time} * {who} {action} the chat");
+                Console.ResetColor();
+            }
+            else
+            {
+                DisplayMessage(seq.Event, live: false);
+            }
         }
 
         Console.ForegroundColor = ConsoleColor.DarkGray;
@@ -178,21 +199,25 @@ connection.OnDisconnected += (string reason) =>
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"  [DISCONNECTED] {reason}");
-        Console.WriteLine("  Messages you type will be queued and sent on next connect.");
+        Console.WriteLine("  Auto-reconnecting...");
         Console.ResetColor();
     });
 };
 
-try
+connection.OnReconnected += () =>
 {
-    // ConnectAsync uses localStore.GetChannelPositionsAsync() for smart catch-up
-    await connection.ConnectAsync(
-        new Uri(serverUrl),
-        channels: [channel]);
-
     isConnected = true;
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"  [RECONNECTED] to {connection.ServerId}");
+        Console.ResetColor();
+    });
+    _ = PublishJoinAsync();
+};
 
-    // Publish a join event so others see we connected
+async Task PublishJoinAsync()
+{
     JsonElement joinPayload = JsonDocument.Parse(
         JsonSerializer.Serialize(new { sender = username })).RootElement;
 
@@ -205,6 +230,16 @@ try
         Payload: joinPayload);
 
     await connection.PublishAsync(joinEvt);
+}
+
+try
+{
+    await connection.ConnectAsync(
+        new Uri(serverUrl),
+        channels: [channel]);
+
+    isConnected = true;
+    await PublishJoinAsync();
 
     Console.ForegroundColor = ConsoleColor.Green;
     Console.WriteLine($"Connected to server: {connection.ServerId}");
@@ -216,7 +251,7 @@ catch (Exception ex)
     Console.ForegroundColor = ConsoleColor.Red;
     Console.WriteLine($"Failed to connect: {ex.Message}");
     Console.ForegroundColor = ConsoleColor.Yellow;
-    Console.WriteLine("Running in offline mode — messages will be queued for later.\n");
+    Console.WriteLine("Running in offline mode — will try to reconnect on next message.\n");
     Console.ResetColor();
 }
 
@@ -261,10 +296,16 @@ try
             string input = inputBuffer.ToString();
             inputBuffer.Clear();
 
-            Console.WriteLine();
+            // Clear the current line (prompt + typed text) before printing formatted message
+            string currentPrompt = GetPrompt();
+            int lineLen = currentPrompt.Length + input.Length;
+            Console.Write('\r');
+            Console.Write(new string(' ', lineLen));
+            Console.Write('\r');
 
             if (!string.IsNullOrWhiteSpace(input))
             {
+
                 JsonElement payload = JsonDocument.Parse(
                     JsonSerializer.Serialize(new { text = input, sender = username })).RootElement;
 
@@ -382,58 +423,6 @@ static void DisplayMessage(VestaEvent evt, bool live)
     Console.WriteLine(text);
 }
 
-static VestaIdentity LoadOrCreateIdentity(string path, string username)
-{
-    if (File.Exists(path))
-    {
-        string json = File.ReadAllText(path);
-        JsonDocument doc = JsonDocument.Parse(json);
-        string privateKeyBase64 = doc.RootElement.GetProperty("privateKey").GetString()!;
-        byte[] privateKey = Base64UrlDecode(privateKeyBase64);
 
-        VestaIdentity loaded = VestaIdentity.FromPrivateKey(privateKey);
-        Console.ForegroundColor = ConsoleColor.DarkGray;
-        Console.WriteLine($"Loaded identity for '{username}' from {Path.GetFileName(path)}");
-        Console.ResetColor();
-        return loaded;
-    }
 
-    VestaIdentity generated = VestaIdentity.Generate();
-    string publicKeyB64 = Base64UrlEncode(generated.PublicKey);
-    string privateKeyB64 = Base64UrlEncode(generated.ExportPrivateKey());
 
-    string identityJson = JsonSerializer.Serialize(new
-    {
-        username,
-        publicKey = publicKeyB64,
-        privateKey = privateKeyB64,
-        clientId = generated.ClientId
-    }, new JsonSerializerOptions { WriteIndented = true });
-
-    File.WriteAllText(path, identityJson);
-
-    Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"Generated new identity for '{username}' → {Path.GetFileName(path)}");
-    Console.ResetColor();
-    return generated;
-}
-
-static string Base64UrlEncode(byte[] data)
-{
-    return Convert.ToBase64String(data)
-        .Replace('+', '-')
-        .Replace('/', '_')
-        .TrimEnd('=');
-}
-
-static byte[] Base64UrlDecode(string base64Url)
-{
-    string base64 = base64Url
-        .Replace('-', '+')
-        .Replace('_', '/');
-
-    int padding = (4 - base64.Length % 4) % 4;
-    base64 += new string('=', padding);
-
-    return Convert.FromBase64String(base64);
-}

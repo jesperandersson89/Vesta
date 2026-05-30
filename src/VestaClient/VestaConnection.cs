@@ -5,6 +5,7 @@ using VestaCore.Events;
 using VestaCore.Identity;
 using VestaCore.Protocol;
 using VestaCore.Serialization;
+using VestaCore.Utilities;
 
 namespace VestaClient;
 
@@ -12,10 +13,13 @@ namespace VestaClient;
 /// C# client for connecting to a Vesta server via WebSocket.
 /// Handles the protocol handshake, publishing events, subscribing to channels,
 /// and receiving real-time event broadcasts.
+/// Supports reconnection — call ReconnectAsync() to establish a new connection
+/// after a disconnect, or enable AutoReconnect for automatic reconnection with
+/// exponential backoff.
 /// </summary>
 public sealed class VestaConnection : IAsyncDisposable
 {
-    private readonly ClientWebSocket _socket = new();
+    private ClientWebSocket? _socket;
     private readonly JsonSerializerOptions _jsonOptions = VestaJsonOptions.Default;
     private readonly string _clientId;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -23,6 +27,25 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly VestaIdentity? _identity;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
+    private Uri? _serverUri;
+    private IReadOnlyList<string>? _channels;
+
+    /// <summary>
+    /// When true, the connection will automatically attempt to reconnect with
+    /// exponential backoff when the connection is lost. Default: false.
+    /// </summary>
+    public bool AutoReconnect { get; set; }
+
+    /// <summary>
+    /// Maximum delay between auto-reconnect attempts. Default: 30 seconds.
+    /// </summary>
+    public TimeSpan MaxReconnectDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Initial delay for the first auto-reconnect attempt. Default: 1 second.
+    /// Each subsequent attempt doubles the delay up to MaxReconnectDelay.
+    /// </summary>
+    public TimeSpan InitialReconnectDelay { get; set; } = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Fired when a real-time event is received from the server.
@@ -50,6 +73,11 @@ public sealed class VestaConnection : IAsyncDisposable
     public event Action<string>? OnDisconnected;
 
     /// <summary>
+    /// Fired when a reconnection succeeds.
+    /// </summary>
+    public event Action? OnReconnected;
+
+    /// <summary>
     /// The server ID returned in the WELCOME message.
     /// </summary>
     public string? ServerId { get; private set; }
@@ -62,7 +90,7 @@ public sealed class VestaConnection : IAsyncDisposable
     /// <summary>
     /// Whether the connection is currently open.
     /// </summary>
-    public bool IsConnected => _socket.State == WebSocketState.Open;
+    public bool IsConnected => _socket?.State == WebSocketState.Open;
 
     public VestaConnection(string clientId, IClientEventStore? localStore = null, VestaIdentity? identity = null)
     {
@@ -80,7 +108,46 @@ public sealed class VestaConnection : IAsyncDisposable
         IReadOnlyDictionary<string, long>? lastSequences = null,
         CancellationToken cancellationToken = default)
     {
-        await _socket.ConnectAsync(serverUri, cancellationToken);
+        // Store for reconnection
+        _serverUri = serverUri;
+        _channels = channels;
+
+        await ConnectInternalAsync(lastSequences, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reconnect to the server using the same URI and channels from the original ConnectAsync call.
+    /// Uses stored channel positions from the local store for smart catch-up.
+    /// Returns true if reconnection succeeded, false if it failed.
+    /// </summary>
+    public async Task<bool> ReconnectAsync(CancellationToken cancellationToken = default)
+    {
+        if (_serverUri is null || _channels is null)
+        {
+            throw new InvalidOperationException("Cannot reconnect — ConnectAsync has not been called yet.");
+        }
+
+        // Clean up old socket and receive loop
+        await CleanupAsync();
+
+        try
+        {
+            await ConnectInternalAsync(lastSequences: null, cancellationToken);
+            OnReconnected?.Invoke();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task ConnectInternalAsync(
+        IReadOnlyDictionary<string, long>? lastSequences,
+        CancellationToken cancellationToken)
+    {
+        _socket = new ClientWebSocket();
+        await _socket.ConnectAsync(_serverUri!, cancellationToken);
 
         // If we have a local store but no explicit lastSequences, use stored positions for catch-up
         IReadOnlyDictionary<string, long> sequences = lastSequences ?? new Dictionary<string, long>();
@@ -91,12 +158,12 @@ public sealed class VestaConnection : IAsyncDisposable
 
         // Send HELLO
         string? publicKeyBase64Url = _identity is not null
-            ? Convert.ToBase64String(_identity.PublicKey).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+            ? Base64Url.Encode(_identity.PublicKey)
             : null;
 
         HelloMessage hello = new(
             ClientId: _clientId,
-            Channels: channels.ToList(),
+            Channels: _channels!.ToList(),
             LastSequences: sequences,
             PublicKey: publicKeyBase64Url);
 
@@ -195,7 +262,7 @@ public sealed class VestaConnection : IAsyncDisposable
     /// </summary>
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
-        if (_socket.State == WebSocketState.Open)
+        if (_socket?.State == WebSocketState.Open)
         {
             // Send close frame without waiting for the response here —
             // the receive loop will see the server's close response and exit.
@@ -216,30 +283,44 @@ public sealed class VestaConnection : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_socket.State == WebSocketState.Open)
-        {
-            try
-            {
-                await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Disposing", CancellationToken.None);
-            }
-            catch { /* best effort */ }
-        }
-
-        // Give the receive loop a moment to exit cleanly
-        if (_receiveLoop is not null)
-        {
-            try { await _receiveLoop.WaitAsync(TimeSpan.FromSeconds(2)); }
-            catch { /* best effort */ }
-        }
-
-        _receiveCts?.Cancel();
-        _receiveCts?.Dispose();
+        await CleanupAsync();
         _sendLock.Dispose();
-        _socket.Dispose();
+    }
+
+    private async Task CleanupAsync()
+    {
+        if (_socket is not null)
+        {
+            if (_socket.State == WebSocketState.Open)
+            {
+                try
+                {
+                    await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Disposing", CancellationToken.None);
+                }
+                catch { /* best effort */ }
+            }
+
+            // Give the receive loop a moment to exit cleanly
+            if (_receiveLoop is not null)
+            {
+                try { await _receiveLoop.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { /* best effort */ }
+            }
+
+            _receiveCts?.Cancel();
+            _receiveCts?.Dispose();
+            _receiveCts = null;
+            _receiveLoop = null;
+            _socket.Dispose();
+            _socket = null;
+        }
     }
 
     private async Task SendAsync(ProtocolMessage message, CancellationToken cancellationToken)
     {
+        if (_socket is null)
+            throw new InvalidOperationException("Not connected");
+
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes<ProtocolMessage>(message, _jsonOptions);
 
         await _sendLock.WaitAsync(cancellationToken);
@@ -259,6 +340,9 @@ public sealed class VestaConnection : IAsyncDisposable
 
     private async Task<ProtocolMessage?> ReceiveOneAsync(CancellationToken cancellationToken)
     {
+        if (_socket is null)
+            return null;
+
         byte[] buffer = new byte[16384];
         using MemoryStream stream = new();
 
@@ -282,7 +366,7 @@ public sealed class VestaConnection : IAsyncDisposable
     {
         try
         {
-            while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
+            while (!cancellationToken.IsCancellationRequested && _socket?.State == WebSocketState.Open)
             {
                 ProtocolMessage? message = await ReceiveOneAsync(cancellationToken);
 
@@ -297,6 +381,29 @@ public sealed class VestaConnection : IAsyncDisposable
         finally
         {
             OnDisconnected?.Invoke("Connection closed");
+
+            if (AutoReconnect && !cancellationToken.IsCancellationRequested)
+            {
+                _ = AutoReconnectLoopAsync();
+            }
+        }
+    }
+
+    private async Task AutoReconnectLoopAsync()
+    {
+        TimeSpan delay = InitialReconnectDelay;
+
+        while (AutoReconnect)
+        {
+            await Task.Delay(delay);
+
+            bool success = await ReconnectAsync();
+            if (success)
+            {
+                return;
+            }
+
+            delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxReconnectDelay.Ticks));
         }
     }
 
