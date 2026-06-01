@@ -47,7 +47,7 @@ Vesta/
 - **Target**: net10.0
 - **Nullable**: enable (all projects)
 - **Implicit usings**: enable
-- **Naming**: PascalCase for public members, _camelCase for private fields, camelCase for local variables
+- **Naming**: PascalCase for public members, \_camelCase for private fields, camelCase for local variables
 - **No `var`**: Always use explicit types — never use `var` for variable declarations
 - **Async**: All I/O methods should be async, suffixed with `Async`
 - **Records**: Prefer records for immutable data types (events, protocol messages)

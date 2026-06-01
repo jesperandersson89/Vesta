@@ -51,7 +51,7 @@ await using VestaConnection connection = new(clientId, localStore, identity)
 
 connection.OnEvent += (EventMessage evt) =>
 {
-    presence.Apply(evt.Event);
+    presence.Apply(new SequencedEvent(evt.Event, evt.Sequence, evt.ReceivedAt));
     RedrawDisplay();
 };
 
@@ -59,7 +59,7 @@ connection.OnEventsBatch += (EventsBatchMessage batch) =>
 {
     foreach (SequencedEvent seq in batch.Events)
     {
-        presence.Apply(seq.Event);
+        presence.Apply(seq);
     }
     RedrawDisplay();
 };

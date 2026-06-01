@@ -1,4 +1,6 @@
+using System.Text.Json;
 using VestaCore.Events;
+using VestaCore.Projections;
 
 namespace Presence.CLI;
 
@@ -7,137 +9,111 @@ namespace Presence.CLI;
 // Channel: "presence/{app-name}"
 //
 // Event types:
-//   app.presence.heartbeat  { username: string, status: "online", ttlSeconds: int }
-//   app.presence.bye        { username: string }
+//   app.presence.heartbeat  payload: { username }   metadata: { ttlSeconds }
+//   app.presence.bye        payload: { username }
 //
-// Conflict resolution: LWW per clientId — latest heartbeat wins.
-// A user is considered offline if:
-//   - A "bye" event is received from them, OR
-//   - No heartbeat has been received within their declared ttlSeconds
+// Conflict resolution: LWW per clientId via VestaCore.Projections.LwwMap.
+//   - heartbeat → Set(clientId, snapshot)
+//   - bye       → Remove(clientId)  (user disappears from the list)
+//   - "online"  → derived view: now - lastSeen <= ttlSeconds.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// <summary>
-/// Represents the current presence state for a single user.
-/// </summary>
-public sealed class PresenceEntry
-{
-    public required string ClientId { get; init; }
-    public required string Username { get; set; }
-    public DateTimeOffset LastSeen { get; set; }
-    public int TtlSeconds { get; set; }
-    public bool Online { get; set; }
-
-    /// <summary>
-    /// True if the TTL has elapsed since the last heartbeat.
-    /// </summary>
-    public bool IsExpired(DateTimeOffset now) =>
-        Online && (now - LastSeen).TotalSeconds > TtlSeconds;
-}
+/// <summary>Presence info for a single user, computed on demand from the LWW map.</summary>
+public sealed record PresenceEntry(
+    string ClientId,
+    string Username,
+    DateTimeOffset LastSeen,
+    int TtlSeconds,
+    bool Online);
 
 /// <summary>
-/// Projection that maintains a live view of which users are currently online.
-/// Thread-safe: all mutations are lock-protected.
+/// Projects the presence event stream into a live list of users by composing
+/// <see cref="LwwMap{TKey, TValue}"/> with a time-based "is online" derivation.
 /// </summary>
 public sealed class PresenceState
 {
-    private readonly Dictionary<string, PresenceEntry> _users = new();
-    private readonly object _lock = new();
+    private const int DefaultTtlSeconds = 30;
 
-    /// <summary>
-    /// All known users, online first then by last seen descending.
-    /// </summary>
+    private readonly LwwMap<string, Heartbeat> _heartbeats = new(Project);
+    private readonly object _displayLock = new();
+    private int _lastOnlineCount;
+
+    /// <summary>Apply a server-sequenced event.</summary>
+    public void Apply(SequencedEvent sequenced) => _heartbeats.Apply(sequenced);
+
+    /// <summary>Apply a locally-authored event (e.g. own heartbeat before round-trip).</summary>
+    public void Apply(VestaEvent evt) => _heartbeats.ApplyLocal(evt);
+
+    /// <summary>All known users, online first then by last-seen descending.</summary>
     public IReadOnlyList<PresenceEntry> AllUsers
     {
         get
         {
-            lock (_lock)
-            {
-                return _users.Values
-                    .OrderByDescending(e => e.Online)
-                    .ThenByDescending(e => e.LastSeen)
-                    .ToList();
-            }
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            return _heartbeats.State
+                .Select(kv => new PresenceEntry(
+                    ClientId: kv.Key,
+                    Username: kv.Value.Username,
+                    LastSeen: kv.Value.LastSeen,
+                    TtlSeconds: kv.Value.TtlSeconds,
+                    Online: (now - kv.Value.LastSeen).TotalSeconds <= kv.Value.TtlSeconds))
+                .OrderByDescending(e => e.Online)
+                .ThenByDescending(e => e.LastSeen)
+                .ToList();
         }
     }
 
     /// <summary>
-    /// Apply a heartbeat or bye event received from the server.
-    /// </summary>
-    public void Apply(VestaEvent evt)
-    {
-        switch (evt.EventType)
-        {
-            case "app.presence.heartbeat":
-                ApplyHeartbeat(evt);
-                break;
-            case "app.presence.bye":
-                ApplyBye(evt);
-                break;
-        }
-    }
-
-    /// <summary>
-    /// Mark any users whose TTL has expired as offline.
-    /// Returns true if any state changed (so caller can redraw).
+    /// Returns true if the count of online users has changed since the previous call
+    /// (i.e. someone just crossed their TTL boundary). Callers use the return value
+    /// to decide whether to redraw the display.
     /// </summary>
     public bool ExpireStaleUsers(DateTimeOffset now)
     {
-        bool changed = false;
-        lock (_lock)
+        lock (_displayLock)
         {
-            foreach (PresenceEntry entry in _users.Values)
+            int currentOnline = 0;
+            foreach (KeyValuePair<string, Heartbeat> kv in _heartbeats.State)
             {
-                if (entry.IsExpired(now))
+                if ((now - kv.Value.LastSeen).TotalSeconds <= kv.Value.TtlSeconds)
                 {
-                    entry.Online = false;
-                    changed = true;
+                    currentOnline++;
                 }
             }
+
+            if (currentOnline != _lastOnlineCount)
+            {
+                _lastOnlineCount = currentOnline;
+                return true;
+            }
+            return false;
         }
-        return changed;
     }
 
-    private void ApplyHeartbeat(VestaEvent evt)
-    {
-        string username = evt.Payload.TryGetProperty("username", out System.Text.Json.JsonElement u)
-            ? u.GetString() ?? evt.ClientId[..8]
-            : evt.ClientId[..8];
+    // ── Projection ───────────────────────────────────────────────────────────
 
-        int ttl = evt.Metadata is System.Text.Json.JsonElement md
-            && md.ValueKind == System.Text.Json.JsonValueKind.Object
-            && md.TryGetProperty("ttlSeconds", out System.Text.Json.JsonElement t)
-            && t.ValueKind == System.Text.Json.JsonValueKind.Number
+    private sealed record Heartbeat(string Username, DateTimeOffset LastSeen, int TtlSeconds);
+
+    private static LwwMapUpdate<string, Heartbeat>? Project(VestaEvent evt) => evt.EventType switch
+    {
+        "app.presence.heartbeat" => LwwMapUpdate<string, Heartbeat>.Set(
+            evt.ClientId,
+            new Heartbeat(
+                Username: evt.Payload.TryGetProperty("username", out JsonElement u)
+                    ? u.GetString() ?? evt.ClientId[..8]
+                    : evt.ClientId[..8],
+                LastSeen: evt.Timestamp,
+                TtlSeconds: ReadTtlSeconds(evt))),
+        "app.presence.bye" => LwwMapUpdate<string, Heartbeat>.Remove(evt.ClientId),
+        _ => null
+    };
+
+    private static int ReadTtlSeconds(VestaEvent evt) =>
+        evt.Metadata is JsonElement md
+        && md.ValueKind == JsonValueKind.Object
+        && md.TryGetProperty("ttlSeconds", out JsonElement t)
+        && t.ValueKind == JsonValueKind.Number
             ? t.GetInt32()
-            : 30;
-
-        lock (_lock)
-        {
-            if (!_users.TryGetValue(evt.ClientId, out PresenceEntry? entry))
-            {
-                entry = new PresenceEntry { ClientId = evt.ClientId, Username = username, TtlSeconds = ttl, Online = true, LastSeen = evt.Timestamp };
-                _users[evt.ClientId] = entry;
-            }
-
-            // Only apply if this is newer than what we have
-            if (evt.Timestamp >= entry.LastSeen)
-            {
-                entry.Username = username;
-                entry.TtlSeconds = ttl;
-                entry.LastSeen = evt.Timestamp;
-                entry.Online = true;
-            }
-        }
-    }
-
-    private void ApplyBye(VestaEvent evt)
-    {
-        lock (_lock)
-        {
-            if (_users.TryGetValue(evt.ClientId, out PresenceEntry? entry))
-            {
-                entry.Online = false;
-            }
-        }
-    }
+            : DefaultTtlSeconds;
 }
