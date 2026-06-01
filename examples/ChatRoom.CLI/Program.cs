@@ -41,7 +41,7 @@ Console.WriteLine("╔═══════════════════�
 Console.WriteLine("║         Vesta Chat Room Example          ║");
 Console.WriteLine("╠══════════════════════════════════════════╣");
 Console.WriteLine($"║  User:     {username,-30}║");
-Console.WriteLine($"║  Server:   {serverUrl,-30}║");
+Console.WriteLine($"║  Server:   {serverUrl[..25]}...{"",-2}║");
 Console.WriteLine($"║  Channel:  {channel,-30}║");
 Console.WriteLine($"║  Identity: {clientId[..16]}...{"",-11}║");
 Console.WriteLine("╚══════════════════════════════════════════╝");
