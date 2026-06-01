@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - 'src/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -29,7 +30,7 @@ jobs:
         run: dotnet build src/VestaServer/VestaServer.csproj --configuration Release
 
       - name: Run tests
-        run: dotnet test Vesta.sln --configuration Release --no-restore --filter "FullyQualifiedName!~Npgsql"
+        run: dotnet test Vesta.sln --configuration Release --no-restore
 
       - name: dotnet publish
         run: dotnet publish src/VestaServer/VestaServer.csproj -c Release -o ${{env.DOTNET_ROOT}}/myapp
