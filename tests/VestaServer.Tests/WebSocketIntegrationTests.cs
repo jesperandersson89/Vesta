@@ -259,6 +259,136 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
     }
 
+    [Fact]
+    public async Task CreateChannel_Private_RejectsUninvitedSubscribe()
+    {
+        // Admin creates a private channel without inviting "intruder"
+        using WebSocket admin = await ConnectAsync();
+        await SendAsync(admin, new HelloMessage("admin-1", [], new Dictionary<string, long>()));
+        await ReceiveAsync(admin); // WELCOME
+
+        await SendAsync(admin, new CreateChannelMessage("priv/room1", "private", []));
+        AckMessage createAck = Assert.IsType<AckMessage>(await ReceiveAsync(admin));
+        Assert.Equal("priv/room1", createAck.ChannelId);
+
+        // Intruder connects and tries to HELLO with the private channel
+        using WebSocket intruder = await ConnectAsync();
+        await SendAsync(intruder, new HelloMessage("intruder-1", ["priv/room1"], new Dictionary<string, long>()));
+
+        ProtocolMessage? first = await ReceiveAsync(intruder);
+        ErrorMessage error = Assert.IsType<ErrorMessage>(first);
+        Assert.Equal("ACCESS_DENIED", error.Code);
+
+        // WELCOME should still arrive, but without the rejected channel
+        WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(await ReceiveAsync(intruder));
+        Assert.DoesNotContain("priv/room1", welcome.Channels);
+
+        // Explicit SUBSCRIBE should also be rejected
+        await SendAsync(intruder, new SubscribeMessage("priv/room1", null));
+        ErrorMessage subError = Assert.IsType<ErrorMessage>(await ReceiveAsync(intruder));
+        Assert.Equal("ACCESS_DENIED", subError.Code);
+
+        await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await intruder.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateChannel_Private_RejectsUninvitedPublish()
+    {
+        using WebSocket admin = await ConnectAsync();
+        await SendAsync(admin, new HelloMessage("admin-2", [], new Dictionary<string, long>()));
+        await ReceiveAsync(admin);
+        await SendAsync(admin, new CreateChannelMessage("priv/room2", "private", []));
+        await ReceiveAsync(admin); // ACK
+
+        using WebSocket intruder = await ConnectAsync();
+        await SendAsync(intruder, new HelloMessage("intruder-2", [], new Dictionary<string, long>()));
+        await ReceiveAsync(intruder); // WELCOME
+
+        await SendAsync(intruder, new PublishMessage("priv/room2", CreateEvent("priv/room2")));
+        ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(intruder));
+        Assert.Equal("ACCESS_DENIED", error.Code);
+
+        await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await intruder.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateChannel_Private_AllowsInvitedMember()
+    {
+        using WebSocket admin = await ConnectAsync();
+        await SendAsync(admin, new HelloMessage("admin-3", [], new Dictionary<string, long>()));
+        await ReceiveAsync(admin);
+        await SendAsync(admin, new CreateChannelMessage("priv/room3", "private", ["member-3"]));
+        await ReceiveAsync(admin); // ACK
+
+        using WebSocket member = await ConnectAsync();
+        await SendAsync(member, new HelloMessage("member-3", ["priv/room3"], new Dictionary<string, long>()));
+        WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(await ReceiveAsync(member));
+        Assert.Contains("priv/room3", welcome.Channels);
+
+        await SendAsync(member, new PublishMessage("priv/room3", CreateEvent("priv/room3")));
+        AckMessage ack = Assert.IsType<AckMessage>(await ReceiveAsync(member));
+        Assert.Equal("priv/room3", ack.ChannelId);
+
+        // Admin was auto-subscribed on CreateChannel; drain the broadcast event before closing
+        EventMessage broadcast = Assert.IsType<EventMessage>(await ReceiveAsync(admin));
+        Assert.Equal("priv/room3", broadcast.ChannelId);
+
+        await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await member.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task GrantAccess_NonAdmin_ReturnsAccessDenied()
+    {
+        using WebSocket admin = await ConnectAsync();
+        await SendAsync(admin, new HelloMessage("admin-4", [], new Dictionary<string, long>()));
+        await ReceiveAsync(admin);
+        await SendAsync(admin, new CreateChannelMessage("priv/room4", "private", ["member-4"]));
+        await ReceiveAsync(admin); // ACK
+
+        // member is invited (can access) but is not admin — can't grant access to others
+        using WebSocket member = await ConnectAsync();
+        await SendAsync(member, new HelloMessage("member-4", [], new Dictionary<string, long>()));
+        await ReceiveAsync(member); // WELCOME
+
+        await SendAsync(member, new GrantAccessMessage("priv/room4", "outsider-4", "member"));
+        ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(member));
+        Assert.Equal("ACCESS_DENIED", error.Code);
+
+        // Admin can grant
+        await SendAsync(admin, new GrantAccessMessage("priv/room4", "outsider-4", "member"));
+        Assert.IsType<AckMessage>(await ReceiveAsync(admin));
+
+        // Now outsider can access
+        using WebSocket outsider = await ConnectAsync();
+        await SendAsync(outsider, new HelloMessage("outsider-4", ["priv/room4"], new Dictionary<string, long>()));
+        WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(await ReceiveAsync(outsider));
+        Assert.Contains("priv/room4", welcome.Channels);
+
+        await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await member.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await outsider.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateChannel_Duplicate_ReturnsChannelExists()
+    {
+        using WebSocket admin = await ConnectAsync();
+        await SendAsync(admin, new HelloMessage("admin-5", [], new Dictionary<string, long>()));
+        await ReceiveAsync(admin);
+
+        await SendAsync(admin, new CreateChannelMessage("priv/room5", "private", []));
+        Assert.IsType<AckMessage>(await ReceiveAsync(admin));
+
+        await SendAsync(admin, new CreateChannelMessage("priv/room5", "private", []));
+        ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(admin));
+        Assert.Equal("CHANNEL_EXISTS", error.Code);
+
+        await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
     // --- Helpers ---
 
     private async Task<WebSocket> ConnectAsync()

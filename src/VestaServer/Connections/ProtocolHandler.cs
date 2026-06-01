@@ -6,6 +6,7 @@ using VestaCore.Identity;
 using VestaCore.Protocol;
 using VestaCore.Storage;
 using VestaCore.Utilities;
+using VestaServer.Storage;
 
 namespace VestaServer.Connections;
 
@@ -16,6 +17,7 @@ namespace VestaServer.Connections;
 /// </summary>
 public sealed class ProtocolHandler(
     IEventStore eventStore,
+    IChannelAccessStore accessStore,
     ConnectionManager connectionManager,
     ILogger<ProtocolHandler> logger)
 {
@@ -89,6 +91,14 @@ public sealed class ProtocolHandler(
                 await HandleFetchAsync(connection, fetch, cancellationToken);
                 break;
 
+            case CreateChannelMessage create:
+                await HandleCreateChannelAsync(connection, create, cancellationToken);
+                break;
+
+            case GrantAccessMessage grant:
+                await HandleGrantAccessAsync(connection, grant, cancellationToken);
+                break;
+
             default:
                 await connection.SendAsync(
                     new ErrorMessage("UNKNOWN_MESSAGE", "Unrecognized message type"),
@@ -121,7 +131,8 @@ public sealed class ProtocolHandler(
             connection.PublicKey = publicKeyBytes;
         }
 
-        // Subscribe to requested channels
+        // Subscribe to requested channels (ACL-gated)
+        List<string> rejected = [];
         foreach (string channelId in hello.Channels)
         {
             if (!ChannelId.IsValid(channelId))
@@ -129,6 +140,15 @@ public sealed class ProtocolHandler(
                 await connection.SendAsync(
                     new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{channelId}'"),
                     cancellationToken);
+                continue;
+            }
+
+            if (!await accessStore.CanAccessAsync(channelId, connection.ClientId, cancellationToken))
+            {
+                await connection.SendAsync(
+                    new ErrorMessage("ACCESS_DENIED", $"Not authorized for channel '{channelId}'"),
+                    cancellationToken);
+                rejected.Add(channelId);
                 continue;
             }
 
@@ -171,6 +191,14 @@ public sealed class ProtocolHandler(
         {
             await connection.SendAsync(
                 new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{publish.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
+        if (!await accessStore.CanAccessAsync(publish.ChannelId, connection.ClientId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", $"Not authorized to publish to '{publish.ChannelId}'"),
                 cancellationToken);
             return;
         }
@@ -248,6 +276,14 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (!await accessStore.CanAccessAsync(subscribe.ChannelId, connection.ClientId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", $"Not authorized for channel '{subscribe.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
         connection.Subscriptions.Add(subscribe.ChannelId);
 
         // If fromSequence is specified, send catch-up events
@@ -285,6 +321,14 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (!await accessStore.CanAccessAsync(fetch.ChannelId, connection.ClientId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", $"Not authorized to fetch from '{fetch.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
         int limit = fetch.Limit ?? 100;
         IReadOnlyList<SequencedEvent> events = await eventStore.GetEventsAsync(
             fetch.ChannelId,
@@ -300,6 +344,97 @@ public sealed class ProtocolHandler(
 
         await connection.SendAsync(
             new EventsBatchMessage(fetch.ChannelId, events),
+            cancellationToken);
+    }
+
+    private async Task HandleCreateChannelAsync(
+        ClientConnection connection,
+        CreateChannelMessage create,
+        CancellationToken cancellationToken)
+    {
+        if (connection.ClientId is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("HELLO_REQUIRED", "Must send HELLO before CREATE_CHANNEL"),
+                cancellationToken);
+            return;
+        }
+
+        if (!ChannelId.IsValid(create.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{create.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
+        ChannelVisibility visibility = string.Equals(create.Visibility, "private", StringComparison.OrdinalIgnoreCase)
+            ? ChannelVisibility.Private
+            : ChannelVisibility.Public;
+
+        try
+        {
+            await accessStore.CreateChannelAsync(
+                create.ChannelId,
+                visibility,
+                adminClientId: connection.ClientId,
+                memberClientIds: create.InitialMembers,
+                cancellationToken);
+        }
+        catch (ChannelAlreadyExistsException)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("CHANNEL_EXISTS", $"Channel '{create.ChannelId}' already exists"),
+                cancellationToken);
+            return;
+        }
+
+        // Auto-subscribe the creator
+        connection.Subscriptions.Add(create.ChannelId);
+
+        await connection.SendAsync(
+            new AckMessage(create.ChannelId, Guid.Empty, 0),
+            cancellationToken);
+
+        logger.LogInformation(
+            "Channel created: {ChannelId} ({Visibility}) by {ClientId} with {MemberCount} initial members",
+            create.ChannelId, visibility, connection.ClientId, create.InitialMembers.Count);
+    }
+
+    private async Task HandleGrantAccessAsync(
+        ClientConnection connection,
+        GrantAccessMessage grant,
+        CancellationToken cancellationToken)
+    {
+        if (connection.ClientId is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("HELLO_REQUIRED", "Must send HELLO before GRANT_ACCESS"),
+                cancellationToken);
+            return;
+        }
+
+        if (!ChannelId.IsValid(grant.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{grant.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
+        if (!await accessStore.IsAdminAsync(grant.ChannelId, connection.ClientId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", "Only channel admins can grant access"),
+                cancellationToken);
+            return;
+        }
+
+        string role = string.Equals(grant.Role, "admin", StringComparison.OrdinalIgnoreCase) ? "admin" : "member";
+        await accessStore.GrantAccessAsync(grant.ChannelId, grant.ClientId, role, cancellationToken);
+
+        await connection.SendAsync(
+            new AckMessage(grant.ChannelId, Guid.Empty, 0),
             cancellationToken);
     }
 }

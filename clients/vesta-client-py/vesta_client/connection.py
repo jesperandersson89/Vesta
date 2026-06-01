@@ -208,6 +208,43 @@ class VestaConnection:
             msg["limit"] = limit
         await self._send(msg)
 
+    # ── Channel management (ACL) ──────────────────────────────────────────────
+
+    async def create_channel(
+        self,
+        channel_id: str,
+        *,
+        visibility: str = "private",
+        members: list[str] | None = None,
+    ) -> None:
+        """
+        Create a channel with explicit visibility and initial members.
+
+        For `visibility="private"`, only the caller (admin) and the listed
+        members may publish/subscribe. The caller is auto-subscribed.
+        """
+        await self._send({
+            "type": "CREATE_CHANNEL",
+            "channelId": channel_id,
+            "visibility": visibility,
+            "initialMembers": list(members) if members else [],
+        })
+
+    async def grant_access(
+        self,
+        channel_id: str,
+        client_id: str,
+        *,
+        role: str = "member",
+    ) -> None:
+        """Grant a client access to a private channel. Caller must be admin."""
+        await self._send({
+            "type": "GRANT_ACCESS",
+            "channelId": channel_id,
+            "clientId": client_id,
+            "role": role,
+        })
+
     # ── Sequence tracking ─────────────────────────────────────────────────────
 
     def update_sequence(self, channel_id: str, sequence: int) -> None:

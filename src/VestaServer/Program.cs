@@ -22,6 +22,7 @@ if (useInMemory)
 {
     // Explicit in-memory mode (for tests or local development without DB)
     builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+    builder.Services.AddSingleton<IChannelAccessStore, InMemoryChannelAccessStore>();
 }
 else if (!string.IsNullOrEmpty(connectionString))
 {
@@ -33,6 +34,7 @@ else if (!string.IsNullOrEmpty(connectionString))
         NpgsqlDataSource.Create(connectionString));
 
     builder.Services.AddSingleton<IEventStore, NpgsqlEventStore>();
+    builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
 }
 else
 {

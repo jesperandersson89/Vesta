@@ -67,6 +67,22 @@ export interface FetchMessage {
   limit?: number | null;
 }
 
+/** Client → Server: Create a channel with explicit visibility and initial members. */
+export interface CreateChannelMessage {
+  type: "CREATE_CHANNEL";
+  channelId: string;
+  visibility: "public" | "private";
+  initialMembers: string[];
+}
+
+/** Client → Server: Grant access to a private channel (admin only). */
+export interface GrantAccessMessage {
+  type: "GRANT_ACCESS";
+  channelId: string;
+  clientId: string;
+  role: "member" | "admin";
+}
+
 /** Server → Client: Handshake confirmation. */
 export interface WelcomeMessage {
   type: "WELCOME";
@@ -111,7 +127,9 @@ export type ClientMessage =
   | PublishMessage
   | SubscribeMessage
   | UnsubscribeMessage
-  | FetchMessage;
+  | FetchMessage
+  | CreateChannelMessage
+  | GrantAccessMessage;
 
 /** Union of all server → client messages. */
 export type ServerMessage =

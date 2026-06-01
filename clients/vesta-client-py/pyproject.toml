@@ -5,6 +5,7 @@ description = "Python client library for the Vesta protocol"
 requires-python = ">=3.11"
 dependencies = [
     "websockets>=13.0",
+    "cryptography>=42.0",
 ]
 license = {text = "MIT"}
 

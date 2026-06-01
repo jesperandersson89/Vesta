@@ -243,6 +243,35 @@ export class VestaConnection {
     });
   }
 
+  // ── Channel management (ACL) ─────────────────────────────────────────────
+
+  /**
+   * Create a channel with explicit visibility and initial members.
+   * For private channels, only the caller (admin) and listed members can publish/subscribe.
+   * The caller is auto-subscribed.
+   */
+  createChannel(
+    channelId: string,
+    options?: { visibility?: "public" | "private"; members?: string[] },
+  ): void {
+    this.sendRaw({
+      type: "CREATE_CHANNEL",
+      channelId,
+      visibility: options?.visibility ?? "private",
+      initialMembers: options?.members ?? [],
+    });
+  }
+
+  /** Grant a client access to a private channel. Caller must be the channel admin. */
+  grantAccess(channelId: string, clientId: string, role: "member" | "admin" = "member"): void {
+    this.sendRaw({
+      type: "GRANT_ACCESS",
+      channelId,
+      clientId,
+      role,
+    });
+  }
+
   // ── Sequence tracking ────────────────────────────────────────────────────
 
   /** Update the last known sequence for a channel (used on reconnect for catch-up). */

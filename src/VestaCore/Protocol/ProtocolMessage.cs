@@ -12,6 +12,8 @@ namespace VestaCore.Protocol;
 [JsonDerivedType(typeof(SubscribeMessage), "SUBSCRIBE")]
 [JsonDerivedType(typeof(UnsubscribeMessage), "UNSUBSCRIBE")]
 [JsonDerivedType(typeof(FetchMessage), "FETCH")]
+[JsonDerivedType(typeof(CreateChannelMessage), "CREATE_CHANNEL")]
+[JsonDerivedType(typeof(GrantAccessMessage), "GRANT_ACCESS")]
 [JsonDerivedType(typeof(WelcomeMessage), "WELCOME")]
 [JsonDerivedType(typeof(EventMessage), "EVENT")]
 [JsonDerivedType(typeof(EventsBatchMessage), "EVENTS_BATCH")]

@@ -29,7 +29,7 @@ import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import scrolledtext
 
-from vesta_client import VestaConnection, create_event, load_or_create_identity
+from vesta_client import VestaConnection, VestaIdentity, create_event, load_or_create_identity
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
@@ -95,10 +95,11 @@ class DocumentState:
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 class App:
-    def __init__(self, root: tk.Tk, username: str, client_id: str, server_url: str, channel: str):
+    def __init__(self, root: tk.Tk, username: str, identity: VestaIdentity, server_url: str, channel: str):
         self.root = root
         self.username = username
-        self.client_id = client_id
+        self.identity = identity
+        self.client_id = identity.client_id
         self.server_url = server_url
         self.channel = channel
 
@@ -294,6 +295,7 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
         server_url=app.server_url,
         client_id=app.client_id,
         channels=[app.channel],
+        public_key=app.identity.public_key_b64,
     )
 
     def on_connected(welcome):
@@ -307,6 +309,7 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
                 event_type="app.collab.document-update",
                 payload={"text": text, "username": app.username, "cursorPos": cursor_pos},
                 replace=True,
+                identity=app.identity,
             )
             await conn.publish(event)
 
@@ -409,9 +412,9 @@ if __name__ == "__main__":
     if not username:
         sys.exit(0)
 
-    client_id = load_or_create_identity(f"collab-edit-{room}-{username}")
+    identity = load_or_create_identity(f"collab-edit-{room}-{username}")
 
     root = tk.Tk()
-    app = App(root, username, client_id, server_url, channel)
+    app = App(root, username, identity, server_url, channel)
     start_ws_thread(app)
     root.mainloop()

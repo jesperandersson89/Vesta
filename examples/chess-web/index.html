@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vesta Chess</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>♛ Vesta Chess</h1>
+        <div class="status">
+          <span id="conn-status" class="badge offline">offline</span>
+          <span id="me" class="me"></span>
+        </div>
+      </header>
+
+      <main>
+        <!-- Lobby view -->
+        <section id="lobby-view" class="view">
+          <div class="panel">
+            <h2>Online players</h2>
+            <ul id="players-list" class="list"></ul>
+            <p class="hint">Click a player to invite them to a match.</p>
+          </div>
+          <div class="panel">
+            <h2>Your matches</h2>
+            <h3>Invitations</h3>
+            <ul id="invites-list" class="list"></ul>
+            <h3>Active</h3>
+            <ul id="active-list" class="list"></ul>
+          </div>
+        </section>
+
+        <!-- Match view -->
+        <section id="match-view" class="view hidden">
+          <div class="match-header">
+            <button id="leave-match">← Back to lobby</button>
+            <span id="match-title"></span>
+            <span id="match-turn"></span>
+          </div>
+          <div id="board" class="board"></div>
+          <div class="match-actions">
+            <button id="resign-btn">Resign</button>
+            <span id="match-message"></span>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <label>
+          Server:
+          <input id="server-url" type="text" value="ws://localhost:5050/ws" />
+        </label>
+        <label>
+          Username:
+          <input id="username" type="text" />
+        </label>
+        <button id="connect-btn">Connect</button>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

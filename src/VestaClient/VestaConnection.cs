@@ -277,6 +277,34 @@ public sealed class VestaConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Create a channel with explicit visibility and initial members.
+    /// For private channels, only the caller (admin) and listed members can publish/subscribe.
+    /// The caller is auto-subscribed.
+    /// </summary>
+    public async Task CreateChannelAsync(
+        string channelId,
+        string visibility = "private",
+        IReadOnlyList<string>? initialMembers = null,
+        CancellationToken cancellationToken = default)
+    {
+        CreateChannelMessage message = new(channelId, visibility, initialMembers ?? []);
+        await SendAsync(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Grant a client access to a private channel. Caller must be the channel admin.
+    /// </summary>
+    public async Task GrantAccessAsync(
+        string channelId,
+        string clientId,
+        string role = "member",
+        CancellationToken cancellationToken = default)
+    {
+        GrantAccessMessage message = new(channelId, clientId, role);
+        await SendAsync(message, cancellationToken);
+    }
+
+    /// <summary>
     /// Gracefully disconnect from the server.
     /// Sends a close frame and waits for the receive loop to finish naturally.
     /// </summary>

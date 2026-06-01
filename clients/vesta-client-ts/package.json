@@ -20,10 +20,17 @@
     "dist",
     "src"
   ],
-  "keywords": ["vesta", "protocol", "websocket", "event-sourcing"],
+  "keywords": [
+    "vesta",
+    "protocol",
+    "websocket",
+    "event-sourcing"
+  ],
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.18.0"
+    "@noble/ed25519": "^2.3.0",
+    "@noble/hashes": "^1.8.0",
+    "ws": "^8.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

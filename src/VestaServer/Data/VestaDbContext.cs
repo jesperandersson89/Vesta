@@ -13,6 +13,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
     public DbSet<ChannelEntity> Channels => Set<ChannelEntity>();
     public DbSet<ClientPositionEntity> ClientPositions => Set<ClientPositionEntity>();
     public DbSet<ChannelSequenceEntity> ChannelSequences => Set<ChannelSequenceEntity>();
+    public DbSet<ChannelAccessEntity> ChannelAccess => Set<ChannelAccessEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -23,6 +24,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).HasColumnName("id");
             entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
+            entity.Property(e => e.Visibility).HasColumnName("visibility").HasDefaultValue("public");
             entity.Property(e => e.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
         });
 
@@ -64,6 +66,17 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.HasKey(e => e.ChannelId);
             entity.Property(e => e.ChannelId).HasColumnName("channel_id");
             entity.Property(e => e.NextSeq).HasColumnName("next_seq").HasDefaultValue(1L);
+        });
+
+        // === channel_access ===
+        modelBuilder.Entity<ChannelAccessEntity>(entity =>
+        {
+            entity.ToTable("channel_access");
+            entity.HasKey(e => new { e.ChannelId, e.ClientId });
+            entity.Property(e => e.ChannelId).HasColumnName("channel_id");
+            entity.Property(e => e.ClientId).HasColumnName("client_id");
+            entity.Property(e => e.Role).HasColumnName("role").HasDefaultValue("member");
+            entity.Property(e => e.GrantedAt).HasColumnName("granted_at").HasDefaultValueSql("now()");
         });
     }
 }

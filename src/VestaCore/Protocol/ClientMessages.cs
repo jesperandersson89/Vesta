@@ -11,3 +11,25 @@ public sealed record HelloMessage(
     IReadOnlyDictionary<string, long> LastSequences,
     string? PublicKey = null
 ) : ProtocolMessage;
+
+/// <summary>
+/// CLIENT → SERVER: Explicitly create a new channel.
+/// The issuing client becomes the channel admin. <see cref="InitialMembers"/>
+/// are added as members in addition to the creator.
+/// When <see cref="Visibility"/> is "private", only members can subscribe/publish/fetch.
+/// </summary>
+public sealed record CreateChannelMessage(
+    string ChannelId,
+    string Visibility,                              // "public" | "private"
+    IReadOnlyList<string> InitialMembers
+) : ProtocolMessage;
+
+/// <summary>
+/// CLIENT → SERVER: Grant access to a private channel. Admin-only.
+/// </summary>
+public sealed record GrantAccessMessage(
+    string ChannelId,
+    string ClientId,
+    string Role                                     // "member" | "admin"
+) : ProtocolMessage;
+

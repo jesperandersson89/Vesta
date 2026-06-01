@@ -144,7 +144,8 @@ async function main(): Promise<void> {
   }
   const username: string = maybeUsername;
 
-  const clientId = loadOrCreateIdentity(`clipboard-${room}-${username}`);
+  const identity = await loadOrCreateIdentity(`clipboard-${room}-${username}`);
+  const clientId = identity.clientId;
   const state = new ClipboardState();
   let lastClipboard = "";
 
@@ -170,6 +171,7 @@ async function main(): Promise<void> {
   const connection = new VestaConnection({
     serverUrl,
     clientId,
+    publicKey: identity.publicKeyB64,
     channels: [channel],
     createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
   });
@@ -177,7 +179,7 @@ async function main(): Promise<void> {
   connection.on("connected", () => {
     if (lastClipboard) {
       connection.publish(
-        createEvent(channel, clientId, "app.clipboard.update", { text: lastClipboard, username }, { replace: true })
+        createEvent(channel, identity, "app.clipboard.update", { text: lastClipboard, username }, { replace: true })
       );
     }
     redraw();
@@ -230,7 +232,7 @@ async function main(): Promise<void> {
         });
         if (connection.isConnected) {
           connection.publish(
-            createEvent(channel, clientId, "app.clipboard.update", { text: current, username }, { replace: true })
+            createEvent(channel, identity, "app.clipboard.update", { text: current, username }, { replace: true })
           );
         }
         redraw();
