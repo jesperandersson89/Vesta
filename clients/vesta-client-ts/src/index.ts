@@ -9,6 +9,14 @@ export { createEvent } from "./events.js";
 export { loadOrCreateIdentity, VestaIdentity } from "./identity.js";
 export type { SerializedIdentity } from "./identity.js";
 export {
+    AppendOnlyLog,
+    EventReducer,
+    LwwMap,
+    LwwMapUpdate,
+    LwwRegister,
+} from "./projections/index.js";
+export type { ProjectionCheckpoint } from "./projections/index.js";
+export {
     base64UrlToBytes,
     bytesToBase64Url,
     buildSigningInput,

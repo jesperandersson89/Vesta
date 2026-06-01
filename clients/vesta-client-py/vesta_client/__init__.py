@@ -8,6 +8,14 @@ from vesta_client.identity import (
     load_or_create_identity,
     save_identity_extra,
 )
+from vesta_client.projections import (
+    AppendOnlyLog,
+    EventReducer,
+    LwwMap,
+    LwwMapUpdate,
+    LwwRegister,
+    ProjectionCheckpoint,
+)
 from vesta_client.signing import build_signing_input, sign_event
 from vesta_client.types import (
     AckMessage,
@@ -22,9 +30,15 @@ from vesta_client.types import (
 
 __all__ = [
     "AckMessage",
+    "AppendOnlyLog",
     "ErrorMessage",
     "EventMessage",
+    "EventReducer",
     "EventsBatchMessage",
+    "LwwMap",
+    "LwwMapUpdate",
+    "LwwRegister",
+    "ProjectionCheckpoint",
     "SequencedEvent",
     "ServerMessage",
     "VestaConnection",

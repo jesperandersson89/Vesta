@@ -2,9 +2,15 @@
 
 Vesta's job is to give every client the **same ordered stream of events** on each channel. Turning that stream into application state (the "current value" of a counter, the live list of online users, the contents of a todo list) is the app's responsibility. That transformation is called a **projection**.
 
-The SDK provides four reusable building blocks in the `VestaCore.Projections` namespace so you don't have to hand-roll the boring parts. Pick the one whose conflict semantics match your data, give it a projector function, and feed it events.
+The SDK provides four reusable building blocks so you don't have to hand-roll the boring parts. Pick the one whose conflict semantics match your data, give it a projector function, and feed it events.
 
-> **Note:** The projection primitives are currently C#-only. The TypeScript and Python clients still hand-roll projections (e.g. `chess-web` builds its own presence map). Porting them is tracked as TODO #8 in [PLANNING.md](../PLANNING.md).
+**Available in all three client languages** with identical semantics:
+
+| Language   | Namespace / module                 |
+| ---------- | ---------------------------------- |
+| C#         | `VestaCore.Projections`            |
+| TypeScript | `vesta-client` (top-level exports) |
+| Python     | `vesta_client` (top-level exports) |
 
 ## Picking a primitive
 
@@ -103,7 +109,15 @@ The SDK does not yet provide a built-in snapshot store — pick whatever fits yo
 
 ## Thread safety
 
-All four primitives are thread-safe via an internal lock (`EventReducer.SyncRoot`). `State` returns a defensive snapshot — it's safe to enumerate without holding any lock. Mutation methods (`Apply`, `ApplyLocal`) can be called from any thread.
+The C# and Python implementations are thread-safe via an internal lock (`EventReducer.SyncRoot` / `_lock`). The TypeScript implementation has no lock — JavaScript is single-threaded so it isn't needed. `State` returns a defensive snapshot in C# / Python; in TypeScript it returns a `ReadonlyMap` view backed by the internal map (treat as read-only).
+
+## Cross-language parity
+
+The three implementations share identical semantics: `applyLocal` never advances `lastSequence`; `apply` advances only on strict-greater sequence; ties on timestamp preserve the existing value; `LwwMap` tombstones survive stale `set`s. The same channel projected by a C#, TS, and Python client converges to the same state. Worked examples:
+
+- C# — [examples/Presence.CLI/PresenceState.cs](../examples/Presence.CLI/PresenceState.cs) uses `LwwMap<string, Heartbeat>` for presence.
+- TypeScript — [examples/clipboard-ts/src/main.ts](../examples/clipboard-ts/src/main.ts) uses `LwwMap<string, ClipboardEntry>` for per-author latest paste.
+- Python — see [clients/vesta-client-py/tests/test_projections.py](../clients/vesta-client-py/tests/test_projections.py) for the full primitive surface in use.
 
 ## See also
 

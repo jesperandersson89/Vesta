@@ -16,11 +16,15 @@ import { createInterface } from "node:readline";
 import clipboardy from "clipboardy";
 import WebSocket from "ws";
 import {
+    LwwMap,
+    LwwMapUpdate,
     VestaConnection,
     createEvent,
     loadOrCreateIdentity,
     type EventMessage,
     type EventsBatchMessage,
+    type SequencedEvent,
+    type VestaEvent,
     type VestaSocket,
 } from "vesta-client";
 
@@ -37,39 +41,42 @@ interface ClipboardEntry {
     timestamp: string;
 }
 
-class ClipboardState {
-    private entries = new Map<string, ClipboardEntry>();
+/** Projector: each `app.clipboard.update` sets that author's latest paste. */
+function clipboardProjector(
+    event: VestaEvent,
+): LwwMapUpdate<string, ClipboardEntry> | null {
+    if (event.eventType !== "app.clipboard.update") return null;
+    const clientId = event.clientId ?? "";
+    if (!clientId) return null;
+    const payload = (event.payload ?? {}) as {
+        text?: string;
+        username?: string;
+    };
+    const entry: ClipboardEntry = {
+        clientId,
+        username: payload.username ?? clientId.slice(0, 8),
+        text: payload.text ?? "",
+        timestamp: event.timestamp ?? "",
+    };
+    return LwwMapUpdate.set(clientId, entry);
+}
 
-    apply(event: any): boolean {
-        if (event.eventType !== "app.clipboard.update") return false;
-        const clientId: string = event.clientId ?? "";
-        const ts: string = event.timestamp ?? "";
-        const payload = event.payload ?? {};
-        const text: string = payload.text ?? "";
-        const username: string = payload.username ?? clientId.slice(0, 8);
-
-        const existing = this.entries.get(clientId);
-        if (existing && existing.timestamp >= ts) return false;
-
-        this.entries.set(clientId, { clientId, username, text, timestamp: ts });
-        return true;
+function getLatestEntry(
+    state: ReadonlyMap<string, ClipboardEntry>,
+): ClipboardEntry | undefined {
+    let latest: ClipboardEntry | undefined;
+    for (const entry of state.values()) {
+        if (!latest || entry.timestamp > latest.timestamp) latest = entry;
     }
+    return latest;
+}
 
-    getLatest(): ClipboardEntry | undefined {
-        let latest: ClipboardEntry | undefined;
-        for (const entry of this.entries.values()) {
-            if (!latest || entry.timestamp > latest.timestamp) {
-                latest = entry;
-            }
-        }
-        return latest;
-    }
-
-    getAll(): ClipboardEntry[] {
-        return [...this.entries.values()].sort((a, b) =>
-            b.timestamp.localeCompare(a.timestamp),
-        );
-    }
+function getAllEntries(
+    state: ReadonlyMap<string, ClipboardEntry>,
+): ClipboardEntry[] {
+    return [...state.values()].sort((a, b) =>
+        b.timestamp.localeCompare(a.timestamp),
+    );
 }
 
 // ── Display ──────────────────────────────────────────────────────────────────
@@ -85,7 +92,7 @@ function clearScreen(): void {
 }
 
 function renderUI(
-    state: ClipboardState,
+    state: ReadonlyMap<string, ClipboardEntry>,
     selfClientId: string,
     connected: boolean,
     serverUrl: string,
@@ -105,7 +112,7 @@ function renderUI(
     console.log(`${DIM}${"─".repeat(60)}${RESET}`);
     console.log();
 
-    const entries = state.getAll();
+    const entries = getAllEntries(state);
     if (entries.length === 0) {
         console.log(
             `${DIM}  No clipboard entries yet. Copy something!${RESET}`,
@@ -155,7 +162,7 @@ async function main(): Promise<void> {
         `clipboard-${room}-${username}`,
     );
     const clientId = identity.clientId;
-    const state = new ClipboardState();
+    const state = new LwwMap<string, ClipboardEntry>(clipboardProjector);
     let lastClipboard = "";
 
     try {
@@ -164,17 +171,20 @@ async function main(): Promise<void> {
         // Clipboard might be empty or inaccessible
     }
 
-    // Apply initial clipboard as our own entry
-    state.apply({
-        clientId,
-        eventType: "app.clipboard.update",
-        timestamp: new Date().toISOString(),
-        payload: { text: lastClipboard, username },
-    });
+    // Seed the projection with our own initial clipboard so the UI shows us
+    // immediately, without waiting for the server echo.
+    const initialSelf = createEvent(
+        channel,
+        identity,
+        "app.clipboard.update",
+        { text: lastClipboard, username },
+        { replace: true },
+    );
+    state.applyLocal(initialSelf);
 
     function redraw(): void {
         renderUI(
-            state,
+            state.state,
             clientId,
             connection.isConnected,
             serverUrl,
@@ -211,24 +221,28 @@ async function main(): Promise<void> {
 
     connection.on("event", (msg: EventMessage) => {
         if (msg.event.clientId === clientId) return;
-        if (state.apply(msg.event as any)) {
-            const latest = state.getLatest();
-            if (latest && latest.clientId !== clientId) {
-                lastClipboard = latest.text;
-                clipboardy.writeSync(latest.text);
-            }
-            redraw();
+        state.apply({
+            event: msg.event,
+            sequence: msg.sequence,
+            receivedAt: msg.receivedAt,
+        });
+        const latest = getLatestEntry(state.state);
+        if (latest && latest.clientId !== clientId) {
+            lastClipboard = latest.text;
+            clipboardy.writeSync(latest.text);
         }
+        redraw();
     });
 
     connection.on("eventsBatch", (msg: EventsBatchMessage) => {
         let changed = false;
         for (const se of msg.events) {
             if (se.event.clientId === clientId) continue;
-            if (state.apply(se.event as any)) changed = true;
+            state.apply(se);
+            changed = true;
         }
         if (changed) {
-            const latest = state.getLatest();
+            const latest = getLatestEntry(state.state);
             if (latest && latest.clientId !== clientId) {
                 lastClipboard = latest.text;
                 clipboardy.writeSync(latest.text);
@@ -246,22 +260,16 @@ async function main(): Promise<void> {
             const current = await clipboardy.read();
             if (current && current !== lastClipboard) {
                 lastClipboard = current;
-                state.apply({
-                    clientId,
-                    eventType: "app.clipboard.update",
-                    timestamp: new Date().toISOString(),
-                    payload: { text: current, username },
-                });
+                const selfEvent = createEvent(
+                    channel,
+                    identity,
+                    "app.clipboard.update",
+                    { text: current, username },
+                    { replace: true },
+                );
+                state.applyLocal(selfEvent);
                 if (connection.isConnected) {
-                    connection.publish(
-                        createEvent(
-                            channel,
-                            identity,
-                            "app.clipboard.update",
-                            { text: current, username },
-                            { replace: true },
-                        ),
-                    );
+                    connection.publish(selfEvent);
                 }
                 redraw();
             }
