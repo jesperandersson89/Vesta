@@ -117,6 +117,24 @@ Each sweep iterates every row in `apps` and, per quota:
 - `max_events_per_channel` → keeps the most recent N events per channel under the app via `ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY sequence DESC)`.
 - `total_storage_bytes` → `SUM(pg_column_size(payload))` written to the in-process accountant.
 
+## `ChannelDeletionPruner` (Postgres only)
+
+The `ChannelDeletionPrunerService` periodically hard-deletes channels that were soft-deleted via [`DELETE_CHANNEL`](#server-admins). Each sweep selects every channel whose `deleted_at` tombstone has aged past the grace period, deletes its events, and drops the `channels` row so the id becomes available again (a fresh `PUBLISH` would recreate it implicitly).
+
+```jsonc
+{
+    "ChannelDeletionPruner": {
+        "Enabled": false, // opt-in
+        "Interval": "00:05:00", // TimeSpan; default 5 min
+        "GracePeriod": "1.00:00:00", // TimeSpan; default 24 h
+    },
+}
+```
+
+If `Enabled` is `false` (the default), the service logs a single info message at startup and exits. Soft-deleted channels still reject new writes with `CHANNEL_DELETED`, but their events stay on disk until you turn the pruner on. Set `GracePeriod` to `00:00:00` for immediate hard-delete on the very next sweep.
+
+Each pass runs two statements per eligible channel: `DELETE FROM events WHERE channel_id = $1`, then `DELETE FROM channels WHERE id = $1 AND deleted_at < now() - make_interval(secs => $2)` (re-checking the tombstone in the predicate as cheap insurance against a future un-delete path).
+
 ## `EventCleanup` (Postgres only)
 
 The `ExpiredEventCleanupService` periodically deletes events whose `expires_at` is in the past. It only runs when the Postgres backend is active and only when explicitly enabled:

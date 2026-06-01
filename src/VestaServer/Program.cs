@@ -46,6 +46,11 @@ else if (!string.IsNullOrEmpty(connectionString))
     // Opt-in via AppQuotaPruner:Enabled.
     builder.Services.Configure<AppQuotaPrunerOptions>(builder.Configuration.GetSection("AppQuotaPruner"));
     builder.Services.AddHostedService<AppQuotaPrunerService>();
+
+    // Background sweep that hard-deletes soft-deleted channels (DELETE_CHANNEL)
+    // once their grace period elapses. Opt-in via ChannelDeletionPruner:Enabled.
+    builder.Services.Configure<ChannelDeletionPrunerOptions>(builder.Configuration.GetSection("ChannelDeletionPruner"));
+    builder.Services.AddHostedService<ChannelDeletionPrunerService>();
 }
 else
 {
