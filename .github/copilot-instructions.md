@@ -30,10 +30,11 @@ Vesta/
 ├── examples/                   # Demo apps consuming the client libraries
 │   ├── ChatRoom.CLI/           # C# chat demo
 │   ├── TodoList.CLI/           # C# todo demo
-│   ├── TicTacToe.CLI/          # C# multiplayer game demo
-│   ├── SharedClipboard.CLI/    # C# clipboard demo
-│   ├── chat-web/               # JS browser chat demo
-│   └── todo-py/                # Python CLI todo demo
+│   ├── Presence.CLI/           # C# presence/heartbeat demo (TTL + LwwMap showcase)
+│   ├── chess-web/              # TS browser multiplayer chess demo
+│   ├── clipboard-ts/           # TS shared clipboard demo
+│   ├── colorwheel-py/          # Python colorwheel demo
+│   └── collab-edit-py/         # Python collaborative editor demo
 └── tests/
     ├── VestaCore.Tests/
     ├── VestaServer.Tests/
@@ -99,6 +100,46 @@ Vesta/
 - When adding a new protocol message, update both the C# types AND the message type documentation
 - Run `dotnet build` after changes to verify compilation
 - Event payloads are always `JsonElement` or `JsonDocument` — never strongly-typed app models in core
+
+## Keeping Clients and Examples in Sync
+
+When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` shape, signing rules, metadata semantics, channel ACL, etc.) or in `src/VestaClient/`, you MUST sweep the other SDKs and the examples before declaring the task done:
+
+- **TypeScript client** — `clients/vesta-client-ts/src/` (`types.ts`, `events.ts`, `connection.ts`, `identity.ts`, `index.ts`). Mirror new fields, message types, signing rules.
+- **Python client** — `clients/vesta-client-py/vesta_client/` (`types.py`, `events.py`, `connection.py`, `identity.py`). Same mirror.
+- **C# examples** — every `examples/*.CLI/` project that uses the changed surface. Build each affected project.
+- **TS/JS examples** — `examples/chess-web/`, `examples/clipboard-ts/` if affected.
+- **Python examples** — `examples/colorwheel-py/`, `examples/collab-edit-py/` if affected.
+
+Rules of thumb:
+
+- If you added a wire-level field (e.g. `metadata` on `VestaEvent`), all three client libraries must serialize / deserialize it round-trip and exclude it from signing input where applicable.
+- If you added an SDK primitive (e.g. `VestaCore.Projections.*`), pick at least one example to refactor onto it as a smoke test — don't leave the primitive unused.
+- If an example would need a large rewrite, note that explicitly in the response instead of silently leaving it stale.
+- After edits, run `dotnet build Vesta.sln` and, for touched non-C# clients, the relevant `npm run build` / `python -m compileall` (or import-check) to confirm nothing rotted.
+
+## Documentation
+
+User-facing documentation lives in `docs/` (entry point: [docs/README.md](../docs/README.md)). Architectural rationale lives in [PLANNING.md](../PLANNING.md). User-facing setup lives in [README.md](../README.md). Keep all three in sync when behaviour changes.
+
+When you change something that has user-visible impact, update the relevant doc in the same change:
+
+| You changed...                                                                   | Update                                |
+| -------------------------------------------------------------------------------- | ------------------------------------- |
+| `VestaEvent` shape, signing rules, `replace` / `volatile` / `metadata` semantics | `docs/events.md`                      |
+| `VestaCore.Projections.*` (new primitive, new method, semantics)                 | `docs/projections.md`                 |
+| Protocol message types, `$type` discriminators, wire format                      | `docs/protocol.md`                    |
+| Server config keys (`appsettings.json`), hosted services, ACL behaviour          | `docs/server-configuration.md`        |
+| Anything user-visible at the SDK or CLI surface                                  | `README.md` if it affects quick-start |
+| Architecture decision (why, not how)                                             | `PLANNING.md`                         |
+
+Rules of thumb:
+
+- Code is the source of truth. If a doc disagrees with the code, fix the doc, not the code (unless the code is wrong).
+- Don't create new top-level doc files without a reason — extend the existing four first. If a new file is genuinely needed, add it to the index table in `docs/README.md`.
+- Link to source files (`[src/.../X.cs](../src/.../X.cs)`) instead of pasting large code blocks — they go stale.
+- When marking a TODO ✅ in `PLANNING.md`, also update the affected doc — `PLANNING.md` is for "why we chose this", not for "how to use it".
+- Do NOT create separate "changelog" or "release notes" markdown files to document changes you just made unless the user explicitly asks for them.
 
 ## Problem Handling
 
