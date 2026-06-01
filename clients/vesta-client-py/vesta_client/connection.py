@@ -245,6 +245,19 @@ class VestaConnection:
             "role": role,
         })
 
+    async def register_app(self, app_id: str) -> None:
+        """
+        Register an app namespace. The first slug segment of every channel ID
+        belongs to an app. When the server is configured with
+        `Protocol:RequireAppRegistration=true`, the app must be registered
+        before publishing or subscribing on any channel in its namespace.
+        The connecting client becomes the owner.
+        """
+        await self._send({
+            "type": "REGISTER_APP",
+            "appId": app_id,
+        })
+
     # ── Sequence tracking ─────────────────────────────────────────────────────
 
     def update_sequence(self, channel_id: str, sequence: int) -> None:

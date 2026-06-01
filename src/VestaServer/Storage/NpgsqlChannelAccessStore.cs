@@ -108,6 +108,17 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     await cmd.ExecuteNonQueryAsync(cancellationToken);
   }
 
+  public async Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
+  {
+    // Matches the app slug exactly or any channel starting with "{appId}/".
+    const string sql = "SELECT COUNT(*) FROM channels WHERE id = $1 OR id LIKE $2";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
+    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+    return result is long l ? (int)l : Convert.ToInt32(result);
+  }
+
   private static async Task InsertAccessAsync(
       NpgsqlConnection connection,
       NpgsqlTransaction tx,

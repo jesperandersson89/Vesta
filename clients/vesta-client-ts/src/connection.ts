@@ -290,6 +290,19 @@ export class VestaConnection {
         });
     }
 
+    /**
+     * Register an app namespace. The first slug segment of every channel ID belongs to an app.
+     * When the server is configured with `Protocol:RequireAppRegistration=true`, the app must
+     * be registered before publishing or subscribing on any channel in its namespace.
+     * The connecting client becomes the owner.
+     */
+    registerApp(appId: string): void {
+        this.sendRaw({
+            type: "REGISTER_APP",
+            appId,
+        });
+    }
+
     // ── Sequence tracking ────────────────────────────────────────────────────
 
     /** Update the last known sequence for a channel (used on reconnect for catch-up). */

@@ -14,6 +14,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
     public DbSet<ClientPositionEntity> ClientPositions => Set<ClientPositionEntity>();
     public DbSet<ChannelSequenceEntity> ChannelSequences => Set<ChannelSequenceEntity>();
     public DbSet<ChannelAccessEntity> ChannelAccess => Set<ChannelAccessEntity>();
+    public DbSet<AppEntity> Apps => Set<AppEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -79,6 +80,26 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.ClientId).HasColumnName("client_id");
             entity.Property(e => e.Role).HasColumnName("role").HasDefaultValue("member");
             entity.Property(e => e.GrantedAt).HasColumnName("granted_at").HasDefaultValueSql("now()");
+        });
+
+        // === apps ===
+        modelBuilder.Entity<AppEntity>(entity =>
+        {
+            entity.ToTable("apps");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id").HasMaxLength(64);
+            entity.Property(e => e.OwnerClientId).HasColumnName("owner_client_id").IsRequired();
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
+
+            // Reserved for TODO #9b — all nullable, server does not enforce yet.
+            entity.Property(e => e.MaxChannels).HasColumnName("max_channels");
+            entity.Property(e => e.MaxEventsPerChannel).HasColumnName("max_events_per_channel");
+            entity.Property(e => e.MaxPayloadBytes).HasColumnName("max_payload_bytes");
+            entity.Property(e => e.PublishRatePerMinute).HasColumnName("publish_rate_per_minute");
+            entity.Property(e => e.RetentionDays).HasColumnName("retention_days");
+            entity.Property(e => e.TotalStorageBytes).HasColumnName("total_storage_bytes");
+
+            entity.HasIndex(e => e.OwnerClientId).HasDatabaseName("IX_apps_owner_client_id");
         });
     }
 }

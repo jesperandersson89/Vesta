@@ -23,6 +23,14 @@ public sealed class ProtocolOptions
     /// a key was registered) are still verified.
     /// </summary>
     public bool RequireSignedEvents { get; set; }
+
+    /// <summary>
+    /// When true, the first slug segment of every channel ID referenced by PUBLISH,
+    /// SUBSCRIBE, CREATE_CHANNEL, FETCH, or GRANT_ACCESS must match a registered app
+    /// (see <see cref="RegisterAppMessage"/>). When false (default), channels are open
+    /// and any namespace may be used implicitly.
+    /// </summary>
+    public bool RequireAppRegistration { get; set; }
 }
 
 /// <summary>
@@ -35,6 +43,8 @@ public sealed class ProtocolHandler(
     IChannelAccessStore accessStore,
     ConnectionManager connectionManager,
     ILogger<ProtocolHandler> logger,
+    IAppStore? appStore = null,
+    AppRateLimiter? rateLimiter = null,
     IOptions<ProtocolOptions>? protocolOptions = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
@@ -116,6 +126,10 @@ public sealed class ProtocolHandler(
                 await HandleGrantAccessAsync(connection, grant, cancellationToken);
                 break;
 
+            case RegisterAppMessage register:
+                await HandleRegisterAppAsync(connection, register, cancellationToken);
+                break;
+
             default:
                 await connection.SendAsync(
                     new ErrorMessage("UNKNOWN_MESSAGE", "Unrecognized message type"),
@@ -164,6 +178,12 @@ public sealed class ProtocolHandler(
                 await connection.SendAsync(
                     new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{channelId}'"),
                     cancellationToken);
+                continue;
+            }
+
+            if (!await EnsureAppRegisteredAsync(connection, channelId, cancellationToken))
+            {
+                rejected.Add(channelId);
                 continue;
             }
 
@@ -219,6 +239,9 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (!await EnsureAppRegisteredAsync(connection, publish.ChannelId, cancellationToken))
+            return;
+
         if (!await accessStore.CanAccessAsync(publish.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
@@ -269,6 +292,10 @@ public sealed class ProtocolHandler(
                 cancellationToken);
             return;
         }
+
+        // Per-app quota enforcement (TODO #9b: max_payload_bytes + publish rate).
+        if (!await EnforcePublishQuotasAsync(connection, publish, cancellationToken))
+            return;
 
         // If volatile, skip DB storage — just relay to current subscribers
         if (publish.Event.Volatile is true)
@@ -323,6 +350,9 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (!await EnsureAppRegisteredAsync(connection, subscribe.ChannelId, cancellationToken))
+            return;
+
         if (!await accessStore.CanAccessAsync(subscribe.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
@@ -367,6 +397,9 @@ public sealed class ProtocolHandler(
                 cancellationToken);
             return;
         }
+
+        if (!await EnsureAppRegisteredAsync(connection, fetch.ChannelId, cancellationToken))
+            return;
 
         if (!await accessStore.CanAccessAsync(fetch.ChannelId, connection.ClientId, cancellationToken))
         {
@@ -414,6 +447,13 @@ public sealed class ProtocolHandler(
                 cancellationToken);
             return;
         }
+
+        if (!await EnsureAppRegisteredAsync(connection, create.ChannelId, cancellationToken))
+            return;
+
+        // max_channels quota — checked before attempting to create the row.
+        if (!await EnforceMaxChannelsAsync(connection, create.ChannelId, cancellationToken))
+            return;
 
         ChannelVisibility visibility = string.Equals(create.Visibility, "private", StringComparison.OrdinalIgnoreCase)
             ? ChannelVisibility.Private
@@ -483,5 +523,194 @@ public sealed class ProtocolHandler(
         await connection.SendAsync(
             new AckMessage(grant.ChannelId, Guid.Empty, 0),
             cancellationToken);
+    }
+
+    private async Task HandleRegisterAppAsync(
+        ClientConnection connection,
+        RegisterAppMessage register,
+        CancellationToken cancellationToken)
+    {
+        if (connection.ClientId is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("HELLO_REQUIRED", "Must send HELLO before REGISTER_APP"),
+                cancellationToken);
+            return;
+        }
+
+        if (!AppId.IsValid(register.AppId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_APP", $"Invalid app ID: '{register.AppId}'"),
+                cancellationToken);
+            return;
+        }
+
+        if (appStore is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("APPS_NOT_SUPPORTED", "Server does not have an app store configured"),
+                cancellationToken);
+            return;
+        }
+
+        try
+        {
+            await appStore.RegisterAsync(register.AppId, connection.ClientId, cancellationToken);
+        }
+        catch (AppAlreadyRegisteredException)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("DUPLICATE_APP", $"App '{register.AppId}' is already registered"),
+                cancellationToken);
+            return;
+        }
+
+        await connection.SendAsync(
+            new AckMessage(register.AppId, Guid.Empty, 0),
+            cancellationToken);
+
+        logger.LogInformation(
+            "App registered: {AppId} owned by {ClientId}",
+            register.AppId, connection.ClientId);
+    }
+
+    /// <summary>
+    /// When app registration is required, returns false (and sends an ERROR frame) if the
+    /// channel's app namespace is not registered. When not required, always returns true.
+    /// </summary>
+    private async Task<bool> EnsureAppRegisteredAsync(
+        ClientConnection connection,
+        string channelId,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.RequireAppRegistration || appStore is null)
+            return true;
+
+        string? appId = AppId.ExtractFromChannelId(channelId);
+        if (appId is null || !AppId.IsValid(appId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("UNKNOWN_APP", $"Channel '{channelId}' has no valid app namespace"),
+                cancellationToken);
+            return false;
+        }
+
+        if (!await appStore.ExistsAsync(appId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("UNKNOWN_APP", $"App '{appId}' is not registered"),
+                cancellationToken);
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Enforces the publish-time per-app quotas: <c>max_payload_bytes</c> (estimated as the
+    /// UTF-8 byte length of <c>payload</c> + <c>metadata</c>) and <c>publish_rate_per_minute</c>
+    /// (token bucket keyed by <c>(appId, clientId)</c>). No-op when the channel's app is
+    /// unregistered or has no quotas set. Sends an ERROR frame and returns false on rejection.
+    /// </summary>
+    private async Task<bool> EnforcePublishQuotasAsync(
+        ClientConnection connection,
+        PublishMessage publish,
+        CancellationToken cancellationToken)
+    {
+        if (appStore is null)
+            return true;
+
+        string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
+        if (appId is null)
+            return true;
+
+        AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
+        if (app is null)
+            return true; // unknown apps are either rejected upstream or grandfathered
+
+        AppQuotas quotas = app.Quotas;
+
+        if (quotas.MaxPayloadBytes is int maxBytes)
+        {
+            int size = EstimatePayloadBytes(publish.Event);
+            if (size > maxBytes)
+            {
+                await connection.SendAsync(
+                    new ErrorMessage(
+                        "QUOTA_EXCEEDED",
+                        $"Event payload ({size} B) exceeds max_payload_bytes ({maxBytes} B) for app '{appId}'"),
+                    cancellationToken);
+                return false;
+            }
+        }
+
+        if (rateLimiter is not null &&
+            quotas.PublishRatePerMinute is int rate &&
+            !string.IsNullOrEmpty(connection.ClientId))
+        {
+            if (!rateLimiter.TryAcquire(appId, connection.ClientId, rate))
+            {
+                await connection.SendAsync(
+                    new ErrorMessage(
+                        "RATE_LIMITED",
+                        $"Publish rate exceeded ({rate}/min) for client on app '{appId}'"),
+                    cancellationToken);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Enforces <c>max_channels</c> on CREATE_CHANNEL. Counts existing channels in the app
+    /// namespace and rejects if the configured limit would be exceeded.
+    /// </summary>
+    private async Task<bool> EnforceMaxChannelsAsync(
+        ClientConnection connection,
+        string channelId,
+        CancellationToken cancellationToken)
+    {
+        if (appStore is null)
+            return true;
+
+        string? appId = AppId.ExtractFromChannelId(channelId);
+        if (appId is null)
+            return true;
+
+        AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
+        if (app is null || app.Quotas.MaxChannels is not int max)
+            return true;
+
+        int current = await accessStore.CountChannelsByAppAsync(appId, cancellationToken);
+        if (current >= max)
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "QUOTA_EXCEEDED",
+                    $"App '{appId}' already owns {current} channels (max_channels = {max})"),
+                cancellationToken);
+            return false;
+        }
+
+        return true;
+    }
+
+    private static int EstimatePayloadBytes(VestaEvent evt)
+    {
+        // The signing/wire form of payload + metadata is what counts toward the byte budget.
+        // GetRawText() is the JSON text as it sits in the message buffer.
+        int total = 0;
+        try { total += System.Text.Encoding.UTF8.GetByteCount(evt.Payload.GetRawText()); }
+        catch (InvalidOperationException) { /* default JsonElement — counts as 0 */ }
+
+        if (evt.Metadata is { } md)
+        {
+            try { total += System.Text.Encoding.UTF8.GetByteCount(md.GetRawText()); }
+            catch (InvalidOperationException) { /* default — 0 */ }
+        }
+
+        return total;
     }
 }

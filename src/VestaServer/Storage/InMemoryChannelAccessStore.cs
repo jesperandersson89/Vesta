@@ -80,6 +80,18 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.CompletedTask;
   }
 
+  public Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
+  {
+    string prefix = appId + "/";
+    int count = 0;
+    foreach (string id in _channels.Keys)
+    {
+      if (id == appId || id.StartsWith(prefix, StringComparison.Ordinal))
+        count++;
+    }
+    return Task.FromResult(count);
+  }
+
   /// <summary>
   /// Records an implicit channel creation (public) when an event is appended to a previously unknown channel.
   /// Idempotent.

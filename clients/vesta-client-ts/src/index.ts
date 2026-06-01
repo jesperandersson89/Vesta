@@ -36,6 +36,7 @@ export type {
     GrantAccessMessage,
     HelloMessage,
     PublishMessage,
+    RegisterAppMessage,
     SequencedEvent,
     ServerMessage,
     SubscribeMessage,

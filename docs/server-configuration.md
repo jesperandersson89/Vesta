@@ -27,6 +27,7 @@ The in-memory backend is intended for development and tests only — it loses ev
 {
     "Protocol": {
         "RequireSignedEvents": false,
+        "RequireAppRegistration": false,
     },
 }
 ```
@@ -45,6 +46,34 @@ When `Protocol:RequireSignedEvents = true`, the server additionally:
 - Rejects any `PUBLISH` whose event is unsigned, regardless of whether the client previously registered a key.
 
 Use the strict mode for production. Leave it off for local development with the demo CLIs.
+
+### App registration
+
+A Vesta server can be configured to require every channel namespace to belong to a registered **app**. The app namespace is the first slug segment of a channel ID (e.g. `myapp` in `myapp/chat/general`).
+
+With `Protocol:RequireAppRegistration = true`, the server rejects `PUBLISH`, `SUBSCRIBE`, `FETCH`, `CREATE_CHANNEL`, and resume-on-`HELLO` operations whose channel namespace is not registered, with an `ERROR { code: "UNKNOWN_APP" }` frame.
+
+A client registers an app with `REGISTER_APP { appId }`. The connecting client becomes the app owner. Re-registering an existing app returns `ERROR { code: "DUPLICATE_APP" }`.
+
+App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also reserves columns for per-app quotas and rate limits (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, …) — these are not enforced yet (TODO #9b).
+
+Leave registration off in development. Turn it on for shared / multi-tenant deployments where you want explicit ownership of namespaces.
+
+### App quotas & rate limits
+
+Three per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`):
+
+| Column                    | Enforced where                  | Error frame on breach              |
+| ------------------------- | ------------------------------- | ---------------------------------- |
+| `max_payload_bytes`       | `PUBLISH` (payload + metadata)  | `ERROR { code: "QUOTA_EXCEEDED" }` |
+| `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`) | `ERROR { code: "RATE_LIMITED" }`   |
+| `max_channels`            | `CREATE_CHANNEL`                | `ERROR { code: "QUOTA_EXCEEDED" }` |
+
+`publish_rate_per_minute` uses an in-memory token bucket per `(appId, clientId)` — good enough for a single-host relay (multi-host needs a shared backend, tracked under TODO #15). The bucket refills continuously at `rate / 60` tokens per second and caps at the configured rate.
+
+A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
+
+Reserved columns not yet enforced: `max_events_per_channel`, `retention_days`, `total_storage_bytes`. They will pair with a background pruner / accounting service in a follow-up slice.
 
 ## `EventCleanup` (Postgres only)
 
@@ -101,6 +130,7 @@ dotnet ef migrations add <Name> --project src/VestaServer/VestaServer.csproj
     },
     "Protocol": {
         "RequireSignedEvents": true,
+        "RequireAppRegistration": true,
     },
     "EventCleanup": {
         "Enabled": true,

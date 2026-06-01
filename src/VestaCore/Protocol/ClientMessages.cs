@@ -33,3 +33,14 @@ public sealed record GrantAccessMessage(
     string Role                                     // "member" | "admin"
 ) : ProtocolMessage;
 
+/// <summary>
+/// CLIENT → SERVER: Register an app namespace. The first slug segment of any
+/// channel ID belongs to an app namespace; when the server is configured with
+/// <c>Vesta:RequireAppRegistration=true</c>, all channel-creating operations
+/// (PUBLISH, SUBSCRIBE, CREATE_CHANNEL) reject channels whose app namespace
+/// has not been registered. The connecting client becomes the app owner.
+/// </summary>
+public sealed record RegisterAppMessage(
+    string AppId
+) : ProtocolMessage;
+

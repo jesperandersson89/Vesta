@@ -83,6 +83,12 @@ export interface GrantAccessMessage {
     role: "member" | "admin";
 }
 
+/** Client → Server: Register an app namespace. The connecting client becomes the owner. */
+export interface RegisterAppMessage {
+    type: "REGISTER_APP";
+    appId: string;
+}
+
 /** Server → Client: Handshake confirmation. */
 export interface WelcomeMessage {
     type: "WELCOME";
@@ -129,7 +135,8 @@ export type ClientMessage =
     | UnsubscribeMessage
     | FetchMessage
     | CreateChannelMessage
-    | GrantAccessMessage;
+    | GrantAccessMessage
+    | RegisterAppMessage;
 
 /** Union of all server → client messages. */
 export type ServerMessage =

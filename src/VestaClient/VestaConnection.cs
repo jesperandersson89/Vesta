@@ -305,6 +305,18 @@ public sealed class VestaConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Register an app namespace. The first slug segment of every channel ID belongs to an app.
+    /// When the server is configured with <c>Vesta:RequireAppRegistration=true</c>, the app must
+    /// be registered before publishing or subscribing on any channel in its namespace.
+    /// The connecting client becomes the owner.
+    /// </summary>
+    public async Task RegisterAppAsync(string appId, CancellationToken cancellationToken = default)
+    {
+        RegisterAppMessage message = new(appId);
+        await SendAsync(message, cancellationToken);
+    }
+
+    /// <summary>
     /// Gracefully disconnect from the server.
     /// Sends a close frame and waits for the receive loop to finish naturally.
     /// </summary>

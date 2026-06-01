@@ -55,6 +55,13 @@ public interface IChannelAccessStore
       string clientId,
       string role,
       CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Count channels belonging to the given app namespace. A channel belongs to the app
+  /// when its ID equals <paramref name="appId"/> or starts with <c>"{appId}/"</c>.
+  /// Used by per-app quota enforcement (max_channels).
+  /// </summary>
+  Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default);
 }
 
 public sealed class ChannelAlreadyExistsException(string channelId)

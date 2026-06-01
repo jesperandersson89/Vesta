@@ -23,6 +23,7 @@ if (useInMemory)
     // Explicit in-memory mode (for tests or local development without DB)
     builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
     builder.Services.AddSingleton<IChannelAccessStore, InMemoryChannelAccessStore>();
+    builder.Services.AddSingleton<IAppStore, InMemoryAppStore>();
 }
 else if (!string.IsNullOrEmpty(connectionString))
 {
@@ -35,6 +36,7 @@ else if (!string.IsNullOrEmpty(connectionString))
 
     builder.Services.AddSingleton<IEventStore, NpgsqlEventStore>();
     builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
+    builder.Services.AddSingleton<IAppStore, NpgsqlAppStore>();
 
     // Background sweep for events past their TTL. Opt-in via EventCleanup:Enabled.
     builder.Services.Configure<ExpiredEventCleanupOptions>(builder.Configuration.GetSection("EventCleanup"));
@@ -48,6 +50,7 @@ else
 }
 
 builder.Services.AddSingleton<ConnectionManager>();
+builder.Services.AddSingleton<AppRateLimiter>();
 builder.Services.AddTransient<ProtocolHandler>();
 
 // Protocol options (e.g. require all events to be signed).

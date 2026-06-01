@@ -125,7 +125,22 @@ The store keys snapshots by `(channelId, projectionId)` — a single channel may
 
 `ProjectionCheckpoint(string ChannelId, long LastSequence)` remains available as a smaller record if you want to track sequence positions without state — but for the common case, `Snapshot()` carries both.
 
-> **TS / Python:** Snapshot APIs are not yet ported. Tracked as a follow-up to TODO #10 in [PLANNING.md](../PLANNING.md).
+### Choosing a storage backend
+
+`IProjectionStore` is deliberately storage-agnostic — the SQLite default is just what we ship. Plug in whatever fits your environment:
+
+| Environment                 | Recommended backend                                                 | Why                                                             |
+| --------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
+| .NET desktop / CLI / server | `SqliteProjectionStore` (default)                                   | Embedded, transactional, single file — already there            |
+| .NET AOT / Blazor-WASM      | Custom impl over LiteDB or files                                    | Avoids the native SQLite dependency                             |
+| Browser (TS)                | IndexedDB (planned)                                                 | Async, persistent, no extra deps, no native SQLite-WASM bundle  |
+| Node (TS)                   | `better-sqlite3` or flat JSON dir                                   | Snapshots are small — a directory of JSON files is often enough |
+| Python                      | stdlib `sqlite3`                                                    | Snapshots are small and SQLite is in the stdlib                 |
+| Tests / ephemeral           | In-memory SQLite (`CreateInMemory()`) or a `Dictionary`-backed impl | Zero setup                                                      |
+
+Anything that can durably store `(channelId, projectionId) → (lastSequence, opaqueJson)` works. Redis, a remote API, or a flat file directory are all valid — implement `IProjectionStore` and pass it where the default would go.
+
+> **TS / Python:** Snapshot APIs are not yet ported. The TS port will use **IndexedDB** in the browser (not SQLite-WASM — smaller bundle, no native deps). Tracked as a follow-up to TODO #10 in [PLANNING.md](../PLANNING.md).
 
 ## Thread safety
 

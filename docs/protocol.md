@@ -30,15 +30,16 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 
 ## Client → Server messages
 
-| `$type`          | Record                 | Purpose                                                                                                          |
-| ---------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `HELLO`          | `HelloMessage`         | Handshake. Declares `clientId`, channels to resume, last-seen sequence per channel, optional Ed25519 public key. |
-| `PUBLISH`        | `PublishMessage`       | Append an event to a channel. Server validates, assigns sequence, broadcasts.                                    |
-| `SUBSCRIBE`      | `SubscribeMessage`     | Subscribe to a channel, optionally resuming from `fromSequence`.                                                 |
-| `UNSUBSCRIBE`    | `UnsubscribeMessage`   | Stop receiving real-time events for a channel.                                                                   |
-| `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                          |
-| `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                  |
-| `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin` role on a private channel.                                                    |
+| `$type`          | Record                 | Purpose                                                                                                                                                |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `HELLO`          | `HelloMessage`         | Handshake. Declares `clientId`, channels to resume, last-seen sequence per channel, optional Ed25519 public key.                                       |
+| `PUBLISH`        | `PublishMessage`       | Append an event to a channel. Server validates, assigns sequence, broadcasts.                                                                          |
+| `SUBSCRIBE`      | `SubscribeMessage`     | Subscribe to a channel, optionally resuming from `fromSequence`.                                                                                       |
+| `UNSUBSCRIBE`    | `UnsubscribeMessage`   | Stop receiving real-time events for a channel.                                                                                                         |
+| `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                                                                |
+| `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                                                        |
+| `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin` role on a private channel.                                                                                          |
+| `REGISTER_APP`   | `RegisterAppMessage`   | Register an app namespace (`appId`). Connecting client becomes the app owner. See [server-configuration.md](server-configuration.md#app-registration). |
 
 ## Server → Client messages
 
