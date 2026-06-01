@@ -46,6 +46,17 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+## Python (for vesta-client-py)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 ## Docker
 docker-compose.override.yml
 
