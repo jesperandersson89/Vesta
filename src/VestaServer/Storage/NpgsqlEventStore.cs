@@ -16,6 +16,15 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
     public async Task<SequencedEvent> AppendAsync(VestaEvent evt, CancellationToken cancellationToken = default)
     {
         await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(cancellationToken);
+
+        // Fast path: idempotent dedup on event id. A client that didn't see an ACK
+        // and republishes the same event must get back the original sequence — not
+        // a unique-violation error and not a fresh sequence. Cheap SELECT before
+        // the transactional INSERT path.
+        SequencedEvent? existing = await TryGetByIdAsync(connection, evt.Id, cancellationToken);
+        if (existing is not null)
+            return existing;
+
         await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         // Ensure channel exists (implicit creation per protocol spec)
@@ -64,10 +73,44 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
         cmd.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = receivedAt });
         cmd.Parameters.Add(new NpgsqlParameter { Value = expiresAt.HasValue ? expiresAt.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.TimestampTz });
 
-        await cmd.ExecuteNonQueryAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        try
+        {
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // Race: another concurrent publish of the same event id won. Roll back
+            // our doomed transaction and return the winning row's sequence.
+            await transaction.RollbackAsync(cancellationToken);
+            SequencedEvent? winner = await TryGetByIdAsync(connection, evt.Id, cancellationToken);
+            if (winner is not null)
+                return winner;
+            throw; // shouldn't happen — unique violation but no row?
+        }
 
         return new SequencedEvent(evt, sequence, receivedAt);
+    }
+
+    /// <summary>
+    /// Returns the stored event with the given id, or <c>null</c> if not present.
+    /// Used for idempotent <see cref="AppendAsync"/> dedup on retry / dropped-ACK.
+    /// </summary>
+    private static async Task<SequencedEvent?> TryGetByIdAsync(
+        NpgsqlConnection connection,
+        Guid eventId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id, channel_id, sequence, timestamp, client_id, event_type, payload, parent_id, signature, received_at
+            FROM events WHERE id = $1
+            """;
+        await using NpgsqlCommand cmd = new(sql, connection);
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = eventId });
+        await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+        return ReadSequencedEvent(reader);
     }
 
     public async Task<IReadOnlyList<SequencedEvent>> GetEventsAsync(

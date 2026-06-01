@@ -185,8 +185,11 @@ public sealed class SqliteClientEventStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task GetPendingOutboxAsync_ReturnsOnlyPending()
+    public async Task GetPendingOutboxAsync_ReturnsPendingAndSent()
     {
+        // Both 'pending' and 'sent' entries must be re-flushed on reconnect —
+        // server-side dedup on event id makes re-sending 'sent' entries safe and
+        // recovers from a process that died between SEND and ACK.
         VestaEvent evt1 = CreateEvent("test/outbox-filter");
         VestaEvent evt2 = CreateEvent("test/outbox-filter");
 
@@ -195,8 +198,11 @@ public sealed class SqliteClientEventStoreTests : IDisposable
         await _store.MarkOutboxSentAsync(evt1.Id);
 
         IReadOnlyList<OutboxEntry> pending = await _store.GetPendingOutboxAsync();
-        Assert.Single(pending);
-        Assert.Equal(evt2.Id, pending[0].Event.Id);
+        Assert.Equal(2, pending.Count);
+        OutboxEntry sentEntry = pending.Single(e => e.Event.Id == evt1.Id);
+        OutboxEntry pendingEntry = pending.Single(e => e.Event.Id == evt2.Id);
+        Assert.Equal(OutboxStatus.Sent, sentEntry.Status);
+        Assert.Equal(OutboxStatus.Pending, pendingEntry.Status);
     }
 
     [Fact]
@@ -207,8 +213,11 @@ public sealed class SqliteClientEventStoreTests : IDisposable
 
         await _store.MarkOutboxSentAsync(evt.Id);
 
+        // Entry stays in the flush set with status 'sent' until confirmed,
+        // so it gets re-published after a crash.
         IReadOnlyList<OutboxEntry> pending = await _store.GetPendingOutboxAsync();
-        Assert.Empty(pending);
+        Assert.Single(pending);
+        Assert.Equal(OutboxStatus.Sent, pending[0].Status);
     }
 
     [Fact]

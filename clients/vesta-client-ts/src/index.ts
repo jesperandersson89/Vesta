@@ -16,6 +16,8 @@ export {
     LwwRegister,
 } from "./projections/index.js";
 export type { ProjectionCheckpoint } from "./projections/index.js";
+export { InMemoryClientEventStore } from "./storage.js";
+export type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 export {
     base64UrlToBytes,
     bytesToBase64Url,

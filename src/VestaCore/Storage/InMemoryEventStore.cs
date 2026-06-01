@@ -70,6 +70,15 @@ public sealed class InMemoryEventStore : IEventStore
         {
             lock (_lock)
             {
+                // Idempotent on event id: a client that didn't see an ACK and
+                // republishes the same event must get the original sequence back,
+                // not a fresh one. Matches NpgsqlEventStore behaviour.
+                foreach (StoredEvent existing in _events)
+                {
+                    if (existing.Sequenced.Event.Id == evt.Id)
+                        return existing.Sequenced;
+                }
+
                 if (evt.Replace)
                 {
                     // Mark all previous events of same (clientId, eventType) as superseded

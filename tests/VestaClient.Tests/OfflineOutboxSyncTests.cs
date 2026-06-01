@@ -185,6 +185,103 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         await publisher.DisposeAsync();
     }
 
+    /// <summary>
+    /// Crash-after-send simulation: a previous session sent a PUBLISH and marked
+    /// the outbox entry 'sent' before the ACK landed (or the process died).
+    /// A fresh connection must re-flush the 'sent' entry, the server must dedup
+    /// it (idempotent append on event id), and the entry must drain to confirmed.
+    /// </summary>
+    [Fact]
+    public async Task SentButUnconfirmed_RepublishedOnReconnect_DedupedByServer()
+    {
+        using SqliteClientEventStore store = SqliteClientEventStore.CreateInMemory();
+
+        // Simulate a previous session: enqueue → mark 'sent' (but no confirmation).
+        VestaEvent evt = CreateEvent("test/crash-recover", clientId: "crash-client");
+        await store.EnqueueOutboxAsync(evt);
+        await store.MarkOutboxSentAsync(evt.Id);
+
+        // Sanity: the 'sent' entry must show up as still pending-to-confirm.
+        IReadOnlyList<OutboxEntry> beforeReconnect = await store.GetPendingOutboxAsync();
+        Assert.Single(beforeReconnect);
+        Assert.Equal(OutboxStatus.Sent, beforeReconnect[0].Status);
+
+        // Reconnect with the same store — VestaConnection.FlushOutboxAsync should
+        // re-publish the 'sent' entry and the ACK should drain it.
+        Uri wsUri = new(_factory.Server.BaseAddress.ToString().Replace("http://", "ws://") + "ws");
+        Microsoft.AspNetCore.TestHost.WebSocketClient wsClient = _factory.Server.CreateWebSocketClient();
+
+        WebSocket socket = await wsClient.ConnectAsync(
+            new Uri(_factory.Server.BaseAddress, "/ws"),
+            CancellationToken.None);
+        VestaTestClient client = new(socket, "crash-client", store);
+        await client.HandshakeAsync(["test/crash-recover"]);
+
+        ConcurrentQueue<AckMessage> acks = new();
+        client.OnAck += ack => acks.Enqueue(ack);
+
+        // Mimic VestaConnection.FlushOutboxAsync exactly: include 'sent' entries.
+        IReadOnlyList<OutboxEntry> pending = await store.GetPendingOutboxAsync();
+        Assert.Single(pending);
+        foreach (OutboxEntry entry in pending)
+        {
+            await client.PublishAsync(entry.Event);
+            await store.MarkOutboxSentAsync(entry.Event.Id);
+        }
+
+        await WaitForConditionAsync(() => !acks.IsEmpty);
+        Assert.True(acks.TryDequeue(out AckMessage? ack));
+        Assert.Equal(evt.Id, ack.EventId);
+
+        // Confirm the entry.
+        await store.MarkOutboxConfirmedAsync(ack.EventId);
+        Assert.Empty(await store.GetPendingOutboxAsync());
+
+        await client.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Server-side dedup: republishing the same event in the same session must
+    /// return the same sequence in both ACKs and store the event only once.
+    /// </summary>
+    [Fact]
+    public async Task DuplicatePublish_ReceivesSameSequence_NoDoubleStore()
+    {
+        Microsoft.AspNetCore.TestHost.WebSocketClient wsClient = _factory.Server.CreateWebSocketClient();
+        Uri wsUri = new(_factory.Server.BaseAddress, "/ws");
+
+        WebSocket socket = await wsClient.ConnectAsync(wsUri, CancellationToken.None);
+        VestaTestClient client = new(socket, "retry-client");
+        await client.HandshakeAsync(["test/retry-dedup"]);
+
+        ConcurrentQueue<AckMessage> acks = new();
+        client.OnAck += ack => acks.Enqueue(ack);
+
+        VestaEvent evt = CreateEvent("test/retry-dedup", clientId: "retry-client");
+
+        // First publish.
+        await client.PublishAsync(evt);
+        await WaitForConditionAsync(() => acks.Count >= 1);
+        Assert.True(acks.TryDequeue(out AckMessage? firstAck));
+
+        // Second publish of the same event (simulating "ACK was dropped, retry").
+        await client.PublishAsync(evt);
+        await WaitForConditionAsync(() => acks.Count >= 1);
+        Assert.True(acks.TryDequeue(out AckMessage? secondAck));
+
+        Assert.Equal(firstAck.EventId, secondAck.EventId);
+        Assert.Equal(firstAck.Sequence, secondAck.Sequence);
+
+        // And a third event must take sequence N+1, not N+2.
+        VestaEvent next = CreateEvent("test/retry-dedup", clientId: "retry-client");
+        await client.PublishAsync(next);
+        await WaitForConditionAsync(() => acks.Count >= 1);
+        Assert.True(acks.TryDequeue(out AckMessage? nextAck));
+        Assert.Equal(firstAck.Sequence + 1, nextAck.Sequence);
+
+        await client.DisposeAsync();
+    }
+
     // --- Helpers ---
 
     private static VestaEvent CreateEvent(string channelId, string clientId = "test-client-id")

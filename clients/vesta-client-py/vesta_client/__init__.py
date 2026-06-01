@@ -17,6 +17,13 @@ from vesta_client.projections import (
     ProjectionCheckpoint,
 )
 from vesta_client.signing import build_signing_input, sign_event
+from vesta_client.storage import (
+    ClientEventStore,
+    InMemoryClientEventStore,
+    OutboxEntry,
+    OutboxStatus,
+    SqliteClientEventStore,
+)
 from vesta_client.types import (
     AckMessage,
     ErrorMessage,
@@ -31,16 +38,21 @@ from vesta_client.types import (
 __all__ = [
     "AckMessage",
     "AppendOnlyLog",
+    "ClientEventStore",
     "ErrorMessage",
     "EventMessage",
     "EventReducer",
     "EventsBatchMessage",
+    "InMemoryClientEventStore",
     "LwwMap",
     "LwwMapUpdate",
     "LwwRegister",
+    "OutboxEntry",
+    "OutboxStatus",
     "ProjectionCheckpoint",
     "SequencedEvent",
     "ServerMessage",
+    "SqliteClientEventStore",
     "VestaConnection",
     "VestaEvent",
     "VestaIdentity",

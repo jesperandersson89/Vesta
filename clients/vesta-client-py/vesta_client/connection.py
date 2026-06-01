@@ -6,16 +6,19 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
     AckMessage,
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
+    SequencedEvent,
     ServerMessage,
     VestaEvent,
     WelcomeMessage,
@@ -44,6 +47,7 @@ class VestaConnection:
         max_reconnect_delay: float = 30.0,
         last_sequences: dict[str, int] | None = None,
         public_key: str | None = None,
+        local_store: ClientEventStore | None = None,
     ):
         self.server_url = server_url
         self.client_id = client_id
@@ -55,6 +59,8 @@ class VestaConnection:
         if last_sequences:
             self._last_sequences.update(last_sequences)
         self.public_key = public_key
+        self._local_store = local_store
+        self._pending_publishes: dict[str, VestaEvent] = {}
 
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
@@ -140,6 +146,10 @@ class VestaConnection:
         # Start receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
 
+        # Flush any pending outbox events
+        if self._local_store is not None:
+            await self._flush_outbox()
+
     async def disconnect(self) -> None:
         """Gracefully close the connection."""
         self._is_connected = False
@@ -163,15 +173,32 @@ class VestaConnection:
     # ── Publishing ────────────────────────────────────────────────────────────
 
     async def publish(self, event: VestaEvent) -> None:
-        """Publish a VestaEvent to its channel."""
-        if not self._ws or not self._is_connected:
-            raise RuntimeError("Not connected")
-        msg = {
-            "type": "PUBLISH",
-            "channelId": event.channel_id,
-            "event": event.to_dict(),
-        }
-        await self._ws.send(json.dumps(msg))
+        """
+        Publish a VestaEvent to its channel.
+
+        If connected, sends immediately. If disconnected and a ``local_store``
+        is configured, the event is enqueued in the outbox and flushed on the
+        next successful connect. If disconnected and no store is configured,
+        raises :class:`RuntimeError`.
+        """
+        if self._ws and self._is_connected:
+            if self._local_store is not None:
+                self._pending_publishes[event.id] = event
+            msg = {
+                "type": "PUBLISH",
+                "channelId": event.channel_id,
+                "event": event.to_dict(),
+            }
+            await self._ws.send(json.dumps(msg))
+            return
+
+        if self._local_store is not None:
+            await self._local_store.enqueue_outbox(event)
+            return
+
+        raise RuntimeError(
+            "Not connected and no local_store configured for offline publishing"
+        )
 
     # ── Subscriptions ─────────────────────────────────────────────────────────
 
@@ -306,17 +333,68 @@ class VestaConnection:
         match msg:
             case EventMessage() as m:
                 self.update_sequence(m.channel_id, m.sequence)
+                if self._local_store is not None:
+                    asyncio.create_task(
+                        self._local_store.store_event(
+                            SequencedEvent(
+                                event=m.event,
+                                sequence=m.sequence,
+                                received_at=m.received_at,
+                            )
+                        )
+                    )
                 if self._on_event:
                     self._on_event(m)
             case EventsBatchMessage() as m:
                 if m.events:
                     self.update_sequence(m.channel_id, m.events[-1].sequence)
+                    if self._local_store is not None:
+                        asyncio.create_task(self._local_store.store_events(m.events))
                 if self._on_events_batch:
                     self._on_events_batch(m)
             case AckMessage() as m:
                 self.update_sequence(m.channel_id, m.sequence)
+                if self._local_store is not None:
+                    asyncio.create_task(self._cache_event_on_ack(m))
                 if self._on_ack:
                     self._on_ack(m)
             case ErrorMessage() as m:
                 if self._on_error:
                     self._on_error(m)
+
+    async def _cache_event_on_ack(self, ack: AckMessage) -> None:
+        if self._local_store is None:
+            return
+        evt = self._pending_publishes.pop(ack.event_id, None)
+        if evt is not None:
+            await self._local_store.store_event(
+                SequencedEvent(
+                    event=evt,
+                    sequence=ack.sequence,
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        await self._local_store.mark_outbox_confirmed(ack.event_id)
+
+    async def _flush_outbox(self) -> None:
+        if self._local_store is None or self._ws is None:
+            return
+        pending = await self._local_store.get_pending_outbox()
+        for entry in pending:
+            self._pending_publishes[entry.event.id] = entry.event
+            try:
+                await self._ws.send(
+                    json.dumps(
+                        {
+                            "type": "PUBLISH",
+                            "channelId": entry.event.channel_id,
+                            "event": entry.event.to_dict(),
+                        }
+                    )
+                )
+                await self._local_store.mark_outbox_sent(entry.event.id)
+            except Exception:
+                # Socket dropped mid-flush. Remaining entries stay in outbox
+                # and will be retried on the next successful connect.
+                self._pending_publishes.pop(entry.event.id, None)
+                return

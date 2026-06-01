@@ -41,7 +41,11 @@ public interface IClientEventStore
     Task EnqueueOutboxAsync(VestaEvent evt, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Get all pending outbox events ordered by creation time.
+    /// Get all outbox entries that have not yet been confirmed by the server,
+    /// ordered by creation time. Includes both <see cref="OutboxStatus.Pending"/>
+    /// (never sent) and <see cref="OutboxStatus.Sent"/> (sent but the process /
+    /// connection died before the ACK landed). Server-side appends are idempotent
+    /// on event id, so re-sending a <c>Sent</c> entry is safe.
     /// </summary>
     Task<IReadOnlyList<OutboxEntry>> GetPendingOutboxAsync(CancellationToken cancellationToken = default);
 

@@ -234,17 +234,22 @@ public sealed class NpgsqlEventStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AppendAsync_RejectsDuplicateEventId()
+    public async Task AppendAsync_DuplicateEventId_IsIdempotent()
     {
+        // Re-appending the same event id (e.g. client retried after a dropped ACK)
+        // must NOT throw and must NOT allocate a new sequence \u2014 the original
+        // SequencedEvent is returned.
         Guid id = Guid.NewGuid();
         VestaEvent evt1 = new(id, "test/dup", DateTimeOffset.UtcNow, "client-001", "test.dup",
             JsonDocument.Parse("{}").RootElement.Clone());
         VestaEvent evt2 = new(id, "test/dup", DateTimeOffset.UtcNow, "client-001", "test.dup",
             JsonDocument.Parse("{}").RootElement.Clone());
 
-        await _store.AppendAsync(evt1);
+        SequencedEvent first = await _store.AppendAsync(evt1);
+        SequencedEvent second = await _store.AppendAsync(evt2);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => _store.AppendAsync(evt2));
+        Assert.Equal(first.Sequence, second.Sequence);
+        Assert.Equal(first.Event.Id, second.Event.Id);
     }
 
     [Fact]
@@ -285,6 +290,35 @@ public sealed class NpgsqlEventStoreTests : IAsyncLifetime
 
         Assert.NotNull(receivedPayload);
         Assert.Contains("test/notify", receivedPayload);
+    }
+
+    [Fact]
+    public async Task AppendAsync_DuplicateEventId_ReturnsOriginalSequence()
+    {
+        VestaEvent evt = CreateEvent("test/dedup");
+
+        SequencedEvent first = await _store.AppendAsync(evt);
+        SequencedEvent second = await _store.AppendAsync(evt);
+
+        Assert.Equal(first.Sequence, second.Sequence);
+        Assert.Equal(first.Event.Id, second.Event.Id);
+        Assert.Equal(1L, await _store.GetLatestSequenceAsync("test/dedup"));
+    }
+
+    [Fact]
+    public async Task AppendAsync_DuplicateAfterOther_DoesNotShiftSequences()
+    {
+        VestaEvent a = CreateEvent("test/dedup-mix");
+        VestaEvent b = CreateEvent("test/dedup-mix");
+
+        SequencedEvent r1 = await _store.AppendAsync(a);
+        SequencedEvent r2 = await _store.AppendAsync(b);
+        SequencedEvent r1Retry = await _store.AppendAsync(a);
+
+        Assert.Equal(1L, r1.Sequence);
+        Assert.Equal(2L, r2.Sequence);
+        Assert.Equal(1L, r1Retry.Sequence);
+        Assert.Equal(2L, await _store.GetLatestSequenceAsync("test/dedup-mix"));
     }
 
     private static VestaEvent CreateEvent(string channelId, string eventType = "test.event")

@@ -154,10 +154,13 @@ public sealed class SqliteClientEventStore : IClientEventStore, IDisposable
     public Task<IReadOnlyList<OutboxEntry>> GetPendingOutboxAsync(CancellationToken cancellationToken = default)
     {
         using SqliteCommand cmd = _connection.CreateCommand();
+        // Returns both 'pending' (never sent) AND 'sent' (sent but not yet confirmed
+        // — e.g. crash or disconnect between SEND and ACK). The server-side AppendAsync
+        // is idempotent on event id, so re-flushing a 'sent' entry on reconnect is safe.
         cmd.CommandText = """
             SELECT id, channel_id, timestamp, client_id, event_type, payload, parent_id, signature, created_at, status
             FROM outbox
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'sent')
             ORDER BY created_at ASC
             """;
 

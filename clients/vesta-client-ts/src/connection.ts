@@ -1,3 +1,4 @@
+import type { ClientEventStore } from "./storage.js";
 import type {
     AckMessage,
     ClientMessage,
@@ -71,6 +72,16 @@ export interface VestaConnectionOptions {
 
     /** Optional Ed25519 public key (base64url). */
     publicKey?: string;
+
+    /**
+     * Optional local store. When provided, events published while disconnected
+     * are enqueued and flushed on the next WELCOME. Events received from the
+     * server (EVENT, EVENTS_BATCH, ACK) are also cached locally.
+     *
+     * Server-side appends are idempotent on event id, so a publish that died
+     * between SEND and ACK is safely retried on reconnect.
+     */
+    localStore?: ClientEventStore;
 }
 
 // ── Event emitter types ──────────────────────────────────────────────────────
@@ -107,6 +118,8 @@ export class VestaConnection {
     private readonly maxReconnectDelay: number;
     private readonly lastSequences: Record<string, number>;
     private readonly publicKey: string | undefined;
+    private readonly localStore: ClientEventStore | undefined;
+    private readonly pendingPublishes = new Map<string, VestaEvent>();
 
     constructor(options: VestaConnectionOptions) {
         this.serverUrl = options.serverUrl;
@@ -118,6 +131,7 @@ export class VestaConnection {
         this.maxReconnectDelay = options.maxReconnectDelay ?? 30000;
         this.lastSequences = { ...options.lastSequences };
         this.publicKey = options.publicKey;
+        this.localStore = options.localStore;
 
         // Default all channels to sequence 0
         for (const ch of this._channels) {
@@ -210,13 +224,38 @@ export class VestaConnection {
 
     // ── Publishing ───────────────────────────────────────────────────────────
 
-    /** Publish a pre-built event to its channel. */
+    /**
+     * Publish a pre-built event to its channel.
+     *
+     * If connected, sends immediately and — when a `localStore` is configured —
+     * caches the event on ACK.
+     *
+     * If disconnected and a `localStore` is configured, the event is enqueued
+     * in the outbox and flushed on the next WELCOME.
+     *
+     * If disconnected and no `localStore` is configured, throws.
+     */
     publish(event: VestaEvent): void {
-        this.sendRaw({
-            type: "PUBLISH",
-            channelId: event.channelId,
-            event,
-        });
+        if (this._isConnected && this.socket?.readyState === 1) {
+            if (this.localStore) {
+                this.pendingPublishes.set(event.id, event);
+            }
+            this.sendRaw({
+                type: "PUBLISH",
+                channelId: event.channelId,
+                event,
+            });
+            return;
+        }
+
+        if (this.localStore) {
+            void this.localStore.enqueueOutbox(event);
+            return;
+        }
+
+        throw new Error(
+            "Not connected and no localStore configured for offline publishing",
+        );
     }
 
     // ── Subscriptions ────────────────────────────────────────────────────────
@@ -342,10 +381,20 @@ export class VestaConnection {
                 this._channels = [...msg.channels];
                 this.reconnectAttempt = 0;
                 this.emit("connected", msg);
+                if (this.localStore) {
+                    void this.flushOutbox();
+                }
                 break;
 
             case "EVENT":
                 this.updateSequence(msg.channelId, msg.sequence);
+                if (this.localStore) {
+                    void this.localStore.storeEvent({
+                        event: msg.event,
+                        sequence: msg.sequence,
+                        receivedAt: msg.receivedAt,
+                    });
+                }
                 this.emit("event", msg);
                 break;
 
@@ -354,17 +403,58 @@ export class VestaConnection {
                     const lastSeq = msg.events[msg.events.length - 1].sequence;
                     this.updateSequence(msg.channelId, lastSeq);
                 }
+                if (this.localStore && msg.events.length > 0) {
+                    void this.localStore.storeEvents(msg.events);
+                }
                 this.emit("eventsBatch", msg);
                 break;
 
             case "ACK":
                 this.updateSequence(msg.channelId, msg.sequence);
+                if (this.localStore) {
+                    void this.cacheEventOnAck(msg);
+                }
                 this.emit("ack", msg);
                 break;
 
             case "ERROR":
                 this.emit("error", msg);
                 break;
+        }
+    }
+
+    private async cacheEventOnAck(ack: AckMessage): Promise<void> {
+        if (!this.localStore) return;
+        const evt = this.pendingPublishes.get(ack.eventId);
+        if (evt) {
+            this.pendingPublishes.delete(ack.eventId);
+            await this.localStore.storeEvent({
+                event: evt,
+                sequence: ack.sequence,
+                receivedAt: new Date().toISOString(),
+            });
+        }
+        await this.localStore.markOutboxConfirmed(ack.eventId);
+    }
+
+    private async flushOutbox(): Promise<void> {
+        if (!this.localStore) return;
+        const pending = await this.localStore.getPendingOutbox();
+        for (const entry of pending) {
+            this.pendingPublishes.set(entry.event.id, entry.event);
+            try {
+                this.sendRaw({
+                    type: "PUBLISH",
+                    channelId: entry.event.channelId,
+                    event: entry.event,
+                });
+                await this.localStore.markOutboxSent(entry.event.id);
+            } catch {
+                // Socket dropped mid-flush. The remaining entries stay in the
+                // outbox and will be picked up on the next WELCOME.
+                this.pendingPublishes.delete(entry.event.id);
+                return;
+            }
         }
     }
 
