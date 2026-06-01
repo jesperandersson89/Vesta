@@ -1005,10 +1005,10 @@ Vesta/
 ├── examples/                       # ═══ EXAMPLE APPLICATIONS ═══
 │   ├── ChatRoom.CLI/               # C# — real-time chat (fan-out demo)
 │   ├── TodoList.CLI/               # C# — synced todo list (append + LWW demo)
-│   ├── TicTacToe.CLI/              # C# — turn-based multiplayer (ordering demo)
-│   ├── SharedClipboard.CLI/        # C# — cross-device clipboard (replace-semantics)
-│   ├── chat-web/                   # JS — browser chat app (proves JS client works)
-│   └── todo-py/                    # Python — CLI todo app (proves Python client works)
+│   ├── Presence.CLI/               # C# — presence/heartbeat (ephemeral + replace demo)
+│   ├── clipboard-ts/               # TypeScript — shared clipboard (proves TS client works)
+│   ├── collab-edit-py/             # Python — collaborative text editor (tkinter GUI)
+│   └── colorwheel-py/              # Python — color wheel picker (proves Python client works)
 │
 └── tests/
     ├── VestaCore.Tests/
@@ -1027,9 +1027,9 @@ Vesta/
 | C# connect/publish/subscribe API? | `src/VestaClient/` |
 | SQLite client-side storage? | `src/VestaClient/` |
 | "How to build a todo app with Vesta" | `examples/TodoList.CLI/` |
-| "How to build a chat app in JS" | `examples/chat-web/` |
+| "How to build a clipboard sync in TS" | `examples/clipboard-ts/` |
 | Python protocol implementation? | `clients/vesta-client-py/` |
-| Python todo app using the library? | `examples/todo-py/` |
+| Python collab editor using the library? | `examples/collab-edit-py/` |
 
 This separation means:
 - Someone browsing the repo immediately sees what's core vs. what's a demo
@@ -1152,5 +1152,5 @@ Known gaps and deferred work, in rough priority order.
 | 3 | **SDK conflict resolution primitives** | `EventReducer<T>`, `AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>` are described in PLANNING.md but not implemented. Currently each example rolls its own projection. | Would let `TodoListState` and `PresenceState` be replaced with composed SDK primitives. |
 | 4 | **Channel access control** | All channels are open. No shared-secret or invite-only mode implemented. | PLANNING.md § Authentication & Identity has the schema (`channel_access` table). |
 | 5 | **Server-side signature verification** | Server accepts events with any or no signature. The `ProtocolHandler` verifies the public key matches the `clientId` on HELLO but does not verify event signatures on PUBLISH. | Should reject PUBLISH if signature is invalid or missing when the client registered a public key. |
-| 6 | **JS browser client** | `clients/vesta-client-ts/` and `examples/chat-web/` are planned but not started. | Would prove the protocol works cross-language in a browser. |
-| 7 | **Python client** | `clients/vesta-client-py/` and `examples/todo-py/` are planned but not started. | Same as above for Python. |
+| 6 | **Browser example** | `examples/chat-web/` is planned but not started. | Would prove the TS client works in a browser (not just Node.js). |
+| 7 | **CI/CD** | GitHub Actions deploys VestaServer to Azure. Tests run on push. | Testcontainers for PostgreSQL integration tests on the runner. |
