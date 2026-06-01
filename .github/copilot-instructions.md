@@ -105,3 +105,12 @@ Vesta/
 - **Stop and ask** when encountering environment/infrastructure problems (Docker not running, database not reachable, missing tools, permission errors, etc.) — do NOT silently work around them
 - Do not substitute a different tool or approach just because the expected one isn't available — ask the user to fix the environment first
 - If a test or command fails due to external dependencies being unavailable, report the issue clearly and wait for confirmation before proceeding
+
+## EF Core Migrations
+
+**NEVER hand-write migration files.** Always generate them with `dotnet ef migrations add <Name> --project src/VestaServer/VestaServer.csproj`.
+
+- A migration consists of TWO files that must agree: `<timestamp>_<Name>.cs` AND `<timestamp>_<Name>.Designer.cs`. The `.Designer.cs` carries the `[Migration]` attribute and the model snapshot at that revision — without it, EF will not discover the migration and `Database.MigrateAsync()` silently skips it. CI then fails with `column "..." does not exist`.
+- If `dotnet ef` is unavailable, Docker/Postgres is down, or the generation produces an empty `Up`/`Down`, **STOP and ask the user** — do not paper over it by writing migration bodies by hand.
+- If a generated migration is wrong, fix it by adjusting the model + running `dotnet ef migrations remove` and re-adding it. Manual tweaks are only acceptable for cosmetic details on the body (e.g. adding `filter:` to an index) — never for inventing the migration itself or its Designer file.
+- Always verify both files exist (`ls src/VestaServer/Data/Migrations/`) and that `VestaDbContextModelSnapshot.cs` reflects the new schema before committing.
