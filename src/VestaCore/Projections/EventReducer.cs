@@ -63,4 +63,45 @@ public abstract class EventReducer<TState>
 
   /// <summary>Implementations mutate their internal state in response to the event.</summary>
   protected abstract void Reduce(VestaEvent evt);
+
+  /// <summary>
+  /// Capture the current state as a <see cref="ProjectionSnapshot"/>. Override in
+  /// subclasses that want snapshot support; the default throws
+  /// <see cref="SnapshotNotSupportedException"/>.
+  ///
+  /// Implementations should serialize whatever internal state is needed to fully
+  /// reconstruct the reducer (including per-entry timestamps, tombstones, dedup sets,
+  /// etc — not just the public <see cref="State"/> view).
+  /// </summary>
+  public virtual ProjectionSnapshot Snapshot()
+  {
+    throw new SnapshotNotSupportedException(GetType());
+  }
+
+  /// <summary>
+  /// Restore the reducer from a previously captured snapshot. Replaces all internal state
+  /// and sets <see cref="LastSequence"/> to <see cref="ProjectionSnapshot.LastSequence"/>.
+  ///
+  /// Typical use: load snapshot from <c>IProjectionStore</c> on startup, restore the
+  /// reducer, then call <c>FETCH { fromSequence = reducer.LastSequence + 1 }</c> to catch up
+  /// incrementally instead of replaying the whole channel.
+  /// </summary>
+  public virtual void Restore(ProjectionSnapshot snapshot)
+  {
+    ArgumentNullException.ThrowIfNull(snapshot);
+    lock (SyncRoot)
+    {
+      RestoreState(snapshot.StateJson);
+      LastSequence = snapshot.LastSequence;
+    }
+  }
+
+  /// <summary>
+  /// Hook for <see cref="Restore"/> — implementations replace their internal state from the
+  /// JSON produced by their own <see cref="Snapshot"/>. Called under <see cref="SyncRoot"/>.
+  /// </summary>
+  protected virtual void RestoreState(string stateJson)
+  {
+    throw new SnapshotNotSupportedException(GetType());
+  }
 }

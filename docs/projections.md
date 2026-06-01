@@ -101,11 +101,31 @@ public sealed class CounterState : EventReducer<int>
 - Don't advance `LastSequence` yourself; the base class does it after `Reduce` returns successfully (and only for `Apply(SequencedEvent)`, not `ApplyLocal`).
 - See [examples/TodoList.CLI/TodoListState.cs](../examples/TodoList.CLI/TodoListState.cs) for a hand-rolled projection with per-item LWW across multiple fields.
 
-## Checkpointing
+## Snapshotting
 
-`ProjectionCheckpoint(string ChannelId, long LastSequence)` is a small record you can persist alongside your projection's state to skip a full replay on startup. On boot, load your snapshot, then `FETCH { channelId, sinceSequence: checkpoint.LastSequence }` to catch up incrementally.
+Replaying the full event log on every cold start gets expensive fast. The C# SDK persists projection state via `IProjectionStore` (default impl: `SqliteProjectionStore`) so a client can boot, restore, and only fetch events newer than the saved sequence.
 
-The SDK does not yet provide a built-in snapshot store — pick whatever fits your app (JSON file, SQLite row, etc).
+The three built-in reducers (`AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>`) implement `Snapshot()` / `Restore(ProjectionSnapshot)` out of the box. User-defined reducers can opt in by overriding both methods (default throws `SnapshotNotSupportedException`).
+
+```csharp
+using SqliteProjectionStore store = new("Data Source=projections.db");
+LwwMap<string, Heartbeat> presence = new(Project);
+
+// Cold start: restore if we have a snapshot, otherwise start from scratch.
+await store.RestoreAsync("presence/myapp", "presence", presence);
+
+// After connecting, fetch only events newer than what the snapshot already covers.
+await connection.FetchAsync("presence/myapp", fromSequence: presence.LastSequence + 1);
+
+// Periodically (or at shutdown), persist.
+await store.SaveAsync("presence/myapp", "presence", presence);
+```
+
+The store keys snapshots by `(channelId, projectionId)` — a single channel may have multiple projections (e.g. chat history _and_ a presence map) saved independently. The `state_json` blob is opaque to the store; each reducer owns its own serialization format (including timestamps, tombstones, dedup sets — not just the public `State` view).
+
+`ProjectionCheckpoint(string ChannelId, long LastSequence)` remains available as a smaller record if you want to track sequence positions without state — but for the common case, `Snapshot()` carries both.
+
+> **TS / Python:** Snapshot APIs are not yet ported. Tracked as a follow-up to TODO #10 in [PLANNING.md](../PLANNING.md).
 
 ## Thread safety
 

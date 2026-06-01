@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VestaCore.Events;
 
 namespace VestaCore.Projections;
@@ -42,14 +43,17 @@ public sealed class LwwMap<TKey, TValue> : EventReducer<IReadOnlyDictionary<TKey
     where TKey : notnull
 {
   private readonly Func<VestaEvent, LwwMapUpdate<TKey, TValue>?> _project;
+  private readonly JsonSerializerOptions? _serializerOptions;
   private readonly Dictionary<TKey, Entry> _entries = [];
 
   /// <summary>Create a new LWW map.</summary>
   /// <param name="project">Function returning the update an event implies, or <c>null</c> if the event is irrelevant.</param>
-  public LwwMap(Func<VestaEvent, LwwMapUpdate<TKey, TValue>?> project)
+  /// <param name="serializerOptions">Optional STJ options for snapshot serialization.</param>
+  public LwwMap(Func<VestaEvent, LwwMapUpdate<TKey, TValue>?> project, JsonSerializerOptions? serializerOptions = null)
   {
     ArgumentNullException.ThrowIfNull(project);
     _project = project;
+    _serializerOptions = serializerOptions;
   }
 
   /// <inheritdoc />
@@ -104,5 +108,35 @@ public sealed class LwwMap<TKey, TValue> : EventReducer<IReadOnlyDictionary<TKey
     _entries[u.Key] = new Entry(u.IsRemove ? default! : u.Value, evt.Timestamp, u.IsRemove);
   }
 
+  /// <inheritdoc />
+  public override ProjectionSnapshot Snapshot()
+  {
+    lock (SyncRoot)
+    {
+      SnapshotEntry[] entries = new SnapshotEntry[_entries.Count];
+      int i = 0;
+      foreach (KeyValuePair<TKey, Entry> kv in _entries)
+      {
+        entries[i++] = new SnapshotEntry(kv.Key, kv.Value.Value, kv.Value.Timestamp, kv.Value.Tombstoned);
+      }
+      string json = JsonSerializer.Serialize(entries, _serializerOptions);
+      return new ProjectionSnapshot(LastSequence, json);
+    }
+  }
+
+  /// <inheritdoc />
+  protected override void RestoreState(string stateJson)
+  {
+    SnapshotEntry[]? entries = JsonSerializer.Deserialize<SnapshotEntry[]>(stateJson, _serializerOptions)
+      ?? throw new InvalidOperationException("LwwMap snapshot deserialized to null.");
+    _entries.Clear();
+    foreach (SnapshotEntry e in entries)
+    {
+      _entries[e.Key] = new Entry(e.Value, e.Timestamp, e.Tombstoned);
+    }
+  }
+
   private readonly record struct Entry(TValue? Value, DateTimeOffset Timestamp, bool Tombstoned);
+
+  private sealed record SnapshotEntry(TKey Key, TValue? Value, DateTimeOffset Timestamp, bool Tombstoned);
 }

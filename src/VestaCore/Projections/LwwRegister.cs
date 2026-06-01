@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VestaCore.Events;
 
 namespace VestaCore.Projections;
@@ -14,6 +15,7 @@ namespace VestaCore.Projections;
 public sealed class LwwRegister<T> : EventReducer<T?>
 {
   private readonly Func<VestaEvent, T?> _project;
+  private readonly JsonSerializerOptions? _serializerOptions;
   private T? _value;
   private DateTimeOffset _valueTimestamp = DateTimeOffset.MinValue;
 
@@ -21,10 +23,12 @@ public sealed class LwwRegister<T> : EventReducer<T?>
   /// Create a new LWW register.
   /// </summary>
   /// <param name="project">Function returning the new value carried by an event, or <c>null</c> if the event does not affect this register.</param>
-  public LwwRegister(Func<VestaEvent, T?> project)
+  /// <param name="serializerOptions">Optional STJ options for snapshot serialization.</param>
+  public LwwRegister(Func<VestaEvent, T?> project, JsonSerializerOptions? serializerOptions = null)
   {
     ArgumentNullException.ThrowIfNull(project);
     _project = project;
+    _serializerOptions = serializerOptions;
   }
 
   /// <inheritdoc />
@@ -66,4 +70,26 @@ public sealed class LwwRegister<T> : EventReducer<T?>
       _valueTimestamp = evt.Timestamp;
     }
   }
+
+  /// <inheritdoc />
+  public override ProjectionSnapshot Snapshot()
+  {
+    lock (SyncRoot)
+    {
+      SnapshotPayload payload = new(_value, _valueTimestamp);
+      string json = JsonSerializer.Serialize(payload, _serializerOptions);
+      return new ProjectionSnapshot(LastSequence, json);
+    }
+  }
+
+  /// <inheritdoc />
+  protected override void RestoreState(string stateJson)
+  {
+    SnapshotPayload? payload = JsonSerializer.Deserialize<SnapshotPayload>(stateJson, _serializerOptions)
+      ?? throw new InvalidOperationException("LwwRegister snapshot deserialized to null.");
+    _value = payload.Value;
+    _valueTimestamp = payload.ValueTimestamp;
+  }
+
+  private sealed record SnapshotPayload(T? Value, DateTimeOffset ValueTimestamp);
 }

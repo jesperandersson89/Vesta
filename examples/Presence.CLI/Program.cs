@@ -4,6 +4,7 @@ using VestaClient;
 using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Identity;
+using VestaCore.Projections;
 using VestaCore.Protocol;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
@@ -29,14 +30,24 @@ Directory.CreateDirectory(vestaDir);
 
 string identityPath = Path.Combine(vestaDir, $"presence-{appName}-{username}-identity.json");
 string dbPath = Path.Combine(vestaDir, $"presence-{appName}-{username}.db");
+string snapshotDbPath = Path.Combine(vestaDir, $"presence-{appName}-{username}-snapshots.db");
 
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
 
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
+using SqliteProjectionStore snapshotStore = new($"Data Source={snapshotDbPath}");
 
 // ─── Presence State ──────────────────────────────────────────────────────────
 PresenceState presence = new();
+
+// Restore last-known projection so the UI shows known users instantly on boot
+// instead of waiting for a full channel replay.
+ProjectionSnapshot? savedSnapshot = await snapshotStore.LoadAsync(channel, "presence");
+if (savedSnapshot is not null)
+{
+    presence.Restore(savedSnapshot);
+}
 
 // ─── Display State (declared here so lambdas below can close over them) ──────
 object _displayLock = new();
@@ -143,6 +154,9 @@ Task expiryLoop = Task.Run(async () =>
 await Task.WhenAll(heartbeatLoop, expiryLoop);
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
+// Save snapshot so the next launch can resume from this point.
+await snapshotStore.SaveAsync(channel, "presence", presence.Snapshot());
+
 if (isConnected)
 {
     JsonElement byePayload = JsonDocument.Parse(

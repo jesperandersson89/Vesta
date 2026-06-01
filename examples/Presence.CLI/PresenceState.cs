@@ -45,6 +45,15 @@ public sealed class PresenceState
     /// <summary>Apply a locally-authored event (e.g. own heartbeat before round-trip).</summary>
     public void Apply(VestaEvent evt) => _heartbeats.ApplyLocal(evt);
 
+    /// <summary>Capture the current state as a snapshot (for <see cref="IProjectionStore"/>).</summary>
+    public ProjectionSnapshot Snapshot() => _heartbeats.Snapshot();
+
+    /// <summary>Restore from a previously saved snapshot.</summary>
+    public void Restore(ProjectionSnapshot snapshot) => _heartbeats.Restore(snapshot);
+
+    /// <summary>Highest server sequence the inner reducer has applied.</summary>
+    public long LastSequence => _heartbeats.LastSequence;
+
     /// <summary>All known users, online first then by last-seen descending.</summary>
     public IReadOnlyList<PresenceEntry> AllUsers
     {
