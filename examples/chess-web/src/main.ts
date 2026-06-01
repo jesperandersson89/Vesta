@@ -33,8 +33,12 @@ import {
 } from "./identity.js";
 
 const LOBBY = "chess/lobby";
-const PRESENCE_TTL_SEC = 60;
-const PRESENCE_REPUBLISH_MS = 25_000;
+const PRESENCE_TTL_SEC = 20;
+const PRESENCE_REPUBLISH_MS = 7_000;
+const PRESENCE_PRUNE_MS = 2_000;
+const ROSTER_KEY = "vesta-chess-roster";
+const MATCHES_KEY = "vesta-chess-matches";
+const DECLINED_KEY = "vesta-chess-declined";
 
 // ─── DOM refs ──────────────────────────────────────────────────────────────
 
@@ -65,10 +69,12 @@ meEl.textContent = `${identity.clientId.slice(0, 10)}…`;
 usernameInput.value =
     loadUsername() || `player-${identity.clientId.slice(0, 6)}`;
 
-interface PresentPlayer {
+interface KnownPlayer {
     clientId: string;
     username: string;
+    /** Last presence timestamp (ms epoch). 0 if never seen this session. */
     lastSeen: number;
+    online: boolean;
 }
 
 interface Invitation {
@@ -89,13 +95,141 @@ interface ActiveMatch {
     resignedBy?: string;
 }
 
-const presence = new Map<string, PresentPlayer>();
+const roster = new Map<string, KnownPlayer>();
 const invitations = new Map<string, Invitation>();
 const activeMatches = new Map<string, ActiveMatch>();
+const declinedInvites = new Set<string>();
 let currentMatchId: string | null = null;
 let connection: VestaConnection | null = null;
 let username: string = usernameInput.value;
 let presenceTimer: number | null = null;
+let pruneTimer: number | null = null;
+
+// ─── Roster persistence ────────────────────────────────────────────────────
+
+function loadRoster(): void {
+    try {
+        const raw = localStorage.getItem(ROSTER_KEY);
+        if (!raw) return;
+        const arr = JSON.parse(raw) as Array<{
+            clientId: string;
+            username: string;
+        }>;
+        for (const p of arr) {
+            if (!p.clientId) continue;
+            roster.set(p.clientId, {
+                clientId: p.clientId,
+                username: p.username ?? "anon",
+                lastSeen: 0,
+                online: false,
+            });
+        }
+    } catch {
+        // ignore
+    }
+}
+
+function saveRoster(): void {
+    const arr = [...roster.values()].map((p) => ({
+        clientId: p.clientId,
+        username: p.username,
+    }));
+    try {
+        localStorage.setItem(ROSTER_KEY, JSON.stringify(arr));
+    } catch {
+        // ignore
+    }
+}
+
+function upsertPlayer(
+    clientId: string,
+    uname: string,
+    opts: { online: boolean; touch: boolean },
+): void {
+    if (!clientId) return;
+    const existing = roster.get(clientId);
+    const next: KnownPlayer = existing ?? {
+        clientId,
+        username: uname,
+        lastSeen: 0,
+        online: false,
+    };
+    if (uname && uname !== "anon") next.username = uname;
+    if (opts.online) next.online = true;
+    if (opts.touch) next.lastSeen = Date.now();
+    roster.set(clientId, next);
+    saveRoster();
+}
+
+// ─── Match / decline persistence ─────────────────────────────────────────────────
+
+interface PersistedMatch {
+    matchId: string;
+    opponentClientId: string;
+    opponentName: string;
+    myColor: "w" | "b";
+    isStarted: boolean;
+    resignedBy?: string;
+}
+
+function loadActiveMatches(): void {
+    try {
+        const raw = localStorage.getItem(MATCHES_KEY);
+        if (raw) {
+            const arr = JSON.parse(raw) as PersistedMatch[];
+            for (const p of arr) {
+                if (!p.matchId) continue;
+                activeMatches.set(p.matchId, {
+                    matchId: p.matchId,
+                    opponentClientId: p.opponentClientId,
+                    opponentName: p.opponentName,
+                    myColor: p.myColor,
+                    chess: new Chess(),
+                    isStarted: p.isStarted,
+                    resignedBy: p.resignedBy,
+                });
+            }
+        }
+    } catch {
+        // ignore
+    }
+    try {
+        const raw = localStorage.getItem(DECLINED_KEY);
+        if (raw) {
+            const arr = JSON.parse(raw) as string[];
+            for (const id of arr) declinedInvites.add(id);
+        }
+    } catch {
+        // ignore
+    }
+}
+
+function saveActiveMatches(): void {
+    const arr: PersistedMatch[] = [...activeMatches.values()].map((m) => ({
+        matchId: m.matchId,
+        opponentClientId: m.opponentClientId,
+        opponentName: m.opponentName,
+        myColor: m.myColor,
+        isStarted: m.isStarted,
+        resignedBy: m.resignedBy,
+    }));
+    try {
+        localStorage.setItem(MATCHES_KEY, JSON.stringify(arr));
+    } catch {
+        // ignore
+    }
+}
+
+function saveDeclined(): void {
+    try {
+        localStorage.setItem(
+            DECLINED_KEY,
+            JSON.stringify([...declinedInvites]),
+        );
+    } catch {
+        // ignore
+    }
+}
 
 // ─── Wire helpers ──────────────────────────────────────────────────────────
 
@@ -139,12 +273,17 @@ function broadcastPresence(): void {
     );
 }
 
+/** Persistent announcement so future clients catch up via lobby backlog. */
+function announcePlayerKnown(): void {
+    publishLobby("app.chess.player-known", { username });
+}
+
 function pruneStalePresence(): void {
     const now = Date.now();
     let changed = false;
-    for (const [id, p] of presence) {
-        if (now - p.lastSeen > PRESENCE_TTL_SEC * 1000) {
-            presence.delete(id);
+    for (const p of roster.values()) {
+        if (p.online && now - p.lastSeen > PRESENCE_TTL_SEC * 1000) {
+            p.online = false;
             changed = true;
         }
     }
@@ -155,21 +294,29 @@ function pruneStalePresence(): void {
 
 function renderLobby(): void {
     playersListEl.innerHTML = "";
-    const players = [...presence.values()]
+    const players = [...roster.values()]
         .filter((p) => p.clientId !== identity.clientId)
-        .sort((a, b) => a.username.localeCompare(b.username));
+        .sort((a, b) => {
+            // Online first, then by username.
+            if (a.online !== b.online) return a.online ? -1 : 1;
+            return a.username.localeCompare(b.username);
+        });
 
     if (players.length === 0) {
         const li = document.createElement("li");
-        li.innerHTML = `<span class="meta">No other players online.</span>`;
+        li.innerHTML = `<span class="meta">No other players yet.</span>`;
         playersListEl.appendChild(li);
     }
 
     for (const p of players) {
         const li = document.createElement("li");
+        li.className = p.online ? "online" : "offline";
+        const inviteBtn = p.online
+            ? `<button data-action="invite" data-client="${p.clientId}" data-name="${escape(p.username)}">Invite</button>`
+            : `<button disabled title="Offline">Offline</button>`;
         li.innerHTML = `
-      <span><strong>${escape(p.username)}</strong> <span class="meta">${p.clientId.slice(0, 8)}…</span></span>
-      <span class="actions"><button data-action="invite" data-client="${p.clientId}" data-name="${escape(p.username)}">Invite</button></span>
+      <span><span class="presence-dot ${p.online ? "online" : ""}"></span><strong>${escape(p.username)}</strong> <span class="meta">${p.clientId.slice(0, 8)}…</span></span>
+      <span class="actions">${inviteBtn}</span>
     `;
         playersListEl.appendChild(li);
     }
@@ -326,6 +473,7 @@ function invitePlayer(toClientId: string, toName: string): void {
         chess: new Chess(),
         isStarted: false,
     });
+    saveActiveMatches();
 
     // Announce the invite on the lobby.
     publishLobby("app.chess.invite", {
@@ -355,6 +503,7 @@ function acceptInvite(matchId: string): void {
         chess: new Chess(),
         isStarted: true, // From our side, we're ready; inviter will mark started on receiving this.
     });
+    saveActiveMatches();
 
     publishLobby("app.chess.invite-accepted", {
         matchId,
@@ -375,6 +524,8 @@ function declineInvite(matchId: string): void {
     const inv = invitations.get(matchId);
     if (!inv) return;
     invitations.delete(matchId);
+    declinedInvites.add(matchId);
+    saveDeclined();
     publishLobby("app.chess.invite-declined", {
         matchId,
         toClientId: inv.fromClientId,
@@ -401,6 +552,7 @@ function resign(): void {
     const m = activeMatches.get(currentMatchId);
     if (!m || m.resignedBy) return;
     m.resignedBy = identity.clientId;
+    saveActiveMatches();
     publishMatch(m.matchId, "app.chess.resign", {
         byClientId: identity.clientId,
     });
@@ -418,11 +570,14 @@ function handleLobbyEvent(
     switch (ev.eventType) {
         case "app.chess.presence": {
             const uname = String(payload.username ?? "anon");
-            presence.set(fromClientId, {
-                clientId: fromClientId,
-                username: uname,
-                lastSeen: Date.now(),
-            });
+            upsertPlayer(fromClientId, uname, { online: true, touch: true });
+            renderLobby();
+            break;
+        }
+        case "app.chess.player-known": {
+            const uname = String(payload.username ?? "anon");
+            // Don't mark online from a backlog event; presence will do that.
+            upsertPlayer(fromClientId, uname, { online: false, touch: false });
             renderLobby();
             break;
         }
@@ -430,7 +585,10 @@ function handleLobbyEvent(
             const matchId = String(payload.matchId);
             const toClientId = String(payload.toClientId);
             if (toClientId !== identity.clientId) return;
-            if (invitations.has(matchId) || activeMatches.has(matchId)) return;
+            // Ignore replayed invites we've already accepted (active) or declined.
+            if (activeMatches.has(matchId)) return;
+            if (declinedInvites.has(matchId)) return;
+            if (invitations.has(matchId)) return;
             invitations.set(matchId, {
                 matchId,
                 fromClientId,
@@ -447,6 +605,7 @@ function handleLobbyEvent(
             const m = activeMatches.get(matchId);
             if (m && !m.isStarted) {
                 m.isStarted = true;
+                saveActiveMatches();
                 renderLobby();
                 // Send match-started from the inviter side too (white).
                 publishMatch(matchId, "app.chess.match-started", {
@@ -463,6 +622,7 @@ function handleLobbyEvent(
             const toClientId = String(payload.toClientId);
             if (toClientId !== identity.clientId) return;
             activeMatches.delete(matchId);
+            saveActiveMatches();
             renderLobby();
             break;
         }
@@ -479,6 +639,8 @@ function handleMatchEvent(
 
     switch (ev.eventType) {
         case "app.chess.match-started": {
+            // Drop any pending invitation for this match (it has now actually started).
+            invitations.delete(matchId);
             // First-time observation (in case we only learned about this match by being added to the channel).
             if (!m) {
                 const myColor: "w" | "b" =
@@ -502,13 +664,16 @@ function handleMatchEvent(
             } else {
                 m.isStarted = true;
             }
+            saveActiveMatches();
             if (currentMatchId === matchId) renderMatch();
             renderLobby();
             break;
         }
         case "app.chess.move": {
-            if (!m) return;
-            if (ev.clientId === identity.clientId) return; // own move already applied
+            // Use the event's FEN as authoritative — this lets backlog replay
+            // (including our own past moves) restore state correctly after reconnect.
+            const cur = activeMatches.get(matchId);
+            if (!cur) return;
             const from = String(payload.from) as Square;
             const to = String(payload.to) as Square;
             const promotion = payload.promotion as
@@ -517,20 +682,24 @@ function handleMatchEvent(
                 | "b"
                 | "n"
                 | undefined;
-            const ok = m.chess.move({ from, to, promotion: promotion ?? "q" });
-            if (!ok && payload.fen) {
-                // Fall back to authoritative FEN if our local model diverged.
-                m.chess.load(String(payload.fen));
+            if (payload.fen) {
+                cur.chess.load(String(payload.fen));
+            } else {
+                cur.chess.move({ from, to, promotion: promotion ?? "q" });
             }
             if (currentMatchId === matchId) {
-                m.board?.applyMove(from, to, promotion);
+                if (cur.board) cur.board.setFen(cur.chess.fen());
                 renderMatch();
+            } else {
+                renderLobby();
             }
             break;
         }
         case "app.chess.resign": {
-            if (!m) return;
-            m.resignedBy = String(payload.byClientId);
+            const cur = activeMatches.get(matchId);
+            if (!cur) return;
+            cur.resignedBy = String(payload.byClientId);
+            saveActiveMatches();
             if (currentMatchId === matchId) renderMatch();
             renderLobby();
             break;
@@ -562,17 +731,38 @@ async function connect(): Promise<void> {
         connStatusEl.textContent = "online";
         connStatusEl.classList.replace("offline", "online");
         void welcome;
+        // Persistent self-registration so future clients see us via backlog.
+        announcePlayerKnown();
+        // Mark ourselves online locally too (not strictly needed for UI but keeps roster consistent).
+        upsertPlayer(identity.clientId, username, {
+            online: true,
+            touch: true,
+        });
+        // Re-subscribe to every persisted active match so the channel backlog
+        // can rebuild the board state after reconnect/reload.
+        for (const m of activeMatches.values()) {
+            // Reset the local chess engine; backlog moves will replay onto it.
+            m.chess = new Chess();
+            connection!.subscribe(matchChannel(m.matchId));
+        }
         broadcastPresence();
         if (presenceTimer) window.clearInterval(presenceTimer);
-        presenceTimer = window.setInterval(() => {
-            broadcastPresence();
-            pruneStalePresence();
-        }, PRESENCE_REPUBLISH_MS);
+        presenceTimer = window.setInterval(
+            broadcastPresence,
+            PRESENCE_REPUBLISH_MS,
+        );
+        if (pruneTimer) window.clearInterval(pruneTimer);
+        pruneTimer = window.setInterval(pruneStalePresence, PRESENCE_PRUNE_MS);
     });
 
     connection.on("disconnected", () => {
         connStatusEl.textContent = "offline";
         connStatusEl.classList.replace("online", "offline");
+        // Flip every remote player to offline; pruning will catch up once reconnected.
+        for (const p of roster.values()) {
+            if (p.clientId !== identity.clientId) p.online = false;
+        }
+        renderLobby();
     });
 
     connection.on("event", (msg: EventMessage) => {
@@ -633,5 +823,7 @@ activeListEl.addEventListener("click", (e) => {
 });
 
 // Initial render
+loadRoster();
+loadActiveMatches();
 renderLobby();
 showView("lobby");
