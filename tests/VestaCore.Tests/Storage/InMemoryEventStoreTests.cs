@@ -237,4 +237,31 @@ public class InMemoryEventStoreTests
         Assert.Equal(1L, sequences.First());
         Assert.Equal((long)concurrency, sequences.Last());
     }
+
+    [Fact]
+    public async Task GetEventsAsync_ExcludesExpiredEvents()
+    {
+        JsonElement payload = JsonDocument.Parse("""{"k":"v"}""").RootElement;
+        JsonElement metadata = JsonDocument.Parse("""{"ttlSeconds":1}""").RootElement;
+
+        VestaEvent ephemeral = new(
+            Id: Guid.NewGuid(),
+            ChannelId: "ttl-channel",
+            Timestamp: DateTimeOffset.UtcNow,
+            ClientId: "test-client-id-123456",
+            EventType: "test.ephemeral",
+            Payload: payload,
+            Metadata: metadata);
+
+        await _store.AppendAsync(ephemeral);
+
+        // Immediately visible.
+        IReadOnlyList<SequencedEvent> beforeExpiry = await _store.GetEventsAsync("ttl-channel", 0, 100);
+        Assert.Single(beforeExpiry);
+
+        // After the TTL elapses it must be filtered out of catch-up reads.
+        await Task.Delay(TimeSpan.FromSeconds(1.2));
+        IReadOnlyList<SequencedEvent> afterExpiry = await _store.GetEventsAsync("ttl-channel", 0, 100);
+        Assert.Empty(afterExpiry);
+    }
 }

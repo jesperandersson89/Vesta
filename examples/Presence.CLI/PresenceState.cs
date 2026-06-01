@@ -104,7 +104,10 @@ public sealed class PresenceState
             ? u.GetString() ?? evt.ClientId[..8]
             : evt.ClientId[..8];
 
-        int ttl = evt.Payload.TryGetProperty("ttlSeconds", out System.Text.Json.JsonElement t)
+        int ttl = evt.Metadata is System.Text.Json.JsonElement md
+            && md.ValueKind == System.Text.Json.JsonValueKind.Object
+            && md.TryGetProperty("ttlSeconds", out System.Text.Json.JsonElement t)
+            && t.ValueKind == System.Text.Json.JsonValueKind.Number
             ? t.GetInt32()
             : 30;
 

@@ -144,6 +144,10 @@ namespace VestaServer.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("event_type");
 
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
                     b.Property<Guid?>("ParentId")
                         .HasColumnType("uuid")
                         .HasColumnName("parent_id");
@@ -172,6 +176,9 @@ namespace VestaServer.Data.Migrations
                         .HasColumnName("timestamp");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("IX_events_expires_at");
 
                     b.HasIndex("ChannelId", "Sequence")
                         .IsUnique();

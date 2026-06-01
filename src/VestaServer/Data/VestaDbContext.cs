@@ -43,9 +43,11 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.ParentId).HasColumnName("parent_id");
             entity.Property(e => e.Signature).HasColumnName("signature");
             entity.Property(e => e.ReceivedAt).HasColumnName("received_at").HasDefaultValueSql("now()");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
 
             entity.HasIndex(e => new { e.ChannelId, e.Sequence }).IsUnique();
             entity.HasIndex(e => new { e.ChannelId, e.Timestamp });
+            entity.HasIndex(e => e.ExpiresAt).HasDatabaseName("IX_events_expires_at");
         });
 
         // === client_positions ===

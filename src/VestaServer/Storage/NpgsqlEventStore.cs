@@ -40,10 +40,15 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
 
         DateTimeOffset receivedAt = DateTimeOffset.UtcNow;
 
+        // Compute expires_at from metadata.ttlSeconds (if present)
+        DateTimeOffset? expiresAt = VestaEventMetadata.TryGetTtlSeconds(evt, out int ttlSeconds)
+            ? receivedAt.AddSeconds(ttlSeconds)
+            : null;
+
         // Insert the event
         const string insertSql = """
-            INSERT INTO events (id, channel_id, sequence, timestamp, client_id, event_type, payload, parent_id, signature, received_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO events (id, channel_id, sequence, timestamp, client_id, event_type, payload, parent_id, signature, received_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """;
 
         await using NpgsqlCommand cmd = new(insertSql, connection, transaction);
@@ -57,6 +62,7 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
         cmd.Parameters.Add(new NpgsqlParameter { Value = evt.ParentId.HasValue ? evt.ParentId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)evt.Signature ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
         cmd.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = receivedAt });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = expiresAt.HasValue ? expiresAt.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.TimestampTz });
 
         await cmd.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -73,7 +79,9 @@ public sealed class NpgsqlEventStore(NpgsqlDataSource dataSource) : IEventStore
         const string sql = """
             SELECT id, channel_id, sequence, timestamp, client_id, event_type, payload, parent_id, signature, received_at
             FROM events
-            WHERE channel_id = $1 AND sequence >= $2
+            WHERE channel_id = $1
+              AND sequence >= $2
+              AND (expires_at IS NULL OR expires_at > now())
             ORDER BY sequence ASC
             LIMIT $3
             """;

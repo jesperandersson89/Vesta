@@ -50,7 +50,7 @@ public sealed class InMemoryEventStore : IEventStore
     /// </summary>
     private sealed class ChannelLog
     {
-        private readonly List<SequencedEvent> _events = [];
+        private readonly List<StoredEvent> _events = [];
         private readonly HashSet<Guid> _superseded = [];
         private readonly object _lock = new();
         private long _nextSequence = 1;
@@ -73,19 +73,24 @@ public sealed class InMemoryEventStore : IEventStore
                 if (evt.Replace)
                 {
                     // Mark all previous events of same (clientId, eventType) as superseded
-                    foreach (SequencedEvent existing in _events)
+                    foreach (StoredEvent existing in _events)
                     {
-                        if (existing.Event.ClientId == evt.ClientId &&
-                            existing.Event.EventType == evt.EventType)
+                        if (existing.Sequenced.Event.ClientId == evt.ClientId &&
+                            existing.Sequenced.Event.EventType == evt.EventType)
                         {
-                            _superseded.Add(existing.Event.Id);
+                            _superseded.Add(existing.Sequenced.Event.Id);
                         }
                     }
                 }
 
                 long sequence = _nextSequence++;
-                SequencedEvent sequenced = new(evt, sequence, DateTimeOffset.UtcNow);
-                _events.Add(sequenced);
+                DateTimeOffset receivedAt = DateTimeOffset.UtcNow;
+                DateTimeOffset? expiresAt = VestaEventMetadata.TryGetTtlSeconds(evt, out int ttl)
+                    ? receivedAt.AddSeconds(ttl)
+                    : null;
+
+                SequencedEvent sequenced = new(evt, sequence, receivedAt);
+                _events.Add(new StoredEvent(sequenced, expiresAt));
                 return sequenced;
             }
         }
@@ -94,16 +99,20 @@ public sealed class InMemoryEventStore : IEventStore
         {
             lock (_lock)
             {
+                DateTimeOffset now = DateTimeOffset.UtcNow;
                 List<SequencedEvent> results = [];
-                foreach (SequencedEvent evt in _events)
+                foreach (StoredEvent stored in _events)
                 {
-                    if (evt.Sequence < fromSequence) continue;
-                    if (_superseded.Contains(evt.Event.Id)) continue;
-                    results.Add(evt);
+                    if (stored.Sequenced.Sequence < fromSequence) continue;
+                    if (_superseded.Contains(stored.Sequenced.Event.Id)) continue;
+                    if (stored.ExpiresAt is DateTimeOffset expires && expires <= now) continue;
+                    results.Add(stored.Sequenced);
                     if (results.Count >= limit) break;
                 }
                 return results.AsReadOnly();
             }
         }
+
+        private readonly record struct StoredEvent(SequencedEvent Sequenced, DateTimeOffset? ExpiresAt);
     }
 }

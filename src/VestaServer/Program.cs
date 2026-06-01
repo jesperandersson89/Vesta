@@ -35,6 +35,10 @@ else if (!string.IsNullOrEmpty(connectionString))
 
     builder.Services.AddSingleton<IEventStore, NpgsqlEventStore>();
     builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
+
+    // Background sweep for events past their TTL. Opt-in via EventCleanup:Enabled.
+    builder.Services.Configure<ExpiredEventCleanupOptions>(builder.Configuration.GetSection("EventCleanup"));
+    builder.Services.AddHostedService<ExpiredEventCleanupService>();
 }
 else
 {

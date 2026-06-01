@@ -169,7 +169,10 @@ Console.WriteLine($"\nGoodbye, {username}!");
 async Task SendHeartbeatAsync()
 {
     JsonElement payload = JsonDocument.Parse(
-        JsonSerializer.Serialize(new { username, status = "online", ttlSeconds = TtlSeconds })).RootElement;
+        JsonSerializer.Serialize(new { username, status = "online" })).RootElement;
+
+    JsonElement metadata = JsonDocument.Parse(
+        JsonSerializer.Serialize(new { ttlSeconds = TtlSeconds })).RootElement;
 
     VestaEvent evt = new(
         Id: Guid.NewGuid(),
@@ -178,7 +181,8 @@ async Task SendHeartbeatAsync()
         ClientId: clientId,
         EventType: "app.presence.heartbeat",
         Payload: payload,
-        Replace: true);
+        Replace: true,
+        Metadata: metadata);
 
     // Apply our own heartbeat locally immediately (server won't echo it to us)
     presence.Apply(evt);

@@ -980,7 +980,7 @@ This gives us full coverage of the protocol's capabilities with minimal overlap.
 - [ ] Client-side SQLite local storage
 - [ ] Offline outbox + sync-on-reconnect
 - [ ] Cursor tracking and catch-up (FETCH)
-- [ ] Ephemeral/volatile channel support (TTL on events for presence)
+- [x] Ephemeral/volatile channel support (TTL on events for presence) — `VestaEvent.Metadata` carries unsigned `ttlSeconds`; `VestaEventMetadata.TryGetTtlSeconds` reads it; server persists `expires_at` column; `ExpiredEventCleanupService` sweeps expired rows; both stores filter expired events from catch-up
 
 ### Milestone 3: Reference Clients (Week 3–4)
 
