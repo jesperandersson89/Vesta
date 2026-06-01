@@ -19,7 +19,7 @@ public sealed class ProtocolHandler(
     ConnectionManager connectionManager,
     ILogger<ProtocolHandler> logger)
 {
-    private static readonly string ServerId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
+    private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
 
     /// <summary>
     /// Runs the full message loop for a client connection until disconnect.
@@ -137,7 +137,7 @@ public sealed class ProtocolHandler(
 
         // Send WELCOME
         await connection.SendAsync(
-            new WelcomeMessage(ServerId, connection.Subscriptions.ToList()),
+            new WelcomeMessage(_serverId, connection.Subscriptions.ToList()),
             cancellationToken);
 
         // Catch-up: send missed events for channels with lastSequences
@@ -193,6 +193,24 @@ public sealed class ProtocolHandler(
                     cancellationToken);
                 return;
             }
+        }
+
+        // If volatile, skip DB storage — just relay to current subscribers
+        if (publish.Event.Volatile is true)
+        {
+            EventMessage volatileMessage = new(
+                publish.ChannelId,
+                publish.Event,
+                0, // Sequence 0 indicates non-sequenced volatile event
+                ReceivedAt: DateTimeOffset.UtcNow);
+
+            await connectionManager.BroadcastToChannelAsync(
+                publish.ChannelId,
+                volatileMessage,
+                excludeConnectionId: connection.ConnectionId,
+                cancellationToken: cancellationToken);
+
+            return;
         }
 
         // Store the event
@@ -284,6 +302,4 @@ public sealed class ProtocolHandler(
             new EventsBatchMessage(fetch.ChannelId, events),
             cancellationToken);
     }
-
-
 }

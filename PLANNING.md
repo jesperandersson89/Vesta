@@ -1140,6 +1140,9 @@ Event types:
 
 ---
 
+### Faster realtime messages without db storage
+Im going to add a `volatile` flag to the protocol that means "don't store this event in the database, just relay it to current subscribers". This is for things like presence heartbeats where you want real-time updates but no history. The server will still assign a sequence number for ordering, but won't persist the event. Clients won't see these on catch-up, only in real-time.
+
 ## TODO
 
 Known gaps and deferred work, in rough priority order.

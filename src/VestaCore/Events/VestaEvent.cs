@@ -15,6 +15,7 @@ public sealed record VestaEvent(
     JsonElement Payload,        // Arbitrary structured data
     Guid? ParentId = null,      // Optional causal link to a previous event
     string? Signature = null,   // base64url Ed25519 signature (null when unsigned)
+    bool? Volatile = null,      // Transport hint: don't store in DB, just relay to current subscribers
     bool Replace = false        // Transport hint: replace previous event of same (channelId, clientId, eventType)
                                 // Not signed — stripped from storage after processing
 );
