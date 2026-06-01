@@ -61,6 +61,7 @@ const resignBtn = $<HTMLButtonElement>("resign-btn");
 const serverInput = $<HTMLInputElement>("server-url");
 const usernameInput = $<HTMLInputElement>("username");
 const connectBtn = $<HTMLButtonElement>("connect-btn");
+const logoutBtn = $<HTMLButtonElement>("logout-btn");
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -311,9 +312,7 @@ function renderLobby(): void {
     for (const p of players) {
         const li = document.createElement("li");
         li.className = p.online ? "online" : "offline";
-        const inviteBtn = p.online
-            ? `<button data-action="invite" data-client="${p.clientId}" data-name="${escape(p.username)}">Invite</button>`
-            : `<button disabled title="Offline">Offline</button>`;
+        const inviteBtn = `<button data-action="invite" data-client="${p.clientId}" data-name="${escape(p.username)}">Invite</button>`;
         li.innerHTML = `
       <span><span class="presence-dot ${p.online ? "online" : ""}"></span><strong>${escape(p.username)}</strong> <span class="meta">${p.clientId.slice(0, 8)}…</span></span>
       <span class="actions">${inviteBtn}</span>
@@ -347,17 +346,39 @@ function renderLobby(): void {
         li.innerHTML = `<span class="meta">No active matches.</span>`;
         activeListEl.appendChild(li);
     }
-    for (const m of activeMatches.values()) {
+
+    // Sort: my turn → opponent's turn → waiting acceptance → finished/resigned.
+    type MatchBucket = 0 | 1 | 2 | 3;
+    const bucketOf = (m: ActiveMatch): MatchBucket => {
+        if (m.resignedBy || (m.isStarted && m.chess.isGameOver())) return 3;
+        if (!m.isStarted) return 2;
+        return m.chess.turn() === m.myColor ? 0 : 1;
+    };
+    const statusOf = (m: ActiveMatch): string => {
+        if (m.resignedBy) {
+            return m.resignedBy === identity.clientId
+                ? "You resigned"
+                : "Opponent resigned — you won";
+        }
+        if (m.isStarted && m.chess.isGameOver()) return "Finished";
+        if (!m.isStarted) return "Waiting for opponent…";
+        return m.chess.turn() === m.myColor
+            ? "Your turn"
+            : "Waiting for opponent's move…";
+    };
+
+    const sortedMatches = [...activeMatches.values()].sort((a, b) => {
+        const ba = bucketOf(a);
+        const bb = bucketOf(b);
+        if (ba !== bb) return ba - bb;
+        return a.opponentName.localeCompare(b.opponentName);
+    });
+
+    for (const m of sortedMatches) {
         const li = document.createElement("li");
-        const status = m.resignedBy
-            ? "Resigned"
-            : m.isStarted
-              ? m.chess.isGameOver()
-                  ? "Finished"
-                  : `Your color: ${m.myColor === "w" ? "White" : "Black"}`
-              : "Waiting for opponent…";
+        li.className = `match-bucket-${bucketOf(m)}`;
         li.innerHTML = `
-      <span><strong>vs ${escape(m.opponentName)}</strong> <span class="meta">${status}</span></span>
+      <span><strong>vs ${escape(m.opponentName)}</strong> <span class="meta">${statusOf(m)}</span></span>
       <span class="actions"><button data-action="open" data-match="${m.matchId}">Open</button></span>
     `;
         activeListEl.appendChild(li);
@@ -422,6 +443,13 @@ function escape(s: string): string {
 function showView(view: "lobby" | "match"): void {
     lobbyView.classList.toggle("hidden", view !== "lobby");
     matchView.classList.toggle("hidden", view !== "match");
+}
+
+function setConnectedUi(connected: boolean): void {
+    serverInput.disabled = connected;
+    usernameInput.disabled = connected;
+    connectBtn.classList.toggle("hidden", connected);
+    logoutBtn.classList.toggle("hidden", !connected);
 }
 
 // ─── Local actions ─────────────────────────────────────────────────────────
@@ -730,6 +758,7 @@ async function connect(): Promise<void> {
     connection.on("connected", (welcome: WelcomeMessage) => {
         connStatusEl.textContent = "online";
         connStatusEl.classList.replace("offline", "online");
+        setConnectedUi(true);
         void welcome;
         // Persistent self-registration so future clients see us via backlog.
         announcePlayerKnown();
@@ -740,10 +769,12 @@ async function connect(): Promise<void> {
         });
         // Re-subscribe to every persisted active match so the channel backlog
         // can rebuild the board state after reconnect/reload.
+        // Pass fromSequence: 0 to force the server to replay all history;
+        // otherwise SUBSCRIBE starts streaming from "now".
         for (const m of activeMatches.values()) {
             // Reset the local chess engine; backlog moves will replay onto it.
             m.chess = new Chess();
-            connection!.subscribe(matchChannel(m.matchId));
+            connection!.subscribe(matchChannel(m.matchId), 0);
         }
         broadcastPresence();
         if (presenceTimer) window.clearInterval(presenceTimer);
@@ -758,6 +789,7 @@ async function connect(): Promise<void> {
     connection.on("disconnected", () => {
         connStatusEl.textContent = "offline";
         connStatusEl.classList.replace("online", "offline");
+        setConnectedUi(false);
         // Flip every remote player to offline; pruning will catch up once reconnected.
         for (const p of roster.values()) {
             if (p.clientId !== identity.clientId) p.online = false;
@@ -789,6 +821,30 @@ connectBtn.addEventListener("click", () => {
         console.error(err);
         matchMessageEl.textContent = `Connection failed: ${err.message ?? err}`;
     });
+});
+
+logoutBtn.addEventListener("click", () => {
+    if (presenceTimer) {
+        window.clearInterval(presenceTimer);
+        presenceTimer = null;
+    }
+    if (pruneTimer) {
+        window.clearInterval(pruneTimer);
+        pruneTimer = null;
+    }
+    if (connection) {
+        // Disable auto-reconnect for this manual logout by disposing.
+        connection.dispose();
+        connection = null;
+    }
+    setConnectedUi(false);
+    connStatusEl.textContent = "offline";
+    connStatusEl.classList.replace("online", "offline");
+    for (const p of roster.values()) {
+        if (p.clientId !== identity.clientId) p.online = false;
+    }
+    if (currentMatchId) leaveMatch();
+    renderLobby();
 });
 
 leaveBtn.addEventListener("click", leaveMatch);
@@ -827,3 +883,4 @@ loadRoster();
 loadActiveMatches();
 renderLobby();
 showView("lobby");
+setConnectedUi(false);
