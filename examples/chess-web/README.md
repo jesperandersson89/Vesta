@@ -6,12 +6,12 @@ Browser chess example built on the Vesta protocol. Two players see each other in
 
 - **Identity**: Each browser tab generates a persistent Ed25519 keypair on first launch (stored in `localStorage`). The derived `clientId` is registered with the server, and every event is Ed25519-signed.
 - **Lobby channel** `chess/lobby` (public, implicit-create):
-  - `app.chess.presence` — volatile heartbeat with `username` (TTL 60 s, re-sent every 25 s).
-  - `app.chess.invite` / `invite-accepted` / `invite-declined` — invitation lifecycle.
+    - `app.chess.presence` — volatile heartbeat with `username` (TTL 60 s, re-sent every 25 s).
+    - `app.chess.invite` / `invite-accepted` / `invite-declined` — invitation lifecycle.
 - **Match channel** `chess/match/{matchId}` (**private**, created by the inviter with `CREATE_CHANNEL` and the invitee as the single initial member):
-  - `app.chess.match-started` — exchanged once both sides have joined; carries colour assignment + display names.
-  - `app.chess.move` — `{ from, to, promotion, fen }`. Rule validation is local via `chess.js`; FEN is included as a tiebreaker if local state diverges.
-  - `app.chess.resign` — match-ending.
+    - `app.chess.match-started` — exchanged once both sides have joined; carries colour assignment + display names.
+    - `app.chess.move` — `{ from, to, promotion, fen }`. Rule validation is local via `chess.js`; FEN is included as a tiebreaker if local state diverges.
+    - `app.chess.resign` — match-ending.
 
 The server has no idea this is chess — it just relays signed events and refuses non-members on private match channels.
 

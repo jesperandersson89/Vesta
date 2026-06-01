@@ -7,8 +7,8 @@ namespace VestaServer.Data.Entities;
 /// </summary>
 public sealed class ChannelAccessEntity
 {
-    public string ChannelId { get; set; } = string.Empty;
-    public string ClientId { get; set; } = string.Empty;
-    public string Role { get; set; } = "member"; // "member" | "admin"
-    public DateTimeOffset GrantedAt { get; set; }
+  public string ChannelId { get; set; } = string.Empty;
+  public string ClientId { get; set; } = string.Empty;
+  public string Role { get; set; } = "member"; // "member" | "admin"
+  public DateTimeOffset GrantedAt { get; set; }
 }
