@@ -42,7 +42,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         ConcurrentQueue<AckMessage> acks = new();
         client.OnAck += ack => acks.Enqueue(ack);
 
-        VestaEvent evt = CreateEvent("chat/ack");
+        VestaEvent evt = CreateEvent("chat/ack", clientId: "client-001");
         await client.PublishAsync(evt);
 
         // Wait for ACK
@@ -67,7 +67,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         alice.OnAck += ack => aliceAcks.Enqueue(ack);
 
         // Alice publishes
-        VestaEvent evt = CreateEvent("chat/roundtrip", "app.chat.message");
+        VestaEvent evt = CreateEvent("chat/roundtrip", "app.chat.message", clientId: "alice");
         await alice.PublishAsync(evt);
 
         // Alice gets ACK
@@ -93,11 +93,11 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         ConcurrentQueue<AckMessage> acks = new();
         publisher.OnAck += ack => acks.Enqueue(ack);
 
-        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.1"));
+        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.1", clientId: "publisher"));
         await WaitForConditionAsync(() => acks.Count >= 1);
-        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.2"));
+        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.2", clientId: "publisher"));
         await WaitForConditionAsync(() => acks.Count >= 2);
-        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.3"));
+        await publisher.PublishAsync(CreateEvent("chat/catchup2", "msg.3", clientId: "publisher"));
         await WaitForConditionAsync(() => acks.Count >= 3);
 
         // Second client connects with lastSequences = { channel: 1 } (has seen seq 1)
@@ -129,7 +129,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         // Publish 5 events
         for (int i = 0; i < 5; i++)
         {
-            await client.PublishAsync(CreateEvent("chat/fetch2"));
+            await client.PublishAsync(CreateEvent("chat/fetch2", clientId: "client-001"));
             await WaitForConditionAsync(() => acks.Count >= i + 1);
         }
 
@@ -164,7 +164,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         bob.OnAck += ack => bobAcks.Enqueue(ack);
 
         // Alice sends
-        await alice.PublishAsync(CreateEvent("chat/bidir", "alice.msg"));
+        await alice.PublishAsync(CreateEvent("chat/bidir", "alice.msg", clientId: "alice"));
         await WaitForConditionAsync(() => !aliceAcks.IsEmpty);
 
         // Bob receives Alice's message
@@ -173,7 +173,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         Assert.Equal("alice.msg", fromAlice.Event.EventType);
 
         // Bob sends back
-        await bob.PublishAsync(CreateEvent("chat/bidir", "bob.reply"));
+        await bob.PublishAsync(CreateEvent("chat/bidir", "bob.reply", clientId: "bob"));
         await WaitForConditionAsync(() => !bobAcks.IsEmpty);
 
         // Alice receives Bob's reply
@@ -192,7 +192,7 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
 
         for (int i = 0; i < 10; i++)
         {
-            await client.PublishAsync(CreateEvent("chat/mono"));
+            await client.PublishAsync(CreateEvent("chat/mono", clientId: "client-001"));
         }
 
         await WaitForConditionAsync(() => acks.Count >= 10);
@@ -235,14 +235,17 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
         return client;
     }
 
-    private static VestaEvent CreateEvent(string channelId, string eventType = "test.message")
+    private static VestaEvent CreateEvent(
+        string channelId,
+        string eventType = "test.message",
+        string clientId = "test-client-id-123456")
     {
         JsonElement payload = JsonDocument.Parse("""{"text":"hello"}""").RootElement;
         return new VestaEvent(
             Id: Guid.NewGuid(),
             ChannelId: channelId,
             Timestamp: DateTimeOffset.UtcNow,
-            ClientId: "test-client-id-123456",
+            ClientId: clientId,
             EventType: eventType,
             Payload: payload
         );

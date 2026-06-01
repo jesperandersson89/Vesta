@@ -1,6 +1,6 @@
 # Vesta — Planning Document
 
-> *The fire lives within — it doesn't come from somewhere external, it burns at the center of the home itself.*
+> _The fire lives within — it doesn't come from somewhere external, it burns at the center of the home itself._
 
 ## Vision
 
@@ -12,13 +12,13 @@ The goal: if the server disappears tomorrow, the application still works locally
 
 ## Core Principles
 
-| # | Principle | Implication |
-|---|-----------|-------------|
-| 1 | **Data belongs to the client** | All state is reconstructable from the client's local log |
-| 2 | **Server is a relay, not an authority** | Server stores and forwards; it doesn't interpret business logic |
-| 3 | **Protocol over platform** | Any client that speaks Vesta protocol can participate |
-| 4 | **Offline-first** | Operations queue locally and sync when connectivity returns |
-| 5 | **Conflict resolution is explicit** | The protocol provides mechanisms; the app decides policy |
+| #   | Principle                               | Implication                                                     |
+| --- | --------------------------------------- | --------------------------------------------------------------- |
+| 1   | **Data belongs to the client**          | All state is reconstructable from the client's local log        |
+| 2   | **Server is a relay, not an authority** | Server stores and forwards; it doesn't interpret business logic |
+| 3   | **Protocol over platform**              | Any client that speaks Vesta protocol can participate           |
+| 4   | **Offline-first**                       | Operations queue locally and sync when connectivity returns     |
+| 5   | **Conflict resolution is explicit**     | The protocol provides mechanisms; the app decides policy        |
 
 ---
 
@@ -46,13 +46,13 @@ The goal: if the server disappears tomorrow, the application still works locally
 
 ### Components
 
-| Component | Role | Tech |
-|-----------|------|------|
-| **VestaCore** | Shared protocol types, serialization, conflict helpers | C# class library (net10.0) |
-| **VestaServer** | Hosts channels, relays messages, persists log | C# (ASP.NET Core minimal API + WebSocket) |
-| **VestaClient** | C# client library (connect, publish, subscribe) | C# class library (net10.0) |
-| **vesta-client-ts** | TypeScript client library implementing the protocol | TypeScript (npm package) |
-| **vesta-client-py** | Python client library implementing the protocol | Python (pip package) |
+| Component           | Role                                                   | Tech                                      |
+| ------------------- | ------------------------------------------------------ | ----------------------------------------- |
+| **VestaCore**       | Shared protocol types, serialization, conflict helpers | C# class library (net10.0)                |
+| **VestaServer**     | Hosts channels, relays messages, persists log          | C# (ASP.NET Core minimal API + WebSocket) |
+| **VestaClient**     | C# client library (connect, publish, subscribe)        | C# class library (net10.0)                |
+| **vesta-client-ts** | TypeScript client library implementing the protocol    | TypeScript (npm package)                  |
+| **vesta-client-py** | Python client library implementing the protocol        | Python (pip package)                      |
 
 Example apps (in `examples/`) consume these libraries to prove the protocol works across languages.
 
@@ -62,12 +62,12 @@ Example apps (in `examples/`) consume these libraries to prove the protocol work
 
 ### Concepts
 
-| Concept | Description |
-|---------|-------------|
-| **Channel** | A named scope of collaboration (like a git repo or torrent swarm) |
-| **Event** | An immutable, timestamped, signed payload appended to a channel's log |
+| Concept      | Description                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
+| **Channel**  | A named scope of collaboration (like a git repo or torrent swarm)                                            |
+| **Event**    | An immutable, timestamped, signed payload appended to a channel's log                                        |
 | **Sequence** | A per-channel monotonic integer assigned by the server on append. This is the ordering and cursor mechanism. |
-| **Snapshot** | A materialized view of state at a point in time (optimization, not source of truth) |
+| **Snapshot** | A materialized view of state at a point in time (optimization, not source of truth)                          |
 
 #### Sequence = Cursor (Terminology)
 
@@ -104,6 +104,7 @@ SERVER → CLIENT
 ```
 
 Every event delivered to a client is a **`SequencedEvent`** (the event + its server-assigned sequence + receivedAt). This means:
+
 - `EVENT` is a single `SequencedEvent` pushed in real-time
 - `EVENTS_BATCH` is an array of `SequencedEvent`s returned from a FETCH/catch-up
 - The client can persist the exact sequence per event without any ambiguity
@@ -117,14 +118,14 @@ Events are split into two distinct types to clearly separate client-authored dat
 
 ```json
 {
-  "id": "01961a3e-7c5d-7f8a-b1c2-d3e4f5a6b7c8",
-  "channelId": "my-todo-list",
-  "timestamp": "2026-05-29T12:00:00Z",
-  "clientId": "Xk9mQ2pLvN3wR8tY5uA7bC",
-  "type": "app.todo.item-added",
-  "payload": { "title": "Buy milk", "done": false },
-  "parentId": null,
-  "signature": "base64url-ed25519-signature"
+    "id": "01961a3e-7c5d-7f8a-b1c2-d3e4f5a6b7c8",
+    "channelId": "my-todo-list",
+    "timestamp": "2026-05-29T12:00:00Z",
+    "clientId": "Xk9mQ2pLvN3wR8tY5uA7bC",
+    "type": "app.todo.item-added",
+    "payload": { "title": "Buy milk", "done": false },
+    "parentId": null,
+    "signature": "base64url-ed25519-signature"
 }
 ```
 
@@ -132,9 +133,11 @@ Events are split into two distinct types to clearly separate client-authored dat
 
 ```json
 {
-  "event": { /* VestaEvent as above, untouched */ },
-  "sequence": 42,
-  "receivedAt": "2026-05-29T12:00:00.123Z"
+    "event": {
+        /* VestaEvent as above, untouched */
+    },
+    "sequence": 42,
+    "receivedAt": "2026-05-29T12:00:00.123Z"
 }
 ```
 
@@ -162,6 +165,7 @@ public sealed record SequencedEvent(
 ```
 
 **Why composition over inheritance:**
+
 - The original `VestaEvent` is preserved exactly as signed — signature verification doesn't need to strip fields
 - Wire format is clean: `EVENT` messages send `{ event: {...}, sequence, receivedAt }`
 - `IEventStore.AppendAsync` accepts `VestaEvent`, returns `SequencedEvent` — the type system enforces the flow
@@ -173,28 +177,37 @@ public sealed record SequencedEvent(
 
 The signature covers **all client-authored fields except the signature itself**:
 
-| Field | Signed | Reason |
-|-------|--------|--------|
-| `id` | ✅ | Prevents ID substitution |
-| `channelId` | ✅ | Prevents event being moved to different channel |
-| `timestamp` | ✅ | Prevents timestamp tampering |
-| `clientId` | ✅ | Binds event to its author |
-| `type` | ✅ | Prevents type substitution |
-| `payload` | ✅ | The actual data — obviously must be signed |
-| `parentId` | ✅ | Prevents causal chain manipulation |
-| `signature` | ❌ | Can't sign itself |
-| `sequence` | ❌ | Server-assigned, doesn't exist at signing time |
-| `receivedAt` | ❌ | Server-assigned, doesn't exist at signing time |
+| Field        | Signed | Reason                                          |
+| ------------ | ------ | ----------------------------------------------- |
+| `id`         | ✅     | Prevents ID substitution                        |
+| `channelId`  | ✅     | Prevents event being moved to different channel |
+| `timestamp`  | ✅     | Prevents timestamp tampering                    |
+| `clientId`   | ✅     | Binds event to its author                       |
+| `type`       | ✅     | Prevents type substitution                      |
+| `payload`    | ✅     | The actual data — obviously must be signed      |
+| `parentId`   | ✅     | Prevents causal chain manipulation              |
+| `signature`  | ❌     | Can't sign itself                               |
+| `sequence`   | ❌     | Server-assigned, doesn't exist at signing time  |
+| `receivedAt` | ❌     | Server-assigned, doesn't exist at signing time  |
 
 #### Canonical Signing Input
 
 The signing input is a **deterministic JSON byte string** produced using [RFC 8785 — JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785):
 
 ```json
-{"channelId":"my-todo-list","clientId":"Xk9mQ2pLvN3wR8tY5uA7bC","id":"01961a3e-7c5d-7f8a-b1c2-d3e4f5a6b7c8","parentId":null,"payload":{"done":false,"title":"Buy milk"},"timestamp":"2026-05-29T12:00:00Z","type":"app.todo.item-added"}
+{
+    "channelId": "my-todo-list",
+    "clientId": "Xk9mQ2pLvN3wR8tY5uA7bC",
+    "id": "01961a3e-7c5d-7f8a-b1c2-d3e4f5a6b7c8",
+    "parentId": null,
+    "payload": { "done": false, "title": "Buy milk" },
+    "timestamp": "2026-05-29T12:00:00Z",
+    "type": "app.todo.item-added"
+}
 ```
 
 Rules (per RFC 8785):
+
 - Keys sorted lexicographically (Unicode code point order)
 - No whitespace between tokens
 - Numbers use shortest representation (no trailing zeros)
@@ -224,20 +237,20 @@ The public key is derived from `clientId` — or looked up from the client's reg
 
 #### Why RFC 8785 (JCS)?
 
-| Alternative | Problem |
-|-------------|---------|
-| "Just serialize in field order" | Field order varies by language/library — C# and Python won't produce same bytes |
-| Custom deterministic serializer | One more thing to implement and keep in sync across 3 languages |
-| Hash the raw bytes client sent | Server might re-serialize; can't verify from stored data alone |
-| **RFC 8785 (JCS)** | **Standard, deterministic, implementations exist for C# (`JsonCanonicalization`), JS (`canonicalize`), Python (`json-canonicalization`)** |
+| Alternative                     | Problem                                                                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| "Just serialize in field order" | Field order varies by language/library — C# and Python won't produce same bytes                                                           |
+| Custom deterministic serializer | One more thing to implement and keep in sync across 3 languages                                                                           |
+| Hash the raw bytes client sent  | Server might re-serialize; can't verify from stored data alone                                                                            |
+| **RFC 8785 (JCS)**              | **Standard, deterministic, implementations exist for C# (`JsonCanonicalization`), JS (`canonicalize`), Python (`json-canonicalization`)** |
 
 #### Library References
 
-| Language | Package |
-|----------|---------|
-| C# | `JsonCanonicalization` (NuGet) |
-| JavaScript | `canonicalize` (npm) |
-| Python | `json-canonicalization` (PyPI) |
+| Language   | Package                        |
+| ---------- | ------------------------------ |
+| C#         | `JsonCanonicalization` (NuGet) |
+| JavaScript | `canonicalize` (npm)           |
+| Python     | `json-canonicalization` (PyPI) |
 
 ### Transport
 
@@ -254,6 +267,7 @@ The public key is derived from `clientId` — or looked up from the client's reg
 Understanding how the systems we're drawing inspiration from handle storage:
 
 **GitHub:**
+
 - Git objects (the actual repos) stored on disk as pack files — this is their "event log"
 - Metadata (issues, PRs, users, webhooks, permissions) → **MySQL** (sharded via Vitess)
 - Real-time notifications → **Redis** pub/sub
@@ -261,19 +275,20 @@ Understanding how the systems we're drawing inspiration from handle storage:
 - They don't use the filesystem as a database — they use it as git's native format and put everything else in proper databases
 
 **GitLab:**
+
 - Git objects on disk (same as GitHub)
 - Metadata → **PostgreSQL** (their primary DB for everything)
 - Background jobs → Sidekiq + Redis
 - Real-time → ActionCable (WebSocket) backed by Redis
 
 **EventStoreDB (the dedicated event sourcing DB):**
+
 - Custom append-only log on disk
 - Catch-up subscriptions (exactly our cursor pattern)
 - Projections as first-class concept
 - But: heavy, JVM-based, operational burden
 
 **Key insight**: All of these use a **proper database for the structured/queryable data** and only use the filesystem for things that ARE files (git objects). None of them use SQLite for multi-tenant server workloads.
-
 
 ### Decision: PostgreSQL for the Server
 
@@ -295,6 +310,7 @@ This doesn't violate the Vesta philosophy — the **client** still owns its data
 **No.** Here's why:
 
 What we're building is essentially an **event store with pub/sub** — PostgreSQL does both natively. The event-sourcing pattern (append-only log, cursor-based reads, projections) maps directly to:
+
 - `INSERT` → append event
 - `SELECT ... WHERE sequence > $lastSeen ORDER BY sequence` → catch-up
 - `LISTEN/NOTIFY` → real-time push
@@ -389,11 +405,11 @@ Option B is what most event stores do — it's a single-row lock per channel, wh
 
 Clients still need local storage. Here the choice is different — **SQLite** makes sense for clients:
 
-| Client | Storage | Why |
-|--------|---------|-----|
+| Client               | Storage                          | Why                               |
+| -------------------- | -------------------------------- | --------------------------------- |
 | **C# CLI / Desktop** | SQLite (`Microsoft.Data.Sqlite`) | Embedded, single-file, no install |
-| **JS Browser** | IndexedDB (or OPFS + `sql.js`) | Browser-native, good capacity |
-| **JS Node** | SQLite (`better-sqlite3`) | Same as C# — file-based, portable |
+| **JS Browser**       | IndexedDB (or OPFS + `sql.js`)   | Browser-native, good capacity     |
+| **JS Node**          | SQLite (`better-sqlite3`)        | Same as C# — file-based, portable |
 
 Client-side schema:
 
@@ -458,12 +474,14 @@ public interface IEventStore
 ### Data Access Strategy: EF Core + Raw Npgsql
 
 **EF Core** for the "cold" paths (schema management, metadata CRUD):
+
 - Schema migrations (channels, client_positions, identity_links, channel_access)
 - Channel CRUD, access control queries, position updates
 - DI integration with ASP.NET Core
 - DbContext for the relational/admin side of the server
 
 **Raw Npgsql** for the "hot" paths (event throughput, real-time):
+
 - Event append (`INSERT INTO events ...`) — avoids change tracker overhead
 - Event range reads (`SELECT ... WHERE sequence > $lastSeen`) — simple, fast
 - Bulk replay from client outbox (`COPY` or batch insert)
@@ -483,7 +501,7 @@ public class VestaDbContext : DbContext
 public class NpgsqlEventStore : IEventStore
 {
     private readonly NpgsqlDataSource _dataSource;
-    
+
     public async Task<long> AppendAsync(VestaEvent evt)
     {
         await using var cmd = _dataSource.CreateCommand(
@@ -514,13 +532,13 @@ This is the ultimate escape hatch — human-readable, grep-able, importable into
 
 ### Summary
 
-| Layer | Storage | Reason |
-|-------|---------|--------|
-| **Server** | PostgreSQL 18 | Concurrent writes, LISTEN/NOTIFY, JSONB, sequences, production-grade |
-| **C# Client** | SQLite | Embedded, single-file, offline-capable |
-| **JS Client (browser)** | IndexedDB | Browser-native |
-| **JS Client (Node)** | SQLite | Same as C# client |
-| **Export format** | JSON Lines | Human-readable portability |
+| Layer                   | Storage       | Reason                                                               |
+| ----------------------- | ------------- | -------------------------------------------------------------------- |
+| **Server**              | PostgreSQL 18 | Concurrent writes, LISTEN/NOTIFY, JSONB, sequences, production-grade |
+| **C# Client**           | SQLite        | Embedded, single-file, offline-capable                               |
+| **JS Client (browser)** | IndexedDB     | Browser-native                                                       |
+| **JS Client (Node)**    | SQLite        | Same as C# client                                                    |
+| **Export format**       | JSON Lines    | Human-readable portability                                           |
 
 ---
 
@@ -528,12 +546,12 @@ This is the ultimate escape hatch — human-readable, grep-able, importable into
 
 Since multiple clients can produce events concurrently, conflicts are inevitable. Vesta provides **building blocks**, not a single policy:
 
-| Strategy | Good for | How |
-|----------|----------|-----|
-| **Last-writer-wins (LWW)** | User preferences, simple state | Timestamp comparison |
-| **Append-only (CRDT-like)** | Todo items, chat messages | No conflict — all events are valid |
-| **Operational Transform** | Collaborative text (future) | Transform concurrent ops |
-| **Application-level merge** | Games, custom logic | App registers a merge handler |
+| Strategy                    | Good for                       | How                                |
+| --------------------------- | ------------------------------ | ---------------------------------- |
+| **Last-writer-wins (LWW)**  | User preferences, simple state | Timestamp comparison               |
+| **Append-only (CRDT-like)** | Todo items, chat messages      | No conflict — all events are valid |
+| **Operational Transform**   | Collaborative text (future)    | Transform concurrent ops           |
+| **Application-level merge** | Games, custom logic            | App registers a merge handler      |
 
 For the POC, focus on **append-only** and **LWW** — they cover all four target use cases.
 
@@ -541,13 +559,13 @@ For the POC, focus on **append-only** and **LWW** — they cover all four target
 
 These are the concrete building blocks the SDK provides. Apps compose them to build their state:
 
-| Primitive | Purpose | Example use |
-|-----------|---------|-------------|
+| Primitive              | Purpose                                                 | Example use                                 |
+| ---------------------- | ------------------------------------------------------- | ------------------------------------------- |
 | `EventReducer<TState>` | Fold a channel's event stream into a typed state object | Base abstraction — all others build on this |
-| `AppendOnlyLog<T>` | Ordered list where all events are valid (no conflicts) | Chat messages, activity feed, audit trail |
-| `LwwRegister<T>` | Single value, last-writer-wins by timestamp | User display name, clipboard content |
-| `LwwMap<TKey, TValue>` | Key-value map where each key uses LWW independently | User preferences, todo item states |
-| `ProjectionCheckpoint` | Tracks which sequence a projection has processed up to | Avoiding re-processing on reconnect |
+| `AppendOnlyLog<T>`     | Ordered list where all events are valid (no conflicts)  | Chat messages, activity feed, audit trail   |
+| `LwwRegister<T>`       | Single value, last-writer-wins by timestamp             | User display name, clipboard content        |
+| `LwwMap<TKey, TValue>` | Key-value map where each key uses LWW independently     | User preferences, todo item states          |
+| `ProjectionCheckpoint` | Tracks which sequence a projection has processed up to  | Avoiding re-processing on reconnect         |
 
 **C# sketch:**
 
@@ -624,13 +642,13 @@ Events can carry optional metadata indicating ephemerality:
 
 ```json
 {
-  "id": "...",
-  "channelId": "my-app/presence",
-  "type": "app.presence.heartbeat",
-  "payload": { "status": "online", "lastActive": "2026-05-30T10:00:00Z" },
-  "metadata": {
-    "ttlSeconds": 30
-  }
+    "id": "...",
+    "channelId": "my-app/presence",
+    "type": "app.presence.heartbeat",
+    "payload": { "status": "online", "lastActive": "2026-05-30T10:00:00Z" },
+    "metadata": {
+        "ttlSeconds": 30
+    }
 }
 ```
 
@@ -638,13 +656,13 @@ The `metadata.ttlSeconds` field (or `metadata.expiresAt` as an absolute timestam
 
 #### Storage & Replay Rules
 
-| Behavior | Rule |
-|----------|------|
-| **Persist?** | Yes — store normally for simplicity (POC). Server can clean up later. |
-| **Relay in real-time?** | Yes — push to all subscribers immediately like any event. |
-| **Include in catch-up (FETCH)?** | **No** — exclude expired events from catch-up by default. |
-| **Client local storage?** | Optional — client can choose to discard expired events from its SQLite. |
-| **Server cleanup?** | Background job periodically deletes events past their `expiresAt`. |
+| Behavior                         | Rule                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| **Persist?**                     | Yes — store normally for simplicity (POC). Server can clean up later.   |
+| **Relay in real-time?**          | Yes — push to all subscribers immediately like any event.               |
+| **Include in catch-up (FETCH)?** | **No** — exclude expired events from catch-up by default.               |
+| **Client local storage?**        | Optional — client can choose to discard expired events from its SQLite. |
+| **Server cleanup?**              | Background job periodically deletes events past their `expiresAt`.      |
 
 #### Server Implementation (POC)
 
@@ -684,10 +702,10 @@ This is the same model as Redis key expiry or DNS TTL — the data self-describe
 
 Authentication in Vesta is actually **two different problems**:
 
-| Concern | Question | Who decides |
-|---------|----------|-------------|
-| **Identity** | "Who is this client?" | The client itself (self-sovereign) |
-| **Authorization** | "Is this client allowed to access this channel?" | The server operator |
+| Concern           | Question                                         | Who decides                        |
+| ----------------- | ------------------------------------------------ | ---------------------------------- |
+| **Identity**      | "Who is this client?"                            | The client itself (self-sovereign) |
+| **Authorization** | "Is this client allowed to access this channel?" | The server operator                |
 
 These should be decoupled. A client's identity is portable across servers. A server's access policy is its own business.
 
@@ -703,6 +721,7 @@ Client identity = Ed25519 keypair
 ```
 
 **Why keypair-based:**
+
 - No dependency on any server or provider for identity
 - Works offline — you can sign events without network
 - Portable — move your key to a new device, you're the same "person"
@@ -710,6 +729,7 @@ Client identity = Ed25519 keypair
 - Same model as SSH keys / git signing — developers already understand this
 
 **Client ID derivation:**
+
 ```
 clientId = base64url(sha256(publicKey))[:22]  // ~128 bits, URL-safe
 ```
@@ -732,13 +752,13 @@ The server issues a **session token** (JWT or opaque) after verifying the challe
 
 This is where external providers come in. The server operator decides **who gets access to what**. Vesta should support multiple strategies via a pluggable auth middleware:
 
-| Strategy | How | Good for |
-|----------|-----|----------|
-| **Open** | Any valid client can connect and create/join channels | Dev/local/personal servers |
-| **Invite-only** | Server admin pre-registers allowed public keys | Small teams, private servers |
-| **Channel secrets** | Channel has a shared secret; client must present it to subscribe | Simple sharing (like a game room code) |
-| **External OIDC/OAuth2** | Server verifies client has a valid token from Google/GitHub/Azure AD/etc. | Enterprise, multi-tenant servers |
-| **Custom webhook** | Server calls an external URL to ask "is this client allowed?" | Full flexibility |
+| Strategy                 | How                                                                       | Good for                               |
+| ------------------------ | ------------------------------------------------------------------------- | -------------------------------------- |
+| **Open**                 | Any valid client can connect and create/join channels                     | Dev/local/personal servers             |
+| **Invite-only**          | Server admin pre-registers allowed public keys                            | Small teams, private servers           |
+| **Channel secrets**      | Channel has a shared secret; client must present it to subscribe          | Simple sharing (like a game room code) |
+| **External OIDC/OAuth2** | Server verifies client has a valid token from Google/GitHub/Azure AD/etc. | Enterprise, multi-tenant servers       |
+| **Custom webhook**       | Server calls an external URL to ask "is this client allowed?"             | Full flexibility                       |
 
 ### External Provider Flow (OIDC)
 
@@ -764,17 +784,20 @@ This is the same model as GitHub: you have SSH keys (your identity) but your Git
 For the POC, implement in layers:
 
 **Phase 1 (Milestone 1-2): Keypair + Open access**
+
 - Client generates Ed25519 keypair on first run, stores in config file
 - Client signs HELLO with its key
 - Server verifies signatures, allows all valid clients
 - Events carry signatures for integrity verification
 
 **Phase 2 (Milestone 3): Channel secrets**
+
 - Channels can optionally require a shared secret
 - Client presents secret when subscribing
 - Simple enough for game room codes and private todo lists
 
 **Phase 3 (Milestone 4+): OIDC integration**
+
 - Server supports configuring one or more OIDC providers
 - Client can link external identity to keypair
 - Server enforces access policies based on linked identities
@@ -784,38 +807,35 @@ For the POC, implement in layers:
 ```json
 // vesta-server.config.json
 {
-  "auth": {
-    "mode": "open",                    // "open" | "invite" | "oidc" | "webhook"
-    
-    // For "invite" mode:
-    "allowedKeys": [
-      "base64url-public-key-1",
-      "base64url-public-key-2"
-    ],
-    
-    // For "oidc" mode:
-    "oidc": {
-      "providers": [
-        {
-          "name": "google",
-          "issuer": "https://accounts.google.com",
-          "clientId": "your-client-id",
-          "allowedDomains": ["yourcompany.com"]
+    "auth": {
+        "mode": "open", // "open" | "invite" | "oidc" | "webhook"
+
+        // For "invite" mode:
+        "allowedKeys": ["base64url-public-key-1", "base64url-public-key-2"],
+
+        // For "oidc" mode:
+        "oidc": {
+            "providers": [
+                {
+                    "name": "google",
+                    "issuer": "https://accounts.google.com",
+                    "clientId": "your-client-id",
+                    "allowedDomains": ["yourcompany.com"]
+                },
+                {
+                    "name": "github",
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "clientId": "your-github-app-id"
+                }
+            ]
         },
-        {
-          "name": "github",
-          "issuer": "https://token.actions.githubusercontent.com",
-          "clientId": "your-github-app-id"
+
+        // For "webhook" mode:
+        "webhook": {
+            "url": "https://your-service.com/vesta/auth-check",
+            "secret": "hmac-shared-secret"
         }
-      ]
-    },
-    
-    // For "webhook" mode:
-    "webhook": {
-      "url": "https://your-service.com/vesta/auth-check",
-      "secret": "hmac-shared-secret"
     }
-  }
 }
 ```
 
@@ -834,11 +854,13 @@ The private key should be encrypted at rest (passphrase or OS keychain integrati
 ### Why Not Just OAuth Tokens?
 
 If we only used external OAuth tokens for identity:
+
 - Client identity is **tied to the provider** — if Google locks your account, you lose your Vesta identity
 - Doesn't work offline — can't sign events without network to refresh tokens
 - Server-dependent — different servers might use different providers, so you'd be a different "person" on each
 
 With keypair-first identity:
+
 - You ARE your key, regardless of any provider
 - External auth is just an **authorization layer** the server optionally applies
 - Same philosophy as Vesta: the fire lives within, not in Google's infrastructure
@@ -852,7 +874,7 @@ CREATE TABLE identity_links (
     provider        TEXT NOT NULL,           -- "google", "github", "azure-ad"
     external_id     TEXT NOT NULL,           -- email or sub claim
     linked_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    
+
     PRIMARY KEY (public_key, provider)
 );
 
@@ -863,7 +885,7 @@ CREATE TABLE channel_access (
     grant_value     TEXT NOT NULL,           -- the key, email, or hashed secret
     permission      TEXT NOT NULL DEFAULT 'read_write',  -- "read" | "write" | "read_write" | "admin"
     granted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    
+
     PRIMARY KEY (channel_id, grant_type, grant_value)
 );
 ```
@@ -872,22 +894,22 @@ CREATE TABLE channel_access (
 
 #### Key Questions & Answers
 
-| Question | Answer |
-|----------|--------|
-| Who can create a channel? | Depends on server auth mode (see below) |
-| Does SUBSCRIBE create a channel if missing? | Yes, in open mode. No, in private mode. |
-| Does PUBLISH create a channel if missing? | Yes, in open mode. No, in private mode. |
-| Can channel metadata change over time? | Yes — channel admins can update metadata. |
-| How are channel secrets configured? | By the channel creator or server admin via API. |
-| Can channels be deleted? | By admins only. Soft-delete (mark inactive) for POC. |
+| Question                                    | Answer                                               |
+| ------------------------------------------- | ---------------------------------------------------- |
+| Who can create a channel?                   | Depends on server auth mode (see below)              |
+| Does SUBSCRIBE create a channel if missing? | Yes, in open mode. No, in private mode.              |
+| Does PUBLISH create a channel if missing?   | Yes, in open mode. No, in private mode.              |
+| Can channel metadata change over time?      | Yes — channel admins can update metadata.            |
+| How are channel secrets configured?         | By the channel creator or server admin via API.      |
+| Can channels be deleted?                    | By admins only. Soft-delete (mark inactive) for POC. |
 
 #### Creation Rules by Auth Mode
 
-| Server Mode | Channel Creation Rule |
-|-------------|---------------------|
-| **Open** | First PUBLISH or SUBSCRIBE to a non-existent channel implicitly creates it. The first client becomes channel admin. |
-| **Invite-only** | Only server-registered clients can create channels (explicit API call or admin tool). |
-| **OIDC / Webhook** | Channel creation requires valid authorization. Server calls auth check before creating. |
+| Server Mode        | Channel Creation Rule                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **Open**           | First PUBLISH or SUBSCRIBE to a non-existent channel implicitly creates it. The first client becomes channel admin. |
+| **Invite-only**    | Only server-registered clients can create channels (explicit API call or admin tool).                               |
+| **OIDC / Webhook** | Channel creation requires valid authorization. Server calls auth check before creating.                             |
 
 #### Channel States
 
@@ -919,15 +941,15 @@ Apps are encouraged to namespace their channels: `{app-name}/{channel-type}/{ins
 
 ### Target Use Cases
 
-| # | Use Case | Pattern | What it proves |
-|---|----------|---------|----------------|
-| 1 | **Todo list with sync** | Append-only + LWW per item | Basic CRUD over events, multi-device sync |
-| 2 | **Simple game with state tracking** | Single-writer append | Progress/score synced across devices |
-| 3 | **Turn-based multiplayer game** | Multi-writer ordered events | Shared channel, sequencing matters |
-| 4 | **User preferences with sync** | LWW key-value | Replace-semantics, minimal state |
-| 5 | **Chat room** | Append-only, many-writer | Real-time fan-out, high write volume, many subscribers |
-| 6 | **Presence ("who's online")** | Ephemeral LWW with TTL/heartbeat | Not all state is permanent; forces TTL/volatile channel design |
-| 7 | **Shared clipboard / pinboard** | Single-writer, replace-semantics | "Give me the latest value" — proves Vesta isn't only growing logs |
+| #   | Use Case                            | Pattern                          | What it proves                                                    |
+| --- | ----------------------------------- | -------------------------------- | ----------------------------------------------------------------- |
+| 1   | **Todo list with sync**             | Append-only + LWW per item       | Basic CRUD over events, multi-device sync                         |
+| 2   | **Simple game with state tracking** | Single-writer append             | Progress/score synced across devices                              |
+| 3   | **Turn-based multiplayer game**     | Multi-writer ordered events      | Shared channel, sequencing matters                                |
+| 4   | **User preferences with sync**      | LWW key-value                    | Replace-semantics, minimal state                                  |
+| 5   | **Chat room**                       | Append-only, many-writer         | Real-time fan-out, high write volume, many subscribers            |
+| 6   | **Presence ("who's online")**       | Ephemeral LWW with TTL/heartbeat | Not all state is permanent; forces TTL/volatile channel design    |
+| 7   | **Shared clipboard / pinboard**     | Single-writer, replace-semantics | "Give me the latest value" — proves Vesta isn't only growing logs |
 
 ### Protocol Patterns Exercised
 
@@ -982,6 +1004,7 @@ This gives us full coverage of the protocol's capabilities with minimal overlap.
 ## Solution Structure
 
 The repo is split into two clear concerns:
+
 1. **Core** — the Vesta protocol, server, and client libraries (the "product")
 2. **Examples** — demo applications that consume the client libraries (the "proof")
 
@@ -1018,20 +1041,21 @@ Vesta/
 
 ### What Goes Where
 
-| Question | Answer |
-|----------|--------|
-| Protocol message types? | `src/VestaCore/` |
-| Event store interface? | `src/VestaCore/` |
-| WebSocket server handler? | `src/VestaServer/` |
-| PostgreSQL event store impl? | `src/VestaServer/` |
-| C# connect/publish/subscribe API? | `src/VestaClient/` |
-| SQLite client-side storage? | `src/VestaClient/` |
-| "How to build a todo app with Vesta" | `examples/TodoList.CLI/` |
-| "How to build a clipboard sync in TS" | `examples/clipboard-ts/` |
-| Python protocol implementation? | `clients/vesta-client-py/` |
+| Question                                | Answer                     |
+| --------------------------------------- | -------------------------- |
+| Protocol message types?                 | `src/VestaCore/`           |
+| Event store interface?                  | `src/VestaCore/`           |
+| WebSocket server handler?               | `src/VestaServer/`         |
+| PostgreSQL event store impl?            | `src/VestaServer/`         |
+| C# connect/publish/subscribe API?       | `src/VestaClient/`         |
+| SQLite client-side storage?             | `src/VestaClient/`         |
+| "How to build a todo app with Vesta"    | `examples/TodoList.CLI/`   |
+| "How to build a clipboard sync in TS"   | `examples/clipboard-ts/`   |
+| Python protocol implementation?         | `clients/vesta-client-py/` |
 | Python collab editor using the library? | `examples/collab-edit-py/` |
 
 This separation means:
+
 - Someone browsing the repo immediately sees what's core vs. what's a demo
 - Client libraries in other languages live in `clients/` — each is its own package
 - Examples are self-contained apps that reference the client libraries
@@ -1052,13 +1076,13 @@ This separation means:
 
 ## Analogies That Guide Design
 
-| Analogy | What we borrow |
-|---------|---------------|
-| **Git** | Distributed log, local-first, remotes are interchangeable |
-| **BitTorrent tracker** | Server helps peers find each other; doesn't own the data |
-| **CRDTs** | Conflict-free data structures for certain state shapes |
-| **SSE/WebSocket pub-sub** | Real-time event delivery model |
-| **ActivityPub** | Federated protocol over HTTP (future inspiration) |
+| Analogy                   | What we borrow                                            |
+| ------------------------- | --------------------------------------------------------- |
+| **Git**                   | Distributed log, local-first, remotes are interchangeable |
+| **BitTorrent tracker**    | Server helps peers find each other; doesn't own the data  |
+| **CRDTs**                 | Conflict-free data structures for certain state shapes    |
+| **SSE/WebSocket pub-sub** | Real-time event delivery model                            |
+| **ActivityPub**           | Federated protocol over HTTP (future inspiration)         |
 
 ---
 
@@ -1066,20 +1090,21 @@ This separation means:
 
 Refined step-by-step build order. The key insight: **get the protocol loop working with in-memory storage first**, then layer in persistence complexity.
 
-| # | Step | What it proves |
-|---|------|----------------|
-| 1 | Restructure solution into `src/`, `tests/`, `examples/`, `clients/` | Clean foundation, `dotnet build` works |
-| 2 | Define protocol/domain types in VestaCore (`VestaEvent`, `SequencedEvent`, `ProtocolMessage`, etc.) | Type system compiles, all message shapes defined |
-| 3 | Add protocol JSON serialization tests | Messages round-trip correctly, canonical form verified |
-| 4 | Implement in-memory `IEventStore` | Storage abstraction works without any DB dependency |
-| 5 | Build minimal WebSocket server using in-memory store | Server accepts connections, relays events, assigns sequences |
-| 6 | Build C# client library and prove round-trip | Client → Server → Client event flow works end-to-end |
-| 7 | Swap server store to PostgreSQL (`NpgsqlEventStore`) | Real persistence, LISTEN/NOTIFY, concurrent writes |
-| 8 | Add SQLite client-side cache + outbox | Offline support, reconnect catch-up |
-| 9 | Add Ed25519 signing + verification | Events are signed, server verifies, integrity proven |
-| 10 | Build example apps (chat, todo, tic-tac-toe, clipboard) | Protocol handles real use cases across patterns |
+| #   | Step                                                                                                | What it proves                                               |
+| --- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 1   | Restructure solution into `src/`, `tests/`, `examples/`, `clients/`                                 | Clean foundation, `dotnet build` works                       |
+| 2   | Define protocol/domain types in VestaCore (`VestaEvent`, `SequencedEvent`, `ProtocolMessage`, etc.) | Type system compiles, all message shapes defined             |
+| 3   | Add protocol JSON serialization tests                                                               | Messages round-trip correctly, canonical form verified       |
+| 4   | Implement in-memory `IEventStore`                                                                   | Storage abstraction works without any DB dependency          |
+| 5   | Build minimal WebSocket server using in-memory store                                                | Server accepts connections, relays events, assigns sequences |
+| 6   | Build C# client library and prove round-trip                                                        | Client → Server → Client event flow works end-to-end         |
+| 7   | Swap server store to PostgreSQL (`NpgsqlEventStore`)                                                | Real persistence, LISTEN/NOTIFY, concurrent writes           |
+| 8   | Add SQLite client-side cache + outbox                                                               | Offline support, reconnect catch-up                          |
+| 9   | Add Ed25519 signing + verification                                                                  | Events are signed, server verifies, integrity proven         |
+| 10  | Build example apps (chat, todo, tic-tac-toe, clipboard)                                             | Protocol handles real use cases across patterns              |
 
 **Why this order:**
+
 - Steps 1–6 produce a fully working system with zero infrastructure dependencies (no Docker, no PostgreSQL). You can `dotnet run` the server and two clients and watch events flow.
 - Step 7 adds PostgreSQL — by this point the protocol is proven and stable, so you're only swapping one interface implementation.
 - Steps 8–9 add client resilience and security.
@@ -1097,13 +1122,13 @@ Examples are **real applications**, not protocol demos. They exist to prove the 
 
 Each example app must demonstrate all of the following:
 
-| Requirement | What it means |
-|-------------|---------------|
-| **Durable identity** | Uses `VestaIdentity.LoadOrCreate(path)` — identity persists across runs, user is always the same "person" |
-| **Local event cache** | Uses `SqliteClientEventStore` (or equivalent) — events received from the server are persisted locally |
-| **Offline behavior** | Works meaningfully without a server connection — queues events to outbox, displays cached state |
-| **Projection / state reconstruction** | Rebuilds application state from the event log on startup (not just displaying raw events) |
-| **Clear event schemas** | Documents the event types and payload shapes the app uses (in code comments or a section in the README) |
+| Requirement                           | What it means                                                                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **Durable identity**                  | Uses `VestaIdentity.LoadOrCreate(path)` — identity persists across runs, user is always the same "person" |
+| **Local event cache**                 | Uses `SqliteClientEventStore` (or equivalent) — events received from the server are persisted locally     |
+| **Offline behavior**                  | Works meaningfully without a server connection — queues events to outbox, displays cached state           |
+| **Projection / state reconstruction** | Rebuilds application state from the event log on startup (not just displaying raw events)                 |
+| **Clear event schemas**               | Documents the event types and payload shapes the app uses (in code comments or a section in the README)   |
 
 ### Structure of an Example
 
@@ -1139,18 +1164,19 @@ Event types:
 ---
 
 ### Faster realtime messages without db storage
+
 Im going to add a `volatile` flag to the protocol that means "don't store this event in the database, just relay it to current subscribers". This is for things like presence heartbeats where you want real-time updates but no history. The server will still assign a sequence number for ordering, but won't persist the event. Clients won't see these on catch-up, only in real-time.
 
 ## TODO
 
 Known gaps and deferred work, in rough priority order.
 
-| # | Area | What's missing | Notes |
-|---|------|----------------|-------|
-| 1 | **Ephemeral events / TTL** | Server stores presence heartbeats forever. Need to: (1) add `expires_at` column to `events` table, (2) parse `metadata.ttlSeconds` from payload on PUBLISH and compute `expires_at`, (3) filter expired events out of `GetEventsAsync` catch-up queries, (4) background cleanup job to delete expired rows. Note: for presence/LWW-state use cases, `Replace=true` (implemented) is a better fit than TTL. TTL is still needed for notification-style ephemeral events. | Presence.CLI now uses `Replace=true`. Design is in PLANNING.md § Ephemeral Events & Presence. |
-| 2 | **`VestaEvent` metadata field** | The protocol spec mentions `metadata.ttlSeconds` but `VestaEvent` has no `Metadata` field. The TTL is currently smuggled into `Payload`, which is wrong — payload is app data, metadata is protocol-level. | Add `JsonElement? Metadata` to `VestaEvent`. Update signing (metadata is NOT signed — it's transport-level). Update server to read `metadata.ttlSeconds`. |
-| 3 | **SDK conflict resolution primitives** | `EventReducer<T>`, `AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>` are described in PLANNING.md but not implemented. Currently each example rolls its own projection. | Would let `TodoListState` and `PresenceState` be replaced with composed SDK primitives. |
-| 4 | **Channel access control** | All channels are open. No shared-secret or invite-only mode implemented. | PLANNING.md § Authentication & Identity has the schema (`channel_access` table). |
-| 5 | **Server-side signature verification** | Server accepts events with any or no signature. The `ProtocolHandler` verifies the public key matches the `clientId` on HELLO but does not verify event signatures on PUBLISH. | Should reject PUBLISH if signature is invalid or missing when the client registered a public key. |
-| 6 | **Browser example** | `examples/chat-web/` is planned but not started. | Would prove the TS client works in a browser (not just Node.js). |
-| 7 | **CI/CD** | GitHub Actions deploys VestaServer to Azure. Tests run on push. | Testcontainers for PostgreSQL integration tests on the runner. |
+| #   | Area                                   | What's missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Notes                                                                                                                                                     |
+| --- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Ephemeral events / TTL**             | Server stores presence heartbeats forever. Need to: (1) add `expires_at` column to `events` table, (2) parse `metadata.ttlSeconds` from payload on PUBLISH and compute `expires_at`, (3) filter expired events out of `GetEventsAsync` catch-up queries, (4) background cleanup job to delete expired rows. Note: for presence/LWW-state use cases, `Replace=true` (implemented) is a better fit than TTL. TTL is still needed for notification-style ephemeral events.                                                             | Presence.CLI now uses `Replace=true`. Design is in PLANNING.md § Ephemeral Events & Presence.                                                             |
+| 2   | **`VestaEvent` metadata field**        | The protocol spec mentions `metadata.ttlSeconds` but `VestaEvent` has no `Metadata` field. The TTL is currently smuggled into `Payload`, which is wrong — payload is app data, metadata is protocol-level.                                                                                                                                                                                                                                                                                                                          | Add `JsonElement? Metadata` to `VestaEvent`. Update signing (metadata is NOT signed — it's transport-level). Update server to read `metadata.ttlSeconds`. |
+| 3   | **SDK conflict resolution primitives** | `EventReducer<T>`, `AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>` are described in PLANNING.md but not implemented. Currently each example rolls its own projection.                                                                                                                                                                                                                                                                                                                                                   | Would let `TodoListState` and `PresenceState` be replaced with composed SDK primitives.                                                                   |
+| 4   | **Channel access control**             | ✅ **Done.** Open / private / invite-only modes implemented via `channel_access` metadata table + `IChannelAccessStore`. `CREATE_CHANNEL` protocol message lets clients declare visibility and seed the member list. ACL is enforced on HELLO subscribe and PUBLISH.                                                                                                                                                                                                                                                                | See `src/VestaServer/Storage/IChannelAccessStore.cs`.                                                                                                     |
+| 5   | **Server-side signature verification** | ✅ **Done.** Three layers: (a) if HELLO includes a `PublicKey`, server verifies it derives to the announced `clientId`; (b) every PUBLISH now requires `event.ClientId == connection.ClientId` (always-on, prevents a logged-in client from impersonating another); (c) when a public key is registered, every PUBLISH must carry a valid Ed25519 signature over the JCS-canonicalized event. Strict mode `Protocol:RequireSignedEvents=true` additionally rejects HELLO without a public key and forbids unsigned events globally. | See `ProtocolHandler.HandlePublishAsync` and `RequireSignedEventsTests`.                                                                                  |
+| 6   | **Browser example**                    | ✅ **Done.** `examples/chess-web/` is a full multiplayer chess client (Vite + chess.js + vesta-client-ts), with lobby presence, invite/accept flow, persistent matches across reconnects, login/logout, and bucketed match list.                                                                                                                                                                                                                                                                                                    | Proves the TS client works in a real browser app.                                                                                                         |
+| 7   | **CI/CD**                              | GitHub Actions deploys VestaServer to Azure. Tests run on push.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Testcontainers for PostgreSQL integration tests on the runner.                                                                                            |

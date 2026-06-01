@@ -46,6 +46,9 @@ else
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddTransient<ProtocolHandler>();
 
+// Protocol options (e.g. require all events to be signed).
+builder.Services.Configure<ProtocolOptions>(builder.Configuration.GetSection("Protocol"));
+
 WebApplication app = builder.Build();
 
 // Apply pending migrations on startup (only when using PostgreSQL)

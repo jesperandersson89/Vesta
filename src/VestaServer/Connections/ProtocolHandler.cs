@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using VestaCore.Channels;
 using VestaCore.Events;
 using VestaCore.Identity;
@@ -11,6 +12,20 @@ using VestaServer.Storage;
 namespace VestaServer.Connections;
 
 /// <summary>
+/// Options that control protocol-level security policy.
+/// </summary>
+public sealed class ProtocolOptions
+{
+    /// <summary>
+    /// When true, HELLO must include a PublicKey and every PUBLISH must carry a valid Ed25519
+    /// signature over the event. When false (default), unsigned events are accepted from
+    /// connections that did not register a public key — but events that ARE signed (because
+    /// a key was registered) are still verified.
+    /// </summary>
+    public bool RequireSignedEvents { get; set; }
+}
+
+/// <summary>
 /// Handles the protocol message loop for a single connected client.
 /// Processes incoming messages, interacts with the event store,
 /// and coordinates broadcasts through the connection manager.
@@ -19,9 +34,11 @@ public sealed class ProtocolHandler(
     IEventStore eventStore,
     IChannelAccessStore accessStore,
     ConnectionManager connectionManager,
-    ILogger<ProtocolHandler> logger)
+    ILogger<ProtocolHandler> logger,
+    IOptions<ProtocolOptions>? protocolOptions = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
+    private readonly ProtocolOptions _options = protocolOptions?.Value ?? new ProtocolOptions();
 
     /// <summary>
     /// Runs the full message loop for a client connection until disconnect.
@@ -130,6 +147,13 @@ public sealed class ProtocolHandler(
 
             connection.PublicKey = publicKeyBytes;
         }
+        else if (_options.RequireSignedEvents)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("PUBLIC_KEY_REQUIRED", "HELLO must include a PublicKey on this server"),
+                cancellationToken);
+            return;
+        }
 
         // Subscribe to requested channels (ACL-gated)
         List<string> rejected = [];
@@ -203,6 +227,20 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        // Anti-impersonation: the event's clientId must match this connection's clientId.
+        // Without this check, a connection could publish events claiming to be from another
+        // client (the signature check below would still pass because it verifies against the
+        // connection's own registered key — so a malicious client could otherwise sign-as-self
+        // but stamp the event with someone else's clientId).
+        if (!string.IsNullOrEmpty(connection.ClientId) &&
+            !string.Equals(publish.Event.ClientId, connection.ClientId, StringComparison.Ordinal))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("CLIENT_ID_MISMATCH", "Event clientId does not match connection clientId"),
+                cancellationToken);
+            return;
+        }
+
         // Verify signature if public key is known
         if (connection.PublicKey is not null)
         {
@@ -221,6 +259,15 @@ public sealed class ProtocolHandler(
                     cancellationToken);
                 return;
             }
+        }
+        else if (_options.RequireSignedEvents)
+        {
+            // Should be unreachable because HELLO already enforces PublicKey,
+            // but guard defensively in case state is ever inconsistent.
+            await connection.SendAsync(
+                new ErrorMessage("SIGNATURE_REQUIRED", "Server requires signed events"),
+                cancellationToken);
+            return;
         }
 
         // If volatile, skip DB storage — just relay to current subscribers

@@ -30,7 +30,7 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         using SqliteClientEventStore store = SqliteClientEventStore.CreateInMemory();
         VestaConnection connection = new("offline-client", store);
 
-        VestaEvent evt = CreateEvent("test/offline");
+        VestaEvent evt = CreateEvent("test/offline", clientId: "offline-client");
         await connection.PublishAsync(evt);
 
         IReadOnlyList<OutboxEntry> pending = await store.GetPendingOutboxAsync();
@@ -47,8 +47,8 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         using SqliteClientEventStore store = SqliteClientEventStore.CreateInMemory();
 
         // Enqueue events while "offline"
-        VestaEvent evt1 = CreateEvent("test/flush");
-        VestaEvent evt2 = CreateEvent("test/flush");
+        VestaEvent evt1 = CreateEvent("test/flush", clientId: "flush-client");
+        VestaEvent evt2 = CreateEvent("test/flush", clientId: "flush-client");
         await store.EnqueueOutboxAsync(evt1);
         await store.EnqueueOutboxAsync(evt2);
 
@@ -111,7 +111,7 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         publisher.OnAck += ack => pubAcks.Enqueue(ack);
 
         // Publish an event
-        VestaEvent evt = CreateEvent("test/cache-recv");
+        VestaEvent evt = CreateEvent("test/cache-recv", clientId: "pub-client");
         await publisher.PublishAsync(evt);
         await WaitForConditionAsync(() => !pubAcks.IsEmpty);
 
@@ -148,9 +148,9 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         ConcurrentQueue<AckMessage> pubAcks = new();
         publisher.OnAck += ack => pubAcks.Enqueue(ack);
 
-        await publisher.PublishAsync(CreateEvent("test/reconnect"));
+        await publisher.PublishAsync(CreateEvent("test/reconnect", clientId: "publisher"));
         await WaitForConditionAsync(() => pubAcks.Count >= 1);
-        await publisher.PublishAsync(CreateEvent("test/reconnect"));
+        await publisher.PublishAsync(CreateEvent("test/reconnect", clientId: "publisher"));
         await WaitForConditionAsync(() => pubAcks.Count >= 2);
 
         // Wait for subscriber to cache them
@@ -162,7 +162,7 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
         await session1.DisposeAsync();
 
         // Publish a 3rd event while disconnected
-        await publisher.PublishAsync(CreateEvent("test/reconnect"));
+        await publisher.PublishAsync(CreateEvent("test/reconnect", clientId: "publisher"));
         await WaitForConditionAsync(() => pubAcks.Count >= 3);
 
         // Reconnect — should use stored position (seq 2) and get catch-up for seq 3
@@ -187,14 +187,14 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
 
     // --- Helpers ---
 
-    private static VestaEvent CreateEvent(string channelId)
+    private static VestaEvent CreateEvent(string channelId, string clientId = "test-client-id")
     {
         JsonElement payload = JsonDocument.Parse("""{"text":"hello"}""").RootElement;
         return new VestaEvent(
             Id: Guid.NewGuid(),
             ChannelId: channelId,
             Timestamp: DateTimeOffset.UtcNow,
-            ClientId: "test-client-id",
+            ClientId: clientId,
             EventType: "test.message",
             Payload: payload);
     }

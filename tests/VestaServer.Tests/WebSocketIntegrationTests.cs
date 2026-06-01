@@ -62,7 +62,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
             LastSequences: new Dictionary<string, long>()));
         await ReceiveAsync(ws); // WELCOME
 
-        VestaEvent evt = CreateEvent("chat/pub");
+        VestaEvent evt = CreateEvent("chat/pub", clientId: "test-client-001");
         await SendAsync(ws, new PublishMessage("chat/pub", evt));
 
         ProtocolMessage? response = await ReceiveAsync(ws);
@@ -94,7 +94,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await ReceiveAsync(subscriber); // WELCOME
 
         // Publisher sends an event
-        VestaEvent evt = CreateEvent("chat/broadcast");
+        VestaEvent evt = CreateEvent("chat/broadcast", clientId: "publisher-001");
         await SendAsync(publisher, new PublishMessage("chat/broadcast", evt));
 
         // Publisher gets ACK
@@ -124,9 +124,9 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await ReceiveAsync(publisher); // WELCOME
 
         // Publish two events
-        await SendAsync(publisher, new PublishMessage("chat/catchup", CreateEvent("chat/catchup", "msg.first")));
+        await SendAsync(publisher, new PublishMessage("chat/catchup", CreateEvent("chat/catchup", "msg.first", clientId: "publisher-001")));
         await ReceiveAsync(publisher); // ACK
-        await SendAsync(publisher, new PublishMessage("chat/catchup", CreateEvent("chat/catchup", "msg.second")));
+        await SendAsync(publisher, new PublishMessage("chat/catchup", CreateEvent("chat/catchup", "msg.second", clientId: "publisher-001")));
         await ReceiveAsync(publisher); // ACK
 
         // New subscriber connects with lastSequences indicating they've seen nothing (0)
@@ -162,7 +162,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         // Publish 3 events
         for (int i = 0; i < 3; i++)
         {
-            await SendAsync(ws, new PublishMessage("chat/fetch", CreateEvent("chat/fetch")));
+            await SendAsync(ws, new PublishMessage("chat/fetch", CreateEvent("chat/fetch", clientId: "client-001")));
             await ReceiveAsync(ws); // ACK
         }
 
@@ -197,7 +197,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await Task.Delay(50);
 
         // ws1 publishes
-        await SendAsync(ws1, new PublishMessage("chat/unsub", CreateEvent("chat/unsub")));
+        await SendAsync(ws1, new PublishMessage("chat/unsub", CreateEvent("chat/unsub", clientId: "client-1")));
         await ReceiveAsync(ws1); // ACK
 
         // ws2 should NOT receive the event — timeout-based check
@@ -244,15 +244,15 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await SendAsync(ws, new HelloMessage("client-1", ["iso-a", "iso-b"], new Dictionary<string, long>()));
         await ReceiveAsync(ws); // WELCOME
 
-        await SendAsync(ws, new PublishMessage("iso-a", CreateEvent("iso-a")));
+        await SendAsync(ws, new PublishMessage("iso-a", CreateEvent("iso-a", clientId: "client-1")));
         AckMessage ack1 = Assert.IsType<AckMessage>(await ReceiveAsync(ws));
         Assert.Equal(1L, ack1.Sequence);
 
-        await SendAsync(ws, new PublishMessage("iso-b", CreateEvent("iso-b")));
+        await SendAsync(ws, new PublishMessage("iso-b", CreateEvent("iso-b", clientId: "client-1")));
         AckMessage ack2 = Assert.IsType<AckMessage>(await ReceiveAsync(ws));
         Assert.Equal(1L, ack2.Sequence); // iso-b also starts at 1
 
-        await SendAsync(ws, new PublishMessage("iso-a", CreateEvent("iso-a")));
+        await SendAsync(ws, new PublishMessage("iso-a", CreateEvent("iso-a", clientId: "client-1")));
         AckMessage ack3 = Assert.IsType<AckMessage>(await ReceiveAsync(ws));
         Assert.Equal(2L, ack3.Sequence); // iso-a is now at 2
 
@@ -305,7 +305,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await SendAsync(intruder, new HelloMessage("intruder-2", [], new Dictionary<string, long>()));
         await ReceiveAsync(intruder); // WELCOME
 
-        await SendAsync(intruder, new PublishMessage("priv/room2", CreateEvent("priv/room2")));
+        await SendAsync(intruder, new PublishMessage("priv/room2", CreateEvent("priv/room2", clientId: "intruder-2")));
         ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(intruder));
         Assert.Equal("ACCESS_DENIED", error.Code);
 
@@ -327,7 +327,7 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         WelcomeMessage welcome = Assert.IsType<WelcomeMessage>(await ReceiveAsync(member));
         Assert.Contains("priv/room3", welcome.Channels);
 
-        await SendAsync(member, new PublishMessage("priv/room3", CreateEvent("priv/room3")));
+        await SendAsync(member, new PublishMessage("priv/room3", CreateEvent("priv/room3", clientId: "member-3")));
         AckMessage ack = Assert.IsType<AckMessage>(await ReceiveAsync(member));
         Assert.Equal("priv/room3", ack.ChannelId);
 
@@ -389,6 +389,27 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         await admin.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Publish_RejectsEventWithMismatchedClientId()
+    {
+        using WebSocket ws = await ConnectAsync();
+
+        await SendAsync(ws, new HelloMessage(
+            ClientId: "alice",
+            Channels: ["sig/mismatch"],
+            LastSequences: new Dictionary<string, long>()));
+        await ReceiveAsync(ws); // WELCOME
+
+        // Try to publish an event claiming to be from "bob"
+        VestaEvent spoofed = CreateEvent("sig/mismatch", clientId: "bob");
+        await SendAsync(ws, new PublishMessage("sig/mismatch", spoofed));
+
+        ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(ws));
+        Assert.Equal("CLIENT_ID_MISMATCH", error.Code);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
     // --- Helpers ---
 
     private async Task<WebSocket> ConnectAsync()
@@ -426,14 +447,17 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
         return await JsonSerializer.DeserializeAsync<ProtocolMessage>(stream, JsonOptions, cancellationToken);
     }
 
-    private static VestaEvent CreateEvent(string channelId, string eventType = "test.message")
+    private static VestaEvent CreateEvent(
+        string channelId,
+        string eventType = "test.message",
+        string clientId = "test-client-id-123456")
     {
         JsonElement payload = JsonDocument.Parse("""{"text":"hello"}""").RootElement;
         return new VestaEvent(
             Id: Guid.NewGuid(),
             ChannelId: channelId,
             Timestamp: DateTimeOffset.UtcNow,
-            ClientId: "test-client-id-123456",
+            ClientId: clientId,
             EventType: eventType,
             Payload: payload
         );
