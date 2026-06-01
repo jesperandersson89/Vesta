@@ -25,7 +25,7 @@ Vesta/
 │   ├── VestaServer/            # ASP.NET Core host (relay + persistence)
 │   └── VestaClient/            # C# client library
 ├── clients/                    # Client libraries in other languages
-│   ├── vesta-client-js/        # TypeScript/JS client (npm)
+│   ├── vesta-client-ts/        # TypeScript client (npm)
 │   └── vesta-client-py/        # Python client (pip)
 ├── examples/                   # Demo apps consuming the client libraries
 │   ├── ChatRoom.CLI/           # C# chat demo

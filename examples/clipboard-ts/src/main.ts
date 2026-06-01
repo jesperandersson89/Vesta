@@ -12,75 +12,22 @@
  * Run:  npx tsx src/main.ts [ws://host:port/ws] [room-name]
  */
 
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { createInterface } from "node:readline";
 import clipboardy from "clipboardy";
 import WebSocket from "ws";
+import {
+  VestaConnection,
+  createEvent,
+  loadOrCreateIdentity,
+  type EventMessage,
+  type EventsBatchMessage,
+  type VestaSocket,
+} from "vesta-client";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const DEFAULT_SERVER = "ws://localhost:5150/ws";
 const DEFAULT_ROOM = "main";
 const POLL_INTERVAL_MS = 300;
-const RECONNECT_INITIAL_MS = 1000;
-const RECONNECT_MAX_MS = 30000;
-
-const VESTA_DIR = join(homedir(), ".vesta");
-mkdirSync(VESTA_DIR, { recursive: true });
-
-// ── Identity ─────────────────────────────────────────────────────────────────
-interface Identity {
-  clientId: string;
-  username: string;
-}
-
-function loadOrCreateIdentity(username: string, room: string): Identity {
-  const path = join(VESTA_DIR, `clipboard-${room}-${username}-identity.json`);
-  if (existsSync(path)) {
-    const data = JSON.parse(readFileSync(path, "utf-8"));
-    return { clientId: data.clientId, username };
-  }
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-  let clientId = "";
-  for (let i = 0; i < 22; i++) {
-    clientId += chars[Math.floor(Math.random() * chars.length)];
-  }
-  writeFileSync(path, JSON.stringify({ clientId, username }, null, 2));
-  return { clientId, username };
-}
-
-// ── Protocol helpers ─────────────────────────────────────────────────────────
-function makeHello(clientId: string, channel: string): string {
-  return JSON.stringify({
-    type: "HELLO",
-    clientId,
-    channels: [channel],
-    lastSequences: { [channel]: 0 },
-  });
-}
-
-function makePublish(
-  clientId: string,
-  channel: string,
-  text: string,
-  username: string
-): string {
-  return JSON.stringify({
-    type: "PUBLISH",
-    channelId: channel,
-    event: {
-      id: randomUUID(),
-      channelId: channel,
-      timestamp: new Date().toISOString(),
-      clientId,
-      eventType: "app.clipboard.update",
-      payload: { text, username },
-      replace: true,
-    },
-  });
-}
 
 // ── State ────────────────────────────────────────────────────────────────────
 interface ClipboardEntry {
@@ -197,10 +144,8 @@ async function main(): Promise<void> {
   }
   const username: string = maybeUsername;
 
-  const identity = loadOrCreateIdentity(username, room);
+  const clientId = loadOrCreateIdentity(`clipboard-${room}-${username}`);
   const state = new ClipboardState();
-  let connected = false;
-  let ws: WebSocket | null = null;
   let lastClipboard = "";
 
   try {
@@ -211,78 +156,65 @@ async function main(): Promise<void> {
 
   // Apply initial clipboard as our own entry
   state.apply({
-    clientId: identity.clientId,
+    clientId,
     eventType: "app.clipboard.update",
     timestamp: new Date().toISOString(),
     payload: { text: lastClipboard, username },
   });
 
   function redraw(): void {
-    renderUI(state, identity.clientId, connected, serverUrl, channel, lastClipboard);
+    renderUI(state, clientId, connection.isConnected, serverUrl, channel, lastClipboard);
   }
 
-  // ── WebSocket connection with auto-reconnect ─────────────────────────────
-  let backoff = RECONNECT_INITIAL_MS;
+  // ── Vesta connection ─────────────────────────────────────────────────────
+  const connection = new VestaConnection({
+    serverUrl,
+    clientId,
+    channels: [channel],
+    createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
+  });
 
-  function connect(): void {
-    ws = new WebSocket(serverUrl);
-
-    ws.on("open", () => {
-      ws!.send(makeHello(identity.clientId, channel));
-    });
-
-    ws.on("message", (data) => {
-      const msg = JSON.parse(data.toString());
-
-      if (msg.type === "WELCOME") {
-        connected = true;
-        backoff = RECONNECT_INITIAL_MS;
-
-        // Publish our current clipboard on connect
-        if (lastClipboard) {
-          ws!.send(makePublish(identity.clientId, channel, lastClipboard, username));
-        }
-        redraw();
-        return;
-      }
-
-      const events = eventsFromMessage(msg);
-      let changed = false;
-      for (const evt of events) {
-        if (evt.clientId === identity.clientId) continue; // Skip own echoes
-        if (state.apply(evt)) {
-          changed = true;
-          // Write the latest entry to our clipboard
-          const latest = state.getLatest();
-          if (latest && latest.clientId !== identity.clientId) {
-            lastClipboard = latest.text;
-            clipboardy.writeSync(latest.text);
-          }
-        }
-      }
-      if (changed) redraw();
-    });
-
-    ws.on("close", () => {
-      connected = false;
-      ws = null;
-      redraw();
-      setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
-    });
-
-    ws.on("error", () => {
-      // Will trigger 'close'
-    });
-  }
-
-  function eventsFromMessage(msg: any): any[] {
-    if (msg.type === "EVENT") return [msg.event];
-    if (msg.type === "EVENTS_BATCH") {
-      return (msg.events ?? []).map((se: any) => se.event);
+  connection.on("connected", () => {
+    if (lastClipboard) {
+      connection.publish(
+        createEvent(channel, clientId, "app.clipboard.update", { text: lastClipboard, username }, { replace: true })
+      );
     }
-    return [];
-  }
+    redraw();
+  });
+
+  connection.on("disconnected", () => redraw());
+
+  connection.on("event", (msg: EventMessage) => {
+    if (msg.event.clientId === clientId) return;
+    if (state.apply(msg.event as any)) {
+      const latest = state.getLatest();
+      if (latest && latest.clientId !== clientId) {
+        lastClipboard = latest.text;
+        clipboardy.writeSync(latest.text);
+      }
+      redraw();
+    }
+  });
+
+  connection.on("eventsBatch", (msg: EventsBatchMessage) => {
+    let changed = false;
+    for (const se of msg.events) {
+      if (se.event.clientId === clientId) continue;
+      if (state.apply(se.event as any)) changed = true;
+    }
+    if (changed) {
+      const latest = state.getLatest();
+      if (latest && latest.clientId !== clientId) {
+        lastClipboard = latest.text;
+        clipboardy.writeSync(latest.text);
+      }
+      redraw();
+    }
+  });
+
+  connection.connect();
+  redraw();
 
   // ── Clipboard polling ────────────────────────────────────────────────────
   setInterval(async () => {
@@ -290,20 +222,17 @@ async function main(): Promise<void> {
       const current = await clipboardy.read();
       if (current && current !== lastClipboard) {
         lastClipboard = current;
-
-        // Apply locally
         state.apply({
-          clientId: identity.clientId,
+          clientId,
           eventType: "app.clipboard.update",
           timestamp: new Date().toISOString(),
           payload: { text: current, username },
         });
-
-        // Publish to server
-        if (connected && ws?.readyState === WebSocket.OPEN) {
-          ws.send(makePublish(identity.clientId, channel, current, username));
+        if (connection.isConnected) {
+          connection.publish(
+            createEvent(channel, clientId, "app.clipboard.update", { text: current, username }, { replace: true })
+          );
         }
-
         redraw();
       }
     } catch {
@@ -311,12 +240,9 @@ async function main(): Promise<void> {
     }
   }, POLL_INTERVAL_MS);
 
-  connect();
-  redraw();
-
-  // Keep process alive
   process.on("SIGINT", () => {
     console.log("\n  Goodbye!");
+    connection.dispose();
     process.exit(0);
   });
 }

@@ -41,7 +41,7 @@ coverage/
 *.coverage
 *.coveragexml
 
-## Node (for vesta-client-js)
+## Node (for vesta-client-ts)
 node_modules/
 dist/
 *.tsbuildinfo

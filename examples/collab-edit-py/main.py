@@ -22,25 +22,18 @@ Run:  python main.py [ws://host:port/ws] [room-name]
 """
 
 import asyncio
-import json
 import queue
-import secrets
-import string
 import sys
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
-from pathlib import Path
 from tkinter import scrolledtext
-from uuid import uuid4
 
-import websockets
+from vesta_client import VestaConnection, create_event, load_or_create_identity
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
 DEFAULT_ROOM = "main"
-VESTA_DIR = Path.home() / ".vesta"
-VESTA_DIR.mkdir(exist_ok=True)
 
 DEBOUNCE_MS = 150          # Publish after 150ms of no typing
 DEFER_REMOTE_MS = 300      # Ignore remote updates while actively typing
@@ -54,53 +47,7 @@ FG_DIM = "#666666"
 ACCENT = "#0e639c"
 CURSOR_COLOR = "#aeafad"
 
-# ── Identity ──────────────────────────────────────────────────────────────────
-def load_or_create_identity(username: str, room: str) -> str:
-    path = VESTA_DIR / f"collab-edit-{room}-{username}-identity.json"
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))["clientId"]
-    alphabet = string.ascii_letters + string.digits + "-_"
-    client_id = "".join(secrets.choice(alphabet) for _ in range(22))
-    path.write_text(
-        json.dumps({"clientId": client_id, "username": username}, indent=2),
-        encoding="utf-8",
-    )
-    return client_id
 
-
-# ── Protocol helpers ──────────────────────────────────────────────────────────
-def make_hello(client_id: str, channel: str) -> str:
-    return json.dumps({
-        "type": "HELLO",
-        "clientId": client_id,
-        "channels": [channel],
-        "lastSequences": {channel: 0},
-    })
-
-
-def make_publish(client_id: str, channel: str, text: str, username: str, cursor_pos: int) -> str:
-    return json.dumps({
-        "type": "PUBLISH",
-        "channelId": channel,
-        "event": {
-            "id": str(uuid4()),
-            "channelId": channel,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "clientId": client_id,
-            "eventType": "app.collab.document-update",
-            "payload": {"text": text, "username": username, "cursorPos": cursor_pos},
-            "replace": True,
-        },
-    })
-
-
-def events_from_message(msg: dict) -> list[dict]:
-    t = msg.get("type")
-    if t == "EVENT":
-        return [msg["event"]]
-    if t == "EVENTS_BATCH":
-        return [se["event"] for se in msg.get("events", [])]
-    return []
 
 
 # ── Document State ────────────────────────────────────────────────────────────
@@ -343,50 +290,66 @@ class App:
 
 # ── WebSocket background task ─────────────────────────────────────────────────
 async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
-    backoff = 1
-    while True:
-        try:
-            async with websockets.connect(app.server_url) as ws:
-                await ws.send(make_hello(app.client_id, app.channel))
+    conn = VestaConnection(
+        server_url=app.server_url,
+        client_id=app.client_id,
+        channels=[app.channel],
+    )
 
-                raw = await asyncio.wait_for(ws.recv(), timeout=10)
-                msg = json.loads(raw)
-                if msg.get("type") != "WELCOME":
-                    raise ConnectionError(f"Expected WELCOME, got {msg.get('type')}")
+    def on_connected(welcome):
+        app.incoming.put({"kind": "connected", "server_id": welcome.server_id})
 
-                server_id = msg.get("serverId", "server")
-                app.incoming.put({"kind": "connected", "server_id": server_id})
-                backoff = 1
+        # Wire up publish callback
+        async def _publish(text: str, cursor_pos: int):
+            event = create_event(
+                channel_id=app.channel,
+                client_id=app.client_id,
+                event_type="app.collab.document-update",
+                payload={"text": text, "username": app.username, "cursorPos": cursor_pos},
+                replace=True,
+            )
+            await conn.publish(event)
 
-                # Wire up publish callback
-                async def _publish(text: str, cursor_pos: int):
-                    await ws.send(make_publish(
-                        app.client_id, app.channel, text, app.username, cursor_pos
-                    ))
+        app.publish_cb = lambda text, cursor_pos: asyncio.run_coroutine_threadsafe(
+            _publish(text, cursor_pos), loop
+        )
 
-                app.publish_cb = lambda text, cursor_pos: asyncio.run_coroutine_threadsafe(
-                    _publish(text, cursor_pos), loop
-                )
+        # Publish current document state on connect
+        current_text = app.editor.get("1.0", "end-1c")
+        if current_text.strip():
+            asyncio.run_coroutine_threadsafe(_publish(current_text, 0), loop)
 
-                # Publish current document state on connect
-                current_text = app.editor.get("1.0", "end-1c")
-                if current_text.strip():
-                    await ws.send(make_publish(
-                        app.client_id, app.channel, current_text, app.username, 0
-                    ))
+    def on_event(msg):
+        evt = {
+            "clientId": msg.event.client_id,
+            "eventType": msg.event.event_type,
+            "timestamp": msg.event.timestamp,
+            "payload": msg.event.payload,
+        }
+        app.incoming.put({"kind": "event", "event": evt})
 
-                # Receive loop
-                async for raw in ws:
-                    msg = json.loads(raw)
-                    for evt in events_from_message(msg):
-                        app.incoming.put({"kind": "event", "event": evt})
+    def on_events_batch(msg):
+        for se in msg.events:
+            evt = {
+                "clientId": se.event.client_id,
+                "eventType": se.event.event_type,
+                "timestamp": se.event.timestamp,
+                "payload": se.event.payload,
+            }
+            app.incoming.put({"kind": "event", "event": evt})
 
-        except Exception:
-            app.incoming.put({"kind": "disconnected"})
-
+    def on_disconnected(reason):
+        app.incoming.put({"kind": "disconnected"})
         app.publish_cb = None
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 30)
+
+    conn.on_connected(on_connected)
+    conn.on_event(on_event)
+    conn.on_events_batch(on_events_batch)
+    conn.on_disconnected(on_disconnected)
+
+    await conn.connect()
+    # Keep the loop running
+    await asyncio.Event().wait()
 
 
 def start_ws_thread(app: App):
@@ -446,7 +409,7 @@ if __name__ == "__main__":
     if not username:
         sys.exit(0)
 
-    client_id = load_or_create_identity(username, room)
+    client_id = load_or_create_identity(f"collab-edit-{room}-{username}")
 
     root = tk.Tk()
     app = App(root, username, client_id, server_url, channel)

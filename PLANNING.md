@@ -27,23 +27,21 @@ The goal: if the server disappears tomorrow, the application still works locally
 ```
 ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
 │  Client A   │       │  Client B   │       │  Client C   │
-│  (C# CLI)   │       │  (C# GUI)   │       │  (JS/Web)   │
+│  (C# CLI)   │       │  (Python)   │       │  (JS/TS)    │
 └──────┬──────┘       └──────┬──────┘       └──────┬──────┘
        │                     │                     │
-       │    Vesta Protocol (WebSocket / HTTP)      │
+       │      Vesta Protocol (WebSocket)           │
        │                     │                     │
-       └─────────────┬───────┴─────────────────────┘
-                     │
-              ┌──────┴──────┐
-              │ Vesta Server │
-              │  (C# host)  │
-              └──────┬──────┘
-                     │
-              ┌──────┴──────┐
-              │   Storage   │
-              │ (append-log │
-              │  + indexes) │
-              └─────────────┘
+       └─────────────────────┬─────────────────────┘
+                             │
+                      ┌──────┴──────┐
+                      │ Vesta Server│
+                      │  (C# host)  │
+                      └──────┬──────┘
+                             │
+                      ┌──────┴──────┐
+                      │  PostgreSQL │
+                      └─────────────┘
 ```
 
 ### Components
@@ -53,7 +51,7 @@ The goal: if the server disappears tomorrow, the application still works locally
 | **VestaCore** | Shared protocol types, serialization, conflict helpers | C# class library (net10.0) |
 | **VestaServer** | Hosts channels, relays messages, persists log | C# (ASP.NET Core minimal API + WebSocket) |
 | **VestaClient** | C# client library (connect, publish, subscribe) | C# class library (net10.0) |
-| **vesta-client-js** | JS/TS client library implementing the protocol | TypeScript (npm package) |
+| **vesta-client-ts** | TypeScript client library implementing the protocol | TypeScript (npm package) |
 | **vesta-client-py** | Python client library implementing the protocol | Python (pip package) |
 
 Example apps (in `examples/`) consume these libraries to prove the protocol works across languages.
@@ -1001,7 +999,7 @@ Vesta/
 │   └── VestaClient/                # C# client library (connect, publish, subscribe)
 │
 ├── clients/                        # ═══ CLIENT LIBRARIES (other languages) ═══
-│   ├── vesta-client-js/            # TypeScript/JS client library (npm package)
+│   ├── vesta-client-ts/            # TypeScript client library (npm package)
 │   └── vesta-client-py/            # Python client library (pip package)
 │
 ├── examples/                       # ═══ EXAMPLE APPLICATIONS ═══
@@ -1154,5 +1152,5 @@ Known gaps and deferred work, in rough priority order.
 | 3 | **SDK conflict resolution primitives** | `EventReducer<T>`, `AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>` are described in PLANNING.md but not implemented. Currently each example rolls its own projection. | Would let `TodoListState` and `PresenceState` be replaced with composed SDK primitives. |
 | 4 | **Channel access control** | All channels are open. No shared-secret or invite-only mode implemented. | PLANNING.md § Authentication & Identity has the schema (`channel_access` table). |
 | 5 | **Server-side signature verification** | Server accepts events with any or no signature. The `ProtocolHandler` verifies the public key matches the `clientId` on HELLO but does not verify event signatures on PUBLISH. | Should reject PUBLISH if signature is invalid or missing when the client registered a public key. |
-| 6 | **JS browser client** | `clients/vesta-client-js/` and `examples/chat-web/` are planned but not started. | Would prove the protocol works cross-language in a browser. |
+| 6 | **JS browser client** | `clients/vesta-client-ts/` and `examples/chat-web/` are planned but not started. | Would prove the protocol works cross-language in a browser. |
 | 7 | **Python client** | `clients/vesta-client-py/` and `examples/todo-py/` are planned but not started. | Same as above for Python. |

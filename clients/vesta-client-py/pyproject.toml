@@ -1,0 +1,16 @@
+[project]
+name = "vesta-client"
+version = "0.1.0"
+description = "Python client library for the Vesta protocol"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=13.0",
+]
+license = {text = "MIT"}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vesta_client"]

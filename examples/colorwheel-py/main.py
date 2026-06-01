@@ -18,24 +18,17 @@ Run:  python main.py [ws://host:port/ws] [room-name]
 
 import asyncio
 import colorsys
-import json
 import math
 import queue
-import secrets
-import string
 import threading
 import tkinter as tk
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-import websockets
+from vesta_client import VestaConnection, create_event, load_or_create_identity
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
 DEFAULT_ROOM   = "main"
-VESTA_DIR      = Path.home() / ".vesta"
-VESTA_DIR.mkdir(exist_ok=True)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 BG       = "#1e1e1e"
@@ -47,55 +40,6 @@ ACCENT   = "#0e639c"
 
 WHEEL_SIZE = 240          # Canvas width/height for the color wheel
 WHEEL_R    = WHEEL_SIZE // 2 - 6
-
-
-# ── Identity ──────────────────────────────────────────────────────────────────
-def load_or_create_identity(username: str, room: str) -> str:
-    """Return a stable clientId for this username+room, creating one if needed."""
-    path = VESTA_DIR / f"colorwheel-{room}-{username}-identity.json"
-    if path.exists():
-        return json.loads(path.read_text())["clientId"]
-    alphabet = string.ascii_letters + string.digits + "-_"
-    client_id = "".join(secrets.choice(alphabet) for _ in range(22))
-    path.write_text(json.dumps({"clientId": client_id, "username": username}, indent=2))
-    return client_id
-
-
-# ── Protocol helpers ──────────────────────────────────────────────────────────
-def make_hello(client_id: str, channel: str) -> str:
-    return json.dumps({
-        "type": "HELLO",
-        "clientId": client_id,
-        "channels": [channel],
-        "lastSequences": {channel: 0},
-    })
-
-
-def make_publish(client_id: str, channel: str, color: str, username: str) -> str:
-    return json.dumps({
-        "type": "PUBLISH",
-        "channelId": channel,
-        "event": {
-            "id": str(uuid.uuid4()),
-            "channelId": channel,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "clientId": client_id,
-            "eventType": "app.colorwheel.update",
-            "payload": {"color": color, "username": username},
-            "volatile": True,
-            "replace": True,
-        },
-    })
-
-
-def events_from_message(msg: dict) -> list[dict]:
-    """Extract all VestaEvent dicts from any incoming message."""
-    t = msg.get("type")
-    if t == "EVENT":
-        return [msg["event"]]
-    if t == "EVENTS_BATCH":
-        return [se["event"] for se in msg.get("events", [])]
-    return []
 
 
 # ── State (LWW projection) ────────────────────────────────────────────────────
@@ -342,49 +286,66 @@ class App:
 
 # ── WebSocket background task ─────────────────────────────────────────────────
 async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
-    backoff = 1
-    while True:
-        try:
-            async with websockets.connect(app.server_url) as ws:
-                await ws.send(make_hello(app.client_id, app.channel))
+    conn = VestaConnection(
+        server_url=app.server_url,
+        client_id=app.client_id,
+        channels=[app.channel],
+    )
 
-                # Wait for WELCOME
-                raw = await asyncio.wait_for(ws.recv(), timeout=10)
-                msg = json.loads(raw)
-                if msg.get("type") != "WELCOME":
-                    raise ConnectionError(f"Expected WELCOME, got {msg.get('type')}")
+    def on_connected(welcome):
+        app.incoming.put({"kind": "connected", "server_id": welcome.server_id})
 
-                server_id = msg.get("serverId", "server")
-                app.incoming.put({"kind": "connected", "server_id": server_id})
-                backoff = 1
+        # Wire up publish callback (called from tkinter thread)
+        async def _publish(color: str):
+            event = create_event(
+                channel_id=app.channel,
+                client_id=app.client_id,
+                event_type="app.colorwheel.update",
+                payload={"color": color, "username": app.username},
+                replace=True,
+            )
+            await conn.publish(event)
 
-                # Wire up publish callback (called from tkinter thread)
-                async def _publish(color: str):
-                    await ws.send(make_publish(app.client_id, app.channel, color, app.username))
+        app.publish_cb = lambda color: asyncio.run_coroutine_threadsafe(
+            _publish(color), loop
+        )
 
-                app.publish_cb = lambda color: asyncio.run_coroutine_threadsafe(
-                    _publish(color), loop
-                )
+        # Announce our initial color
+        asyncio.run_coroutine_threadsafe(_publish(app.current_color), loop)
 
-                # Announce our initial color
-                await ws.send(make_publish(
-                    app.client_id, app.channel, app.current_color, app.username
-                ))
+    def on_event(msg):
+        if msg.event.client_id != app.client_id:
+            evt = {
+                "clientId": msg.event.client_id,
+                "eventType": msg.event.event_type,
+                "timestamp": msg.event.timestamp,
+                "payload": msg.event.payload,
+            }
+            app.incoming.put({"kind": "event", "event": evt})
 
-                # Receive loop
-                async for raw in ws:
-                    msg = json.loads(raw)
-                    for evt in events_from_message(msg):
-                        # Skip echoes of our own events (server doesn't send them, but just in case)
-                        if evt.get("clientId") != app.client_id:
-                            app.incoming.put({"kind": "event", "event": evt})
+    def on_events_batch(msg):
+        for se in msg.events:
+            if se.event.client_id != app.client_id:
+                evt = {
+                    "clientId": se.event.client_id,
+                    "eventType": se.event.event_type,
+                    "timestamp": se.event.timestamp,
+                    "payload": se.event.payload,
+                }
+                app.incoming.put({"kind": "event", "event": evt})
 
-        except Exception:
-            app.incoming.put({"kind": "disconnected"})
-
+    def on_disconnected(reason):
+        app.incoming.put({"kind": "disconnected"})
         app.publish_cb = None
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 30)
+
+    conn.on_connected(on_connected)
+    conn.on_event(on_event)
+    conn.on_events_batch(on_events_batch)
+    conn.on_disconnected(on_disconnected)
+
+    await conn.connect()
+    # Keep the loop running
+    await asyncio.Event().wait()
 
 
 def start_ws_thread(app: App):
@@ -446,7 +407,7 @@ if __name__ == "__main__":
     if not username:
         sys.exit(0)
 
-    client_id = load_or_create_identity(username, room)
+    client_id = load_or_create_identity(f"colorwheel-{room}-{username}")
 
     root = tk.Tk()
     app  = App(root, username, client_id, server_url, channel)

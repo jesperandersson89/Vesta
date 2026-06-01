@@ -25,12 +25,12 @@ If the server disappears tomorrow, the application still works locally and can r
        └─────────────────────┬─────────────────────┘
                              │
                       ┌──────┴──────┐
-                      │ Vesta Server │
+                      │ Vesta Server│
                       │  (C# host)  │
                       └──────┬──────┘
                              │
                       ┌──────┴──────┐
-                      │  PostgreSQL  │
+                      │  PostgreSQL │
                       └─────────────┘
 ```
 
