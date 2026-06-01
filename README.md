@@ -1,7 +1,5 @@
 # Vesta
 
-> *The fire lives within — it doesn't come from somewhere external, it burns at the center of the home itself.*
-
 **Vesta** is a protocol and runtime for building networked applications without surrendering ownership to a central service. The server is a relay (like a git remote or a torrent tracker), not the authority. Clients own their data.
 
 If the server disappears tomorrow, the application still works locally and can reconnect to any other Vesta-compatible host.
@@ -24,16 +22,16 @@ If the server disappears tomorrow, the application still works locally and can r
        │                     │                     │
        │      Vesta Protocol (WebSocket)           │
        │                     │                     │
-       └─────────────┬───────┴─────────────────────┘
-                     │
-              ┌──────┴──────┐
-              │ Vesta Server │
-              │  (C# host)  │
-              └──────┬──────┘
-                     │
-              ┌──────┴──────┐
-              │  PostgreSQL  │
-              └─────────────┘
+       └─────────────────────┬─────────────────────┘
+                             │
+                      ┌──────┴──────┐
+                      │ Vesta Server │
+                      │  (C# host)  │
+                      └──────┬──────┘
+                             │
+                      ┌──────┴──────┐
+                      │  PostgreSQL  │
+                      └─────────────┘
 ```
 
 ## Tech Stack
