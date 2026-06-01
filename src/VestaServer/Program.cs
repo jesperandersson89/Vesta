@@ -16,8 +16,14 @@ builder.Host.ConfigureHostOptions(options =>
 
 // Register services
 string? connectionString = builder.Configuration.GetConnectionString("Vesta");
+bool useInMemory = builder.Configuration.GetValue<bool>("UseInMemoryStore", false);
 
-if (!string.IsNullOrEmpty(connectionString))
+if (useInMemory)
+{
+    // Explicit in-memory mode (for tests or local development without DB)
+    builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+}
+else if (!string.IsNullOrEmpty(connectionString))
 {
     // PostgreSQL mode: EF Core for migrations, raw Npgsql for event hot path
     builder.Services.AddDbContext<VestaDbContext>(options =>
@@ -30,8 +36,9 @@ if (!string.IsNullOrEmpty(connectionString))
 }
 else
 {
-    // In-memory fallback (for tests or when no DB configured)
-    builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+    throw new InvalidOperationException(
+        "No database configured. Set ConnectionStrings:Vesta to a PostgreSQL connection string, " +
+        "or set UseInMemoryStore=true for development without a database.");
 }
 
 builder.Services.AddSingleton<ConnectionManager>();
@@ -40,7 +47,7 @@ builder.Services.AddTransient<ProtocolHandler>();
 WebApplication app = builder.Build();
 
 // Apply pending migrations on startup (only when using PostgreSQL)
-if (!string.IsNullOrEmpty(connectionString))
+if (!useInMemory && !string.IsNullOrEmpty(connectionString))
 {
     using IServiceScope scope = app.Services.CreateScope();
     VestaDbContext dbContext = scope.ServiceProvider.GetRequiredService<VestaDbContext>();

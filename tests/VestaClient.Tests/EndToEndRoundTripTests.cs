@@ -18,10 +18,10 @@ public class EndToEndRoundTripTests : IClassFixture<WebApplicationFactory<Progra
 
     public EndToEndRoundTripTests(WebApplicationFactory<Program> factory)
     {
-        // Override configuration to remove the connection string so tests use InMemoryEventStore
+        // Use in-memory store for integration tests
         _factory = factory.WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("ConnectionStrings:Vesta", "");
+            builder.UseSetting("UseInMemoryStore", "true");
         });
     }
 

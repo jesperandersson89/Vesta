@@ -20,7 +20,7 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
     {
         _factory = factory.WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("ConnectionStrings:Vesta", "");
+            builder.UseSetting("UseInMemoryStore", "true");
         });
     }
 
