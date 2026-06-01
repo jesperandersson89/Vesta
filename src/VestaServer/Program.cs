@@ -41,6 +41,11 @@ else if (!string.IsNullOrEmpty(connectionString))
     // Background sweep for events past their TTL. Opt-in via EventCleanup:Enabled.
     builder.Services.Configure<ExpiredEventCleanupOptions>(builder.Configuration.GetSection("EventCleanup"));
     builder.Services.AddHostedService<ExpiredEventCleanupService>();
+
+    // Background sweep for per-app quotas (retention_days, max_events_per_channel).
+    // Opt-in via AppQuotaPruner:Enabled.
+    builder.Services.Configure<AppQuotaPrunerOptions>(builder.Configuration.GetSection("AppQuotaPruner"));
+    builder.Services.AddHostedService<AppQuotaPrunerService>();
 }
 else
 {
@@ -51,6 +56,7 @@ else
 
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<AppRateLimiter>();
+builder.Services.AddSingleton<IAppStorageAccountant, InMemoryAppStorageAccountant>();
 builder.Services.AddTransient<ProtocolHandler>();
 
 // Protocol options (e.g. require all events to be signed).

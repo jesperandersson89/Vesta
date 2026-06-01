@@ -8,9 +8,9 @@ namespace VestaServer.Storage;
 /// <param name="MaxPayloadBytes">Maximum size of <c>event.payload</c> + <c>event.metadata</c> at PUBLISH-time, in bytes.</param>
 /// <param name="PublishRatePerMinute">Maximum events any single client may PUBLISH to channels in this app per rolling minute.</param>
 /// <param name="MaxChannels">Maximum number of channels (rows in <c>channels</c>) the app may own. Checked at CREATE_CHANNEL.</param>
-/// <param name="MaxEventsPerChannel">Reserved — not yet enforced. Will pair with a background pruner.</param>
-/// <param name="RetentionDays">Reserved — not yet enforced. Will pair with a background pruner.</param>
-/// <param name="TotalStorageBytes">Reserved — not yet enforced. Needs a cached rollup.</param>
+/// <param name="MaxEventsPerChannel">Maximum events to retain per channel under the app — enforced by <see cref="AppQuotaPrunerService"/>.</param>
+/// <param name="RetentionDays">Events older than this (by <c>received_at</c>) are deleted by <see cref="AppQuotaPrunerService"/>.</param>
+/// <param name="TotalStorageBytes">Hard ceiling on summed <c>pg_column_size(payload)</c> across the app namespace. Checked at PUBLISH against an in-process cached rollup maintained by <see cref="IAppStorageAccountant"/>.</param>
 public sealed record AppQuotas(
     int? MaxPayloadBytes = null,
     int? PublishRatePerMinute = null,
@@ -64,6 +64,12 @@ public interface IAppStore
   /// Returns false if the app does not exist.
   /// </summary>
   Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// List all registered apps. Used by background quota enforcement (pruner,
+  /// accounting). Order is unspecified.
+  /// </summary>
+  Task<IReadOnlyList<AppInfo>> ListAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class AppAlreadyRegisteredException(string appId)

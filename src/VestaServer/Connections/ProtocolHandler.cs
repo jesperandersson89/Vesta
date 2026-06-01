@@ -45,6 +45,7 @@ public sealed class ProtocolHandler(
     ILogger<ProtocolHandler> logger,
     IAppStore? appStore = null,
     AppRateLimiter? rateLimiter = null,
+    IAppStorageAccountant? storageAccountant = null,
     IOptions<ProtocolOptions>? protocolOptions = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
@@ -317,6 +318,15 @@ public sealed class ProtocolHandler(
 
         // Store the event
         SequencedEvent sequenced = await eventStore.AppendAsync(publish.Event, cancellationToken);
+
+        // Update the cached storage rollup so total_storage_bytes enforcement stays current
+        // between pruner sweeps. No-op for apps with a cold cache or no quota.
+        if (storageAccountant is not null)
+        {
+            string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
+            if (appId is not null)
+                storageAccountant.Add(appId, EstimatePayloadBytes(publish.Event));
+        }
 
         // ACK back to the publisher
         await connection.SendAsync(
@@ -631,9 +641,12 @@ public sealed class ProtocolHandler(
 
         AppQuotas quotas = app.Quotas;
 
+        int? estimatedSize = null;
+
         if (quotas.MaxPayloadBytes is int maxBytes)
         {
             int size = EstimatePayloadBytes(publish.Event);
+            estimatedSize = size;
             if (size > maxBytes)
             {
                 await connection.SendAsync(
@@ -643,6 +656,25 @@ public sealed class ProtocolHandler(
                     cancellationToken);
                 return false;
             }
+        }
+
+        if (quotas.TotalStorageBytes is long maxStorage && storageAccountant is not null)
+        {
+            long? cached = storageAccountant.Get(appId);
+            if (cached is long current)
+            {
+                int size = estimatedSize ?? EstimatePayloadBytes(publish.Event);
+                if (current + size > maxStorage)
+                {
+                    await connection.SendAsync(
+                        new ErrorMessage(
+                            "QUOTA_EXCEEDED",
+                            $"App '{appId}' would exceed total_storage_bytes ({maxStorage} B; currently {current} B)"),
+                        cancellationToken);
+                    return false;
+                }
+            }
+            // Cold cache: allow — the next pruner sweep will populate it.
         }
 
         if (rateLimiter is not null &&

@@ -40,4 +40,7 @@ public sealed class InMemoryAppStore : IAppStore
         return Task.FromResult(true);
     }
   }
+
+  public Task<IReadOnlyList<AppInfo>> ListAsync(CancellationToken cancellationToken = default)
+      => Task.FromResult<IReadOnlyList<AppInfo>>([.. _apps.Values]);
 }

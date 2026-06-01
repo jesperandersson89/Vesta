@@ -55,25 +55,49 @@ With `Protocol:RequireAppRegistration = true`, the server rejects `PUBLISH`, `SU
 
 A client registers an app with `REGISTER_APP { appId }`. The connecting client becomes the app owner. Re-registering an existing app returns `ERROR { code: "DUPLICATE_APP" }`.
 
-App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also reserves columns for per-app quotas and rate limits (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, …) — these are not enforced yet (TODO #9b).
+App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also stores nullable per-app quotas (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, `max_payload_bytes`, `total_storage_bytes`). All six are now enforced — see [App quotas & rate limits](#app-quotas--rate-limits).
 
 Leave registration off in development. Turn it on for shared / multi-tenant deployments where you want explicit ownership of namespaces.
 
 ### App quotas & rate limits
 
-Three per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`):
+All six per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
 
-| Column                    | Enforced where                  | Error frame on breach              |
-| ------------------------- | ------------------------------- | ---------------------------------- |
-| `max_payload_bytes`       | `PUBLISH` (payload + metadata)  | `ERROR { code: "QUOTA_EXCEEDED" }` |
-| `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`) | `ERROR { code: "RATE_LIMITED" }`   |
-| `max_channels`            | `CREATE_CHANNEL`                | `ERROR { code: "QUOTA_EXCEEDED" }` |
+| Column                    | Enforced where                      | Error frame on breach              |
+| ------------------------- | ----------------------------------- | ---------------------------------- |
+| `max_payload_bytes`       | `PUBLISH` (payload + metadata)      | `ERROR { code: "QUOTA_EXCEEDED" }` |
+| `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`)     | `ERROR { code: "RATE_LIMITED" }`   |
+| `max_channels`            | `CREATE_CHANNEL`                    | `ERROR { code: "QUOTA_EXCEEDED" }` |
+| `total_storage_bytes`     | `PUBLISH` (cached rollup + add)     | `ERROR { code: "QUOTA_EXCEEDED" }` |
+| `retention_days`          | Background sweep (`AppQuotaPruner`) | n/a — silent deletion              |
+| `max_events_per_channel`  | Background sweep (`AppQuotaPruner`) | n/a — silent deletion              |
 
 `publish_rate_per_minute` uses an in-memory token bucket per `(appId, clientId)` — good enough for a single-host relay (multi-host needs a shared backend, tracked under TODO #15). The bucket refills continuously at `rate / 60` tokens per second and caps at the configured rate.
 
+`total_storage_bytes` is checked against an in-process cached rollup maintained by `IAppStorageAccountant` (default `InMemoryAppStorageAccountant`). The pruner sweep seeds and refreshes the cache via `SUM(pg_column_size(payload))` per app namespace; successful PUBLISHes increment it in-line. On a cold cache (server restart before the first sweep), PUBLISH is allowed.
+
 A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
 
-Reserved columns not yet enforced: `max_events_per_channel`, `retention_days`, `total_storage_bytes`. They will pair with a background pruner / accounting service in a follow-up slice.
+## `AppQuotaPruner` (Postgres only)
+
+The `AppQuotaPrunerService` periodically enforces `retention_days` and `max_events_per_channel` per app, and refreshes the cached storage rollup used by `total_storage_bytes`. It only runs when the Postgres backend is active and only when explicitly enabled:
+
+```jsonc
+{
+    "AppQuotaPruner": {
+        "Enabled": false, // opt-in
+        "Interval": "00:05:00", // TimeSpan; default 5 min
+    },
+}
+```
+
+If `Enabled` is `false` (the default), the service logs a single info message at startup and exits. Quotas registered against apps will still record (for documentation) but no events are deleted until the pruner is enabled.
+
+Each sweep iterates every row in `apps` and, per quota:
+
+- `retention_days` → `DELETE FROM events WHERE channel_id IN (<app namespace>) AND received_at < now() - make_interval(days => $)`.
+- `max_events_per_channel` → keeps the most recent N events per channel under the app via `ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY sequence DESC)`.
+- `total_storage_bytes` → `SUM(pg_column_size(payload))` written to the in-process accountant.
 
 ## `EventCleanup` (Postgres only)
 

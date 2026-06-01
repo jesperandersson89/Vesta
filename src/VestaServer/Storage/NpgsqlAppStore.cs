@@ -82,4 +82,33 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
     return rows > 0;
   }
+
+  public async Task<IReadOnlyList<AppInfo>> ListAsync(CancellationToken cancellationToken = default)
+  {
+    const string sql = """
+            SELECT id, owner_client_id, created_at,
+                   max_payload_bytes, publish_rate_per_minute, max_channels,
+                   max_events_per_channel, retention_days, total_storage_bytes
+            FROM apps
+            """;
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
+    List<AppInfo> apps = [];
+    while (await reader.ReadAsync(cancellationToken))
+    {
+      AppQuotas quotas = new(
+          MaxPayloadBytes: reader.IsDBNull(3) ? null : reader.GetInt32(3),
+          PublishRatePerMinute: reader.IsDBNull(4) ? null : reader.GetInt32(4),
+          MaxChannels: reader.IsDBNull(5) ? null : reader.GetInt32(5),
+          MaxEventsPerChannel: reader.IsDBNull(6) ? null : reader.GetInt32(6),
+          RetentionDays: reader.IsDBNull(7) ? null : reader.GetInt32(7),
+          TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8));
+      apps.Add(new AppInfo(
+          reader.GetString(0),
+          reader.GetString(1),
+          reader.GetFieldValue<DateTimeOffset>(2),
+          quotas));
+    }
+    return apps;
+  }
 }

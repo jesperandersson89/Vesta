@@ -141,6 +141,58 @@ public class AppQuotasTests : IClassFixture<WebApplicationFactory<Program>>
     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
   }
 
+  [Fact]
+  public async Task Publish_OverTotalStorageBytes_RejectedWithQuotaExceeded()
+  {
+    IAppStore store = _factory.Services.GetRequiredService<IAppStore>();
+    IAppStorageAccountant accountant = _factory.Services.GetRequiredService<IAppStorageAccountant>();
+
+    await store.RegisterAsync("storageapp", "owner-6");
+    await store.SetQuotasAsync("storageapp", new AppQuotas(TotalStorageBytes: 100));
+
+    // Seed the cached rollup as if a pruner sweep already measured 95 bytes used.
+    accountant.Set("storageapp", 95);
+
+    using WebSocket ws = await ConnectAsync();
+    await SendAsync(ws, new HelloMessage("client-storage", [], new Dictionary<string, long>()));
+    await ReceiveAsync(ws);
+
+    // ~30-byte payload; 95 + 30 > 100 → reject.
+    VestaEvent evt = CreateEvent("storageapp/chat", "client-storage", """{"x":"123456789012345678"}""");
+    await SendAsync(ws, new PublishMessage("storageapp/chat", evt));
+
+    ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(ws));
+    Assert.Equal("QUOTA_EXCEEDED", error.Code);
+    Assert.Contains("total_storage_bytes", error.Message);
+
+    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+  }
+
+  [Fact]
+  public async Task Publish_TotalStorageBytes_ColdCacheAllows()
+  {
+    IAppStore store = _factory.Services.GetRequiredService<IAppStore>();
+
+    await store.RegisterAsync("coldapp", "owner-7");
+    await store.SetQuotasAsync("coldapp", new AppQuotas(TotalStorageBytes: 10));
+
+    // Don't seed the accountant — cold cache should allow until the next sweep.
+    using WebSocket ws = await ConnectAsync();
+    await SendAsync(ws, new HelloMessage("client-cold", [], new Dictionary<string, long>()));
+    await ReceiveAsync(ws);
+
+    VestaEvent evt = CreateEvent("coldapp/chat", "client-cold");
+    await SendAsync(ws, new PublishMessage("coldapp/chat", evt));
+    Assert.IsType<AckMessage>(await ReceiveAsync(ws));
+
+    // The successful publish should have incremented the cache.
+    IAppStorageAccountant accountant = _factory.Services.GetRequiredService<IAppStorageAccountant>();
+    Assert.NotNull(accountant.Get("coldapp"));
+    Assert.True(accountant.Get("coldapp") > 0);
+
+    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+  }
+
   // --- Helpers ---
 
   private async Task<WebSocket> ConnectAsync()
