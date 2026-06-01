@@ -342,6 +342,20 @@ export class VestaConnection {
         });
     }
 
+    /**
+     * Soft-delete a channel. Requires the connection's public key to be in the
+     * server's `Admin:BootstrapPublicKeys` allow-list. Existing events are
+     * retained for a future hard-delete sweep; further PUBLISH / SUBSCRIBE /
+     * FETCH / CREATE_CHANNEL for that channel are rejected with `CHANNEL_DELETED`.
+     * Idempotent: deleting an already-deleted channel succeeds.
+     */
+    deleteChannel(channelId: string): void {
+        this.sendRaw({
+            type: "DELETE_CHANNEL",
+            channelId,
+        });
+    }
+
     // ── Sequence tracking ────────────────────────────────────────────────────
 
     /** Update the last known sequence for a channel (used on reconnect for catch-up). */

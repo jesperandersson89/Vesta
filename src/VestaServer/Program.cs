@@ -62,6 +62,10 @@ builder.Services.AddTransient<ProtocolHandler>();
 // Protocol options (e.g. require all events to be signed).
 builder.Services.Configure<ProtocolOptions>(builder.Configuration.GetSection("Protocol"));
 
+// Admin allow-list (Ed25519 public keys promoted to server admin during HELLO).
+builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
+builder.Services.AddSingleton<IAdminStore, ConfigAdminStore>();
+
 WebApplication app = builder.Build();
 
 // Apply pending migrations on startup (only when using PostgreSQL)

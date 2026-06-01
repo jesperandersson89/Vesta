@@ -285,6 +285,20 @@ class VestaConnection:
             "appId": app_id,
         })
 
+    async def delete_channel(self, channel_id: str) -> None:
+        """
+        Soft-delete a channel. Requires the connection's public key to be in
+        the server's ``Admin:BootstrapPublicKeys`` allow-list. Existing events
+        are retained for a future hard-delete sweep; further PUBLISH /
+        SUBSCRIBE / FETCH / CREATE_CHANNEL for that channel are rejected with
+        ``CHANNEL_DELETED``. Idempotent: deleting an already-deleted channel
+        succeeds.
+        """
+        await self._send({
+            "type": "DELETE_CHANNEL",
+            "channelId": channel_id,
+        })
+
     # ── Sequence tracking ─────────────────────────────────────────────────────
 
     def update_sequence(self, channel_id: str, sequence: int) -> None:

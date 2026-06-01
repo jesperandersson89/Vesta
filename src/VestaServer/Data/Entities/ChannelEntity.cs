@@ -9,4 +9,5 @@ public sealed class ChannelEntity
     public DateTimeOffset CreatedAt { get; set; }
     public string Visibility { get; set; } = "public"; // "public" | "private"
     public string? Metadata { get; set; } // JSONB stored as string
+    public DateTimeOffset? DeletedAt { get; set; } // Tombstone; null when active
 }

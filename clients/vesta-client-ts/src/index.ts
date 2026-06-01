@@ -31,6 +31,7 @@ export type {
     AckMessage,
     ClientMessage,
     CreateChannelMessage,
+    DeleteChannelMessage,
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,

@@ -27,6 +27,8 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
             entity.Property(e => e.Visibility).HasColumnName("visibility").HasDefaultValue("public");
             entity.Property(e => e.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_channels_deleted_at");
         });
 
         // === events ===

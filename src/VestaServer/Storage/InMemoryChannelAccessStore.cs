@@ -92,6 +92,27 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.FromResult(count);
   }
 
+  public Task<bool> IsDeletedAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    if (_channels.TryGetValue(channelId, out ChannelInfo? info))
+      return Task.FromResult(info.DeletedAt is not null);
+    return Task.FromResult(false);
+  }
+
+  public Task<bool> DeleteChannelAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    if (!_channels.TryGetValue(channelId, out ChannelInfo? info))
+      return Task.FromResult(false);
+    info.DeletedAt ??= DateTimeOffset.UtcNow;
+    return Task.FromResult(true);
+  }
+
+  public Task RecordImplicitChannelAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    RecordImplicitChannel(channelId);
+    return Task.CompletedTask;
+  }
+
   /// <summary>
   /// Records an implicit channel creation (public) when an event is appended to a previously unknown channel.
   /// Idempotent.
@@ -105,5 +126,6 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
   {
     public ChannelVisibility Visibility { get; } = visibility;
     public ConcurrentDictionary<string, string> Members { get; } = new();
+    public DateTimeOffset? DeletedAt { get; set; }
   }
 }

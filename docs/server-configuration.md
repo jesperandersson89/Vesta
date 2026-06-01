@@ -78,6 +78,24 @@ All six per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or
 
 A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
 
+## Server admins
+
+A **server admin** is a connection whose Ed25519 public key is listed in the `Admin:BootstrapPublicKeys` allow-list. Admin status is established at `HELLO` time and lasts for the lifetime of the connection.
+
+```json
+{
+    "Admin": {
+        "BootstrapPublicKeys": ["base64url-encoded-32-byte-ed25519-public-key"]
+    }
+}
+```
+
+Entries are base64url-encoded 32-byte Ed25519 public keys (the same encoding used for `HelloMessage.PublicKey` and for event signing). Malformed or wrong-length entries are silently skipped at startup. An empty list (the default) means no connection is ever an admin.
+
+Today only one capability requires admin: **`DELETE_CHANNEL`**. The server soft-deletes the target channel (sets `channels.deleted_at`) and then rejects any further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel with `ERROR { code: "CHANNEL_DELETED" }`. Existing events are retained until a future hard-delete sweep (TODO #12b). Non-admin connections receive `ERROR { code: "NOT_ADMIN" }`; deleting a non-existent channel yields `ERROR { code: "CHANNEL_NOT_FOUND" }`. The operation is idempotent — repeated deletes succeed without changing the original `deleted_at` timestamp.
+
+There is no password / JWT layer. The trust root is the same Ed25519 keypair used everywhere else in Vesta. The admin allow-list is **bootstrap** state today — TODO #12c will add a managed admin store and an HTTP admin API.
+
 ## `AppQuotaPruner` (Postgres only)
 
 The `AppQuotaPrunerService` periodically enforces `retention_days` and `max_events_per_channel` per app, and refreshes the cached storage rollup used by `total_storage_bytes`. It only runs when the Postgres backend is active and only when explicitly enabled:

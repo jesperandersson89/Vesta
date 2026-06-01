@@ -22,7 +22,6 @@ project.lock.json
 
 ## IDE
 .vs/
-.vscode/
 *.swp
 *~
 .idea/

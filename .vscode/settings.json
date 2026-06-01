@@ -1,0 +1,10 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "npm run build": true,
+    "npm install": true,
+    "dotnet ef": true,
+    "dotnet build": true,
+    "dotnet test": true,
+    "npm test": true
+  }
+}

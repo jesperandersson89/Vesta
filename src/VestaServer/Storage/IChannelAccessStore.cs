@@ -62,6 +62,33 @@ public interface IChannelAccessStore
   /// Used by per-app quota enforcement (max_channels).
   /// </summary>
   Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Returns true if the channel exists and has been soft-deleted (tombstoned).
+  /// Soft-deleted channels reject PUBLISH, SUBSCRIBE, FETCH, and CREATE_CHANNEL
+  /// with the <c>CHANNEL_DELETED</c> error. Returns false for channels that
+  /// do not exist at all or are still active.
+  /// </summary>
+  Task<bool> IsDeletedAsync(string channelId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Soft-delete a channel by stamping a deletion tombstone. Idempotent: deleting
+  /// an already-deleted channel succeeds without changing the original
+  /// <c>deleted_at</c> timestamp. Returns false if the channel does not exist
+  /// (and was therefore not deleted). Existing events are retained until a
+  /// future hard-delete sweep (see TODO #12b).
+  /// </summary>
+  Task<bool> DeleteChannelAsync(string channelId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Records an implicit-create for a channel that was just touched by a PUBLISH
+  /// or SUBSCRIBE. Idempotent. The Postgres impl is a no-op because the event
+  /// store creates the <c>channels</c> row in the same transaction as the
+  /// event insert; the in-memory impl needs the explicit hook so the channel
+  /// is visible to <see cref="IsDeletedAsync"/>, <see cref="DeleteChannelAsync"/>,
+  /// and <see cref="CountChannelsByAppAsync"/>.
+  /// </summary>
+  Task RecordImplicitChannelAsync(string channelId, CancellationToken cancellationToken = default);
 }
 
 public sealed class ChannelAlreadyExistsException(string channelId)

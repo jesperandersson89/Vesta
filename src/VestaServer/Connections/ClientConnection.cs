@@ -20,6 +20,14 @@ public sealed class ClientConnection : IDisposable
     public byte[]? PublicKey { get; set; }
     public HashSet<string> Subscriptions { get; } = [];
 
+    /// <summary>
+    /// True when this connection's verified public key matched an entry in
+    /// <c>Admin:BootstrapPublicKeys</c>. Gates admin-only protocol messages
+    /// such as <c>DELETE_CHANNEL</c>. Set during HELLO; never changes for
+    /// the lifetime of the connection.
+    /// </summary>
+    public bool IsAdmin { get; set; }
+
     public ClientConnection(WebSocket socket)
     {
         _socket = socket;

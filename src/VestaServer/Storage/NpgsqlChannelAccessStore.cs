@@ -119,6 +119,34 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     return result is long l ? (int)l : Convert.ToInt32(result);
   }
 
+  public async Task<bool> IsDeletedAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    const string sql = "SELECT deleted_at FROM channels WHERE id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
+    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+    return result is not null && result is not DBNull;
+  }
+
+  public async Task<bool> DeleteChannelAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    // Idempotent: COALESCE keeps the original deleted_at if already set.
+    const string sql = """
+            UPDATE channels
+               SET deleted_at = COALESCE(deleted_at, now())
+             WHERE id = $1
+            """;
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
+    int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
+    return rows > 0;
+  }
+
+  // The Npgsql event store creates the channels row inside the same transaction
+  // as the event insert, so this hook is a no-op for the SQL backend.
+  public Task RecordImplicitChannelAsync(string channelId, CancellationToken cancellationToken = default)
+      => Task.CompletedTask;
+
   private static async Task InsertAccessAsync(
       NpgsqlConnection connection,
       NpgsqlTransaction tx,

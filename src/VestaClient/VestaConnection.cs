@@ -317,6 +317,19 @@ public sealed class VestaConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Soft-delete a channel. Requires the connection to have been promoted to
+    /// server admin during HELLO (its public key must be in the server's
+    /// <c>Admin:BootstrapPublicKeys</c> allow-list). Subsequent operations on
+    /// the channel are rejected with <c>CHANNEL_DELETED</c>. Existing events
+    /// remain in storage until a future hard-delete sweep.
+    /// </summary>
+    public async Task DeleteChannelAsync(string channelId, CancellationToken cancellationToken = default)
+    {
+        DeleteChannelMessage message = new(channelId);
+        await SendAsync(message, cancellationToken);
+    }
+
+    /// <summary>
     /// Gracefully disconnect from the server.
     /// Sends a close frame and waits for the receive loop to finish naturally.
     /// </summary>

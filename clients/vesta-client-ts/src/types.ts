@@ -89,6 +89,18 @@ export interface RegisterAppMessage {
     appId: string;
 }
 
+/**
+ * Client → Server: Soft-delete a channel. Server admin only — the connection's
+ * public key must be in the server's `Admin:BootstrapPublicKeys` allow-list.
+ * Existing events are retained for a future hard-delete sweep; further
+ * PUBLISH / SUBSCRIBE / FETCH / CREATE_CHANNEL for that channel are rejected
+ * with `CHANNEL_DELETED`.
+ */
+export interface DeleteChannelMessage {
+    type: "DELETE_CHANNEL";
+    channelId: string;
+}
+
 /** Server → Client: Handshake confirmation. */
 export interface WelcomeMessage {
     type: "WELCOME";
@@ -136,7 +148,8 @@ export type ClientMessage =
     | FetchMessage
     | CreateChannelMessage
     | GrantAccessMessage
-    | RegisterAppMessage;
+    | RegisterAppMessage
+    | DeleteChannelMessage;
 
 /** Union of all server → client messages. */
 export type ServerMessage =

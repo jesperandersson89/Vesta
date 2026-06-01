@@ -44,3 +44,15 @@ public sealed record RegisterAppMessage(
     string AppId
 ) : ProtocolMessage;
 
+/// <summary>
+/// CLIENT → SERVER: Soft-delete a channel. Admin-only — the connection must
+/// have been promoted to admin during HELLO (its public key matched an entry
+/// in <c>Admin:BootstrapPublicKeys</c>). The channel is marked deleted; any
+/// subsequent PUBLISH, SUBSCRIBE, FETCH, or CREATE_CHANNEL for that ID is
+/// rejected with <c>CHANNEL_DELETED</c>. Existing events are retained until a
+/// future hard-delete sweep (see TODO #12b).
+/// </summary>
+public sealed record DeleteChannelMessage(
+    string ChannelId
+) : ProtocolMessage;
+

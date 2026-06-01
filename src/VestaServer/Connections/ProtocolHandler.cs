@@ -46,7 +46,8 @@ public sealed class ProtocolHandler(
     IAppStore? appStore = null,
     AppRateLimiter? rateLimiter = null,
     IAppStorageAccountant? storageAccountant = null,
-    IOptions<ProtocolOptions>? protocolOptions = null)
+    IOptions<ProtocolOptions>? protocolOptions = null,
+    IAdminStore? adminStore = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
     private readonly ProtocolOptions _options = protocolOptions?.Value ?? new ProtocolOptions();
@@ -131,6 +132,10 @@ public sealed class ProtocolHandler(
                 await HandleRegisterAppAsync(connection, register, cancellationToken);
                 break;
 
+            case DeleteChannelMessage delete:
+                await HandleDeleteChannelAsync(connection, delete, cancellationToken);
+                break;
+
             default:
                 await connection.SendAsync(
                     new ErrorMessage("UNKNOWN_MESSAGE", "Unrecognized message type"),
@@ -168,6 +173,16 @@ public sealed class ProtocolHandler(
                 new ErrorMessage("PUBLIC_KEY_REQUIRED", "HELLO must include a PublicKey on this server"),
                 cancellationToken);
             return;
+        }
+
+        // Promote to server admin if the verified public key is in the admin allow-list.
+        // The check runs only after PublicKey validation above, so an unauthenticated or
+        // mismatched client can never receive admin status.
+        if (adminStore is not null && connection.PublicKey is not null &&
+            await adminStore.IsAdminAsync(connection.PublicKey, cancellationToken))
+        {
+            connection.IsAdmin = true;
+            logger.LogInformation("Client {ClientId} promoted to server admin", connection.ClientId);
         }
 
         // Subscribe to requested channels (ACL-gated)
@@ -241,6 +256,9 @@ public sealed class ProtocolHandler(
         }
 
         if (!await EnsureAppRegisteredAsync(connection, publish.ChannelId, cancellationToken))
+            return;
+
+        if (!await EnsureChannelNotDeletedAsync(connection, publish.ChannelId, cancellationToken))
             return;
 
         if (!await accessStore.CanAccessAsync(publish.ChannelId, connection.ClientId, cancellationToken))
@@ -319,6 +337,11 @@ public sealed class ProtocolHandler(
         // Store the event
         SequencedEvent sequenced = await eventStore.AppendAsync(publish.Event, cancellationToken);
 
+        // Record the implicit-create so the access store knows about this channel
+        // (needed for IsDeletedAsync / DeleteChannelAsync / CountChannelsByAppAsync
+        // in the in-memory backend; no-op for Postgres).
+        await accessStore.RecordImplicitChannelAsync(publish.ChannelId, cancellationToken);
+
         // Update the cached storage rollup so total_storage_bytes enforcement stays current
         // between pruner sweeps. No-op for apps with a cold cache or no quota.
         if (storageAccountant is not null)
@@ -361,6 +384,9 @@ public sealed class ProtocolHandler(
         }
 
         if (!await EnsureAppRegisteredAsync(connection, subscribe.ChannelId, cancellationToken))
+            return;
+
+        if (!await EnsureChannelNotDeletedAsync(connection, subscribe.ChannelId, cancellationToken))
             return;
 
         if (!await accessStore.CanAccessAsync(subscribe.ChannelId, connection.ClientId, cancellationToken))
@@ -411,6 +437,9 @@ public sealed class ProtocolHandler(
         if (!await EnsureAppRegisteredAsync(connection, fetch.ChannelId, cancellationToken))
             return;
 
+        if (!await EnsureChannelNotDeletedAsync(connection, fetch.ChannelId, cancellationToken))
+            return;
+
         if (!await accessStore.CanAccessAsync(fetch.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
@@ -459,6 +488,9 @@ public sealed class ProtocolHandler(
         }
 
         if (!await EnsureAppRegisteredAsync(connection, create.ChannelId, cancellationToken))
+            return;
+
+        if (!await EnsureChannelNotDeletedAsync(connection, create.ChannelId, cancellationToken))
             return;
 
         // max_channels quota — checked before attempting to create the row.
@@ -583,6 +615,73 @@ public sealed class ProtocolHandler(
         logger.LogInformation(
             "App registered: {AppId} owned by {ClientId}",
             register.AppId, connection.ClientId);
+    }
+
+    private async Task HandleDeleteChannelAsync(
+        ClientConnection connection,
+        DeleteChannelMessage delete,
+        CancellationToken cancellationToken)
+    {
+        if (connection.ClientId is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("HELLO_REQUIRED", "Must send HELLO before DELETE_CHANNEL"),
+                cancellationToken);
+            return;
+        }
+
+        if (!connection.IsAdmin)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("NOT_ADMIN", "DELETE_CHANNEL is reserved for server admins"),
+                cancellationToken);
+            return;
+        }
+
+        if (!ChannelId.IsValid(delete.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{delete.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
+        bool existed = await accessStore.DeleteChannelAsync(delete.ChannelId, cancellationToken);
+        if (!existed)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("CHANNEL_NOT_FOUND", $"Channel '{delete.ChannelId}' does not exist"),
+                cancellationToken);
+            return;
+        }
+
+        await connection.SendAsync(
+            new AckMessage(delete.ChannelId, Guid.Empty, 0),
+            cancellationToken);
+
+        logger.LogInformation(
+            "Channel {ChannelId} soft-deleted by admin {ClientId}",
+            delete.ChannelId, connection.ClientId);
+    }
+
+    /// <summary>
+    /// Returns false (and sends a <c>CHANNEL_DELETED</c> ERROR frame) if the channel has
+    /// been soft-deleted. Returns true otherwise (including for channels that don't exist
+    /// yet \u2014 implicit creation is still allowed for active namespaces).
+    /// </summary>
+    private async Task<bool> EnsureChannelNotDeletedAsync(
+        ClientConnection connection,
+        string channelId,
+        CancellationToken cancellationToken)
+    {
+        if (await accessStore.IsDeletedAsync(channelId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("CHANNEL_DELETED", $"Channel '{channelId}' has been deleted"),
+                cancellationToken);
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
