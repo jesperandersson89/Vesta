@@ -448,7 +448,8 @@ function showView(view: "lobby" | "match"): void {
 function setConnectedUi(connected: boolean): void {
     serverInput.disabled = connected;
     usernameInput.disabled = connected;
-    connectBtn.classList.toggle("hidden", connected);
+    const controls = document.getElementById("connect-controls");
+    if (controls) controls.classList.toggle("hidden", connected);
     logoutBtn.classList.toggle("hidden", !connected);
 }
 

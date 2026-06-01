@@ -51,19 +51,21 @@
             </main>
 
             <footer>
-                <label>
-                    Server:
-                    <input
-                        id="server-url"
-                        type="text"
-                        value="ws://localhost:5050/ws"
-                    />
-                </label>
-                <label>
-                    Username:
-                    <input id="username" type="text" />
-                </label>
-                <button id="connect-btn">Connect</button>
+                <div id="connect-controls">
+                    <label>
+                        Server:
+                        <input
+                            id="server-url"
+                            type="text"
+                            value="ws://localhost:5050/ws"
+                        />
+                    </label>
+                    <label>
+                        Username:
+                        <input id="username" type="text" />
+                    </label>
+                    <button id="connect-btn">Connect</button>
+                </div>
                 <button id="logout-btn" class="hidden">Log out</button>
             </footer>
         </div>

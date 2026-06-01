@@ -257,6 +257,18 @@ footer {
     align-items: center;
     flex-wrap: wrap;
 }
+#connect-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+#connect-controls.hidden {
+    display: none;
+}
+button.hidden {
+    display: none;
+}
 footer label {
     font-size: 0.85rem;
     display: flex;
