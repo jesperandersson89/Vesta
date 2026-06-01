@@ -113,6 +113,34 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.CompletedTask;
   }
 
+  public Task<IReadOnlyList<ChannelSummary>> ListChannelsAsync(
+      string? appPrefix,
+      bool includeDeleted,
+      CancellationToken cancellationToken = default)
+  {
+    string? prefix = appPrefix is null ? null : appPrefix + "/";
+    List<ChannelSummary> result = [];
+    foreach (KeyValuePair<string, ChannelInfo> kv in _channels)
+    {
+      if (!includeDeleted && kv.Value.DeletedAt is not null) continue;
+      if (appPrefix is not null && kv.Key != appPrefix && !kv.Key.StartsWith(prefix!, StringComparison.Ordinal)) continue;
+      result.Add(new ChannelSummary(kv.Key, kv.Value.Visibility, kv.Value.CreatedAt, kv.Value.DeletedAt));
+    }
+    return Task.FromResult<IReadOnlyList<ChannelSummary>>(result);
+  }
+
+  public Task<IReadOnlyList<ChannelMember>> ListMembersAsync(
+      string channelId,
+      CancellationToken cancellationToken = default)
+  {
+    if (!_channels.TryGetValue(channelId, out ChannelInfo? info))
+      return Task.FromResult<IReadOnlyList<ChannelMember>>([]);
+    List<ChannelMember> members = [];
+    foreach (KeyValuePair<string, string> kv in info.Members)
+      members.Add(new ChannelMember(kv.Key, kv.Value));
+    return Task.FromResult<IReadOnlyList<ChannelMember>>(members);
+  }
+
   /// <summary>
   /// Records an implicit channel creation (public) when an event is appended to a previously unknown channel.
   /// Idempotent.
@@ -125,6 +153,7 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
   private sealed class ChannelInfo(ChannelVisibility visibility)
   {
     public ChannelVisibility Visibility { get; } = visibility;
+    public DateTimeOffset CreatedAt { get; } = DateTimeOffset.UtcNow;
     public ConcurrentDictionary<string, string> Members { get; } = new();
     public DateTimeOffset? DeletedAt { get; set; }
   }

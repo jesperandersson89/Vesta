@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Vesta Admin</title>
+        <style>
+            :root {
+                --bg: #0f1115;
+                --panel: #181b22;
+                --panel-2: #1f232c;
+                --border: #2a2f3a;
+                --text: #d8dde6;
+                --muted: #8a93a6;
+                --accent: #ff7a45;
+                --accent-2: #ffb27a;
+                --danger: #e25c5c;
+                --ok: #62c884;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--text);
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                font-size: 14px;
+            }
+            header {
+                padding: 14px 24px;
+                background: var(--panel);
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                gap: 16px;
+            }
+            header h1 {
+                margin: 0;
+                font-size: 18px;
+                color: var(--accent);
+            }
+            header .status {
+                margin-left: auto;
+                color: var(--muted);
+                font-size: 12px;
+            }
+            main {
+                display: grid;
+                grid-template-columns: 220px 1fr;
+                min-height: calc(100vh - 53px);
+            }
+            nav {
+                background: var(--panel);
+                border-right: 1px solid var(--border);
+                padding: 12px 0;
+            }
+            nav button {
+                display: block;
+                width: 100%;
+                text-align: left;
+                padding: 10px 24px;
+                background: transparent;
+                border: none;
+                color: var(--text);
+                cursor: pointer;
+                font: inherit;
+            }
+            nav button:hover {
+                background: var(--panel-2);
+            }
+            nav button.active {
+                background: var(--panel-2);
+                color: var(--accent);
+                border-left: 3px solid var(--accent);
+                padding-left: 21px;
+            }
+            section {
+                padding: 24px;
+                overflow: auto;
+            }
+            h2 {
+                margin-top: 0;
+                color: var(--accent-2);
+                font-weight: 500;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+            }
+            th,
+            td {
+                text-align: left;
+                padding: 8px 12px;
+                border-bottom: 1px solid var(--border);
+            }
+            th {
+                color: var(--muted);
+                font-weight: 500;
+                font-size: 12px;
+                text-transform: uppercase;
+            }
+            tr:hover td {
+                background: var(--panel-2);
+            }
+            button.primary {
+                background: var(--accent);
+                color: #1a1a1a;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font: inherit;
+                font-weight: 600;
+            }
+            button.danger {
+                background: var(--danger);
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            button.ghost {
+                background: transparent;
+                color: var(--accent);
+                border: 1px solid var(--border);
+                padding: 6px 12px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            input,
+            textarea {
+                background: var(--panel-2);
+                color: var(--text);
+                border: 1px solid var(--border);
+                padding: 8px 10px;
+                border-radius: 4px;
+                font: inherit;
+                width: 100%;
+            }
+            .card {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }
+            .grid {
+                display: grid;
+                gap: 12px;
+            }
+            .grid-2 {
+                grid-template-columns: 1fr 1fr;
+            }
+            .grid-3 {
+                grid-template-columns: 1fr 1fr 1fr;
+            }
+            .metric {
+                text-align: center;
+                padding: 18px;
+            }
+            .metric .value {
+                font-size: 32px;
+                color: var(--accent);
+                font-weight: 600;
+            }
+            .metric .label {
+                color: var(--muted);
+                margin-top: 4px;
+                font-size: 12px;
+                text-transform: uppercase;
+            }
+            .filters {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                margin-bottom: 12px;
+            }
+            .filters input {
+                width: 240px;
+            }
+            .pill {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 11px;
+            }
+            .pill-public {
+                background: #2d3a4a;
+                color: #8db4e2;
+            }
+            .pill-private {
+                background: #4a3a2d;
+                color: #e2b48d;
+            }
+            .pill-deleted {
+                background: #4a2d2d;
+                color: #e28d8d;
+            }
+            .muted {
+                color: var(--muted);
+                font-size: 12px;
+            }
+            code {
+                background: var(--panel-2);
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-family: "Consolas", monospace;
+                font-size: 12px;
+            }
+            .error {
+                color: var(--danger);
+                margin-top: 8px;
+            }
+            .login {
+                max-width: 480px;
+                margin: 80px auto;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Vesta Admin</h1>
+            <div class="status" id="status">Not authenticated</div>
+            <button class="ghost" id="logoutBtn" style="display: none">
+                Logout
+            </button>
+        </header>
+
+        <div id="loginView" class="login card">
+            <h2>Sign in</h2>
+            <p class="muted">
+                Paste your admin Ed25519 private key (32-byte seed, base64url).
+                The key never leaves this page.
+            </p>
+            <textarea
+                id="seedInput"
+                rows="3"
+                placeholder="base64url-encoded 32-byte seed"
+            ></textarea>
+            <div style="margin-top: 12px">
+                <button class="primary" id="loginBtn">Sign in</button>
+            </div>
+            <div class="error" id="loginError"></div>
+        </div>
+
+        <main id="app" style="display: none">
+            <nav>
+                <button class="active" data-view="metrics">Overview</button>
+                <button data-view="channels">Channels</button>
+                <button data-view="apps">Apps</button>
+            </nav>
+            <section id="content"></section>
+        </main>
+
+        <script type="module">
+            // Tiny Ed25519 implementation — pinned version via esm.sh
+            import * as ed from "https://esm.sh/@noble/ed25519@2.1.0";
+            import { sha512 } from "https://esm.sh/@noble/hashes@1.4.0/sha512";
+            ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
+
+            // ── Base64url helpers ────────────────────────────────────────────────
+            const b64url = {
+                encode(bytes) {
+                    let s = btoa(String.fromCharCode(...bytes));
+                    return s
+                        .replace(/\+/g, "-")
+                        .replace(/\//g, "_")
+                        .replace(/=+$/, "");
+                },
+                decode(s) {
+                    s = s.replace(/-/g, "+").replace(/_/g, "/");
+                    while (s.length % 4) s += "=";
+                    const bin = atob(s);
+                    const out = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++)
+                        out[i] = bin.charCodeAt(i);
+                    return out;
+                },
+            };
+
+            // ── Auth state ───────────────────────────────────────────────────────
+            let token = sessionStorage.getItem("vesta_admin_token");
+            let tokenExpires = sessionStorage.getItem(
+                "vesta_admin_token_expires",
+            );
+
+            function setToken(t, exp) {
+                token = t;
+                tokenExpires = exp;
+                sessionStorage.setItem("vesta_admin_token", t);
+                sessionStorage.setItem("vesta_admin_token_expires", exp);
+                document.getElementById("status").textContent =
+                    "Authenticated · expires " +
+                    new Date(exp).toLocaleTimeString();
+                document.getElementById("logoutBtn").style.display = "";
+            }
+            function clearToken() {
+                token = null;
+                tokenExpires = null;
+                sessionStorage.removeItem("vesta_admin_token");
+                sessionStorage.removeItem("vesta_admin_token_expires");
+                document.getElementById("status").textContent =
+                    "Not authenticated";
+                document.getElementById("logoutBtn").style.display = "none";
+                document.getElementById("loginView").style.display = "";
+                document.getElementById("app").style.display = "none";
+            }
+
+            document.getElementById("logoutBtn").onclick = clearToken;
+
+            document.getElementById("loginBtn").onclick = async () => {
+                const errEl = document.getElementById("loginError");
+                errEl.textContent = "";
+                try {
+                    const seed = b64url.decode(
+                        document.getElementById("seedInput").value.trim(),
+                    );
+                    if (seed.length !== 32)
+                        throw new Error("Seed must be 32 bytes");
+                    const publicKey = await ed.getPublicKeyAsync(seed);
+
+                    const chResp = await fetch("/admin/auth/challenge", {
+                        method: "POST",
+                    });
+                    if (!chResp.ok)
+                        throw new Error("Challenge failed: " + chResp.status);
+                    const challenge = await chResp.json();
+
+                    const nonceBytes = b64url.decode(challenge.nonce);
+                    const signature = await ed.signAsync(nonceBytes, seed);
+
+                    const vfResp = await fetch("/admin/auth/verify", {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({
+                            publicKey: b64url.encode(publicKey),
+                            nonce: challenge.nonce,
+                            signature: b64url.encode(signature),
+                        }),
+                    });
+                    if (vfResp.status === 401)
+                        throw new Error(
+                            "Not authorized (public key not in admin allow-list?)",
+                        );
+                    if (!vfResp.ok)
+                        throw new Error("Verify failed: " + vfResp.status);
+                    const tk = await vfResp.json();
+                    setToken(tk.token, tk.expiresAt);
+                    document.getElementById("loginView").style.display = "none";
+                    document.getElementById("app").style.display = "";
+                    showView("metrics");
+                } catch (e) {
+                    errEl.textContent = e.message ?? String(e);
+                }
+            };
+
+            async function api(path, opts = {}) {
+                const headers = {
+                    ...(opts.headers ?? {}),
+                    authorization: "Bearer " + token,
+                };
+                const resp = await fetch(path, { ...opts, headers });
+                if (resp.status === 401) {
+                    clearToken();
+                    throw new Error("Session expired");
+                }
+                if (!resp.ok) throw new Error(path + " → " + resp.status);
+                if (resp.status === 204) return null;
+                return resp.json();
+            }
+
+            // ── Views ────────────────────────────────────────────────────────────
+            const content = document.getElementById("content");
+
+            document.querySelectorAll("nav button").forEach((b) => {
+                b.onclick = () => {
+                    document
+                        .querySelectorAll("nav button")
+                        .forEach((x) => x.classList.remove("active"));
+                    b.classList.add("active");
+                    showView(b.dataset.view);
+                };
+            });
+
+            async function showView(name) {
+                content.innerHTML = `<p class="muted">Loading…</p>`;
+                try {
+                    if (name === "metrics") await renderMetrics();
+                    else if (name === "channels") await renderChannels();
+                    else if (name === "apps") await renderApps();
+                } catch (e) {
+                    content.innerHTML = `<p class="error">${e.message}</p>`;
+                }
+            }
+
+            async function renderMetrics() {
+                const m = await api("/admin/metrics");
+                content.innerHTML = `
+        <h2>Overview</h2>
+        <div class="grid grid-3">
+          <div class="card metric"><div class="value">${m.activeConnections}</div><div class="label">Active connections</div></div>
+          <div class="card metric"><div class="value">${m.totalApps}</div><div class="label">Registered apps</div></div>
+          <div class="card metric"><div class="value">${m.totalChannels}</div><div class="label">Live channels</div></div>
+        </div>
+      `;
+            }
+
+            async function renderChannels() {
+                const url = new URL("/admin/channels", location.origin);
+                url.searchParams.set("includeDeleted", "true");
+                const rows = await api(url.pathname + url.search);
+                rows.sort((a, b) => a.id.localeCompare(b.id));
+                content.innerHTML = `
+        <h2>Channels <span class="muted">(${rows.length})</span></h2>
+        <div class="filters">
+          <input id="channelFilter" placeholder="Filter by id…" />
+        </div>
+        <div class="card" style="padding:0">
+          <table>
+            <thead><tr><th>ID</th><th>Visibility</th><th>Created</th><th>State</th><th></th></tr></thead>
+            <tbody id="channelRows"></tbody>
+          </table>
+        </div>
+        <div id="channelDetail"></div>
+      `;
+                const tbody = document.getElementById("channelRows");
+                function paint(filter) {
+                    tbody.innerHTML = rows
+                        .filter((r) => !filter || r.id.includes(filter))
+                        .map(
+                            (r) => `
+            <tr>
+              <td><code>${r.id}</code></td>
+              <td><span class="pill pill-${r.visibility}">${r.visibility}</span></td>
+              <td class="muted">${new Date(r.createdAt).toLocaleString()}</td>
+              <td>${r.deletedAt ? `<span class="pill pill-deleted">deleted</span>` : "<span class='muted'>live</span>"}</td>
+              <td>
+                <button class="ghost" data-view-channel="${encodeURIComponent(r.id)}">View</button>
+                ${r.deletedAt ? "" : `<button class="danger" data-delete-channel="${encodeURIComponent(r.id)}">Delete</button>`}
+              </td>
+            </tr>`,
+                        )
+                        .join("");
+                    tbody
+                        .querySelectorAll("[data-view-channel]")
+                        .forEach(
+                            (b) =>
+                                (b.onclick = () =>
+                                    viewChannel(
+                                        decodeURIComponent(
+                                            b.dataset.viewChannel,
+                                        ),
+                                    )),
+                        );
+                    tbody
+                        .querySelectorAll("[data-delete-channel]")
+                        .forEach(
+                            (b) =>
+                                (b.onclick = () =>
+                                    deleteChannel(
+                                        decodeURIComponent(
+                                            b.dataset.deleteChannel,
+                                        ),
+                                    )),
+                        );
+                }
+                document.getElementById("channelFilter").oninput = (e) =>
+                    paint(e.target.value.trim());
+                paint("");
+            }
+
+            async function viewChannel(id) {
+                const detail = document.getElementById("channelDetail");
+                detail.innerHTML = `<p class="muted">Loading ${id}…</p>`;
+                const c = await api(
+                    "/admin/channels/" + encodeURIComponent(id),
+                );
+                detail.innerHTML = `
+        <div class="card">
+          <h2>${c.id}</h2>
+          <div class="grid grid-3">
+            <div><div class="muted">Events</div><div style="font-size:18px">${c.eventCount}</div></div>
+            <div><div class="muted">Payload bytes</div><div style="font-size:18px">${c.payloadBytes.toLocaleString()}</div></div>
+            <div><div class="muted">Latest sequence</div><div style="font-size:18px">${c.latestSequence}</div></div>
+          </div>
+          <h3 style="color:var(--muted);font-weight:500;font-size:13px;text-transform:uppercase">Members (${c.members.length})</h3>
+          ${
+              c.members.length === 0
+                  ? "<p class='muted'>No explicit grants.</p>"
+                  : `<table><thead><tr><th>Client ID</th><th>Role</th></tr></thead><tbody>${c.members
+                        .map(
+                            (m) =>
+                                `<tr><td><code>${m.clientId}</code></td><td>${m.role}</td></tr>`,
+                        )
+                        .join("")}</tbody></table>`
+          }
+        </div>
+      `;
+            }
+
+            async function deleteChannel(id) {
+                if (!confirm(`Soft-delete channel '${id}'?`)) return;
+                await api("/admin/channels/" + encodeURIComponent(id), {
+                    method: "DELETE",
+                });
+                showView("channels");
+            }
+
+            async function renderApps() {
+                const rows = await api("/admin/apps");
+                rows.sort((a, b) => a.id.localeCompare(b.id));
+                content.innerHTML = `
+        <h2>Apps <span class="muted">(${rows.length})</span></h2>
+        <div class="card" style="padding:0">
+          <table>
+            <thead><tr><th>ID</th><th>Owner</th><th>Storage</th><th>Created</th><th></th></tr></thead>
+            <tbody>${rows
+                .map(
+                    (a) => `
+              <tr>
+                <td><code>${a.id}</code></td>
+                <td class="muted"><code>${a.ownerClientId.slice(0, 16)}…</code></td>
+                <td>${a.storageBytes.toLocaleString()} B</td>
+                <td class="muted">${new Date(a.createdAt).toLocaleDateString()}</td>
+                <td><button class="ghost" data-view-app="${encodeURIComponent(a.id)}">View / edit quotas</button></td>
+              </tr>`,
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+        <div id="appDetail"></div>
+      `;
+                content
+                    .querySelectorAll("[data-view-app]")
+                    .forEach(
+                        (b) =>
+                            (b.onclick = () =>
+                                viewApp(decodeURIComponent(b.dataset.viewApp))),
+                    );
+            }
+
+            async function viewApp(id) {
+                const detail = document.getElementById("appDetail");
+                detail.innerHTML = `<p class="muted">Loading…</p>`;
+                const a = await api("/admin/apps/" + encodeURIComponent(id));
+                const q = a.quotas;
+                detail.innerHTML = `
+        <div class="card">
+          <h2>${a.id}</h2>
+          <div class="muted">Owner <code>${a.ownerClientId}</code> · created ${new Date(a.createdAt).toLocaleString()}</div>
+          <div class="grid grid-3" style="margin-top:12px">
+            <div><div class="muted">Storage used</div><div style="font-size:18px">${a.storageBytes.toLocaleString()} B</div></div>
+            <div><div class="muted">Channels</div><div style="font-size:18px">${a.channelCount}</div></div>
+            <div><div class="muted">Owner</div><div style="font-size:18px"><code>${a.ownerClientId.slice(0, 16)}…</code></div></div>
+          </div>
+          <h3 style="color:var(--muted);font-weight:500;font-size:13px;text-transform:uppercase">Quotas</h3>
+          <div class="grid grid-2">
+            <label>Max payload bytes <input id="q_max" type="number" value="${q.maxPayloadBytes}" /></label>
+            <label>Publish rate / min <input id="q_rate" type="number" value="${q.publishRatePerMinute}" /></label>
+            <label>Max channels <input id="q_ch" type="number" value="${q.maxChannels}" /></label>
+            <label>Max events / channel <input id="q_ev" type="number" value="${q.maxEventsPerChannel}" /></label>
+            <label>Retention days <input id="q_ret" type="number" value="${q.retentionDays}" /></label>
+            <label>Total storage bytes <input id="q_sto" type="number" value="${q.totalStorageBytes}" /></label>
+          </div>
+          <div style="margin-top:12px"><button class="primary" id="saveQuotas">Save quotas</button></div>
+        </div>
+      `;
+                document.getElementById("saveQuotas").onclick = async () => {
+                    const body = {
+                        maxPayloadBytes:
+                            +document.getElementById("q_max").value,
+                        publishRatePerMinute:
+                            +document.getElementById("q_rate").value,
+                        maxChannels: +document.getElementById("q_ch").value,
+                        maxEventsPerChannel:
+                            +document.getElementById("q_ev").value,
+                        retentionDays: +document.getElementById("q_ret").value,
+                        totalStorageBytes:
+                            +document.getElementById("q_sto").value,
+                    };
+                    await api(
+                        "/admin/apps/" + encodeURIComponent(id) + "/quotas",
+                        {
+                            method: "PATCH",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify(body),
+                        },
+                    );
+                    viewApp(id);
+                };
+            }
+
+            // ── Bootstrap ────────────────────────────────────────────────────────
+            if (token && tokenExpires && new Date(tokenExpires) > new Date()) {
+                setToken(token, tokenExpires);
+                document.getElementById("loginView").style.display = "none";
+                document.getElementById("app").style.display = "";
+                showView("metrics");
+            }
+        </script>
+    </body>
+</html>

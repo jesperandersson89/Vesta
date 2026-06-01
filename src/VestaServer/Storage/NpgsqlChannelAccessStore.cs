@@ -147,6 +147,60 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
   public Task RecordImplicitChannelAsync(string channelId, CancellationToken cancellationToken = default)
       => Task.CompletedTask;
 
+  public async Task<IReadOnlyList<ChannelSummary>> ListChannelsAsync(
+      string? appPrefix,
+      bool includeDeleted,
+      CancellationToken cancellationToken = default)
+  {
+    // Build the predicate at compile-time to keep the SQL readable; the four
+    // shapes are small enough that branching beats string-building.
+    string sql;
+    if (appPrefix is null && includeDeleted)
+      sql = "SELECT id, visibility, created_at, deleted_at FROM channels";
+    else if (appPrefix is null)
+      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE deleted_at IS NULL";
+    else if (includeDeleted)
+      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE id = $1 OR id LIKE $2";
+    else
+      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE deleted_at IS NULL AND (id = $1 OR id LIKE $2)";
+
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    if (appPrefix is not null)
+    {
+      cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appPrefix });
+      cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appPrefix + "/%" });
+    }
+
+    List<ChannelSummary> result = [];
+    await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
+    while (await reader.ReadAsync(cancellationToken))
+    {
+      string id = reader.GetString(0);
+      string visibilityStr = reader.GetString(1);
+      DateTimeOffset createdAt = reader.GetFieldValue<DateTimeOffset>(2);
+      DateTimeOffset? deletedAt = reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3);
+      ChannelVisibility visibility = string.Equals(visibilityStr, "private", StringComparison.OrdinalIgnoreCase)
+          ? ChannelVisibility.Private
+          : ChannelVisibility.Public;
+      result.Add(new ChannelSummary(id, visibility, createdAt, deletedAt));
+    }
+    return result;
+  }
+
+  public async Task<IReadOnlyList<ChannelMember>> ListMembersAsync(
+      string channelId,
+      CancellationToken cancellationToken = default)
+  {
+    const string sql = "SELECT client_id, role FROM channel_access WHERE channel_id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
+    List<ChannelMember> result = [];
+    await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
+    while (await reader.ReadAsync(cancellationToken))
+      result.Add(new ChannelMember(reader.GetString(0), reader.GetString(1)));
+    return result;
+  }
+
   private static async Task InsertAccessAsync(
       NpgsqlConnection connection,
       NpgsqlTransaction tx,

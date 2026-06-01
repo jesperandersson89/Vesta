@@ -12,6 +12,16 @@ public enum ChannelVisibility
   Private,
 }
 
+/// <summary>Summary row used by admin listing endpoints.</summary>
+public sealed record ChannelSummary(
+    string Id,
+    ChannelVisibility Visibility,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? DeletedAt);
+
+/// <summary>A (clientId, role) pair on a private channel.</summary>
+public sealed record ChannelMember(string ClientId, string Role);
+
 /// <summary>
 /// Server-side abstraction for channel visibility and per-client access control.
 /// Public channels do not need explicit access rows.
@@ -89,6 +99,25 @@ public interface IChannelAccessStore
   /// and <see cref="CountChannelsByAppAsync"/>.
   /// </summary>
   Task RecordImplicitChannelAsync(string channelId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Admin-only: list channels. When <paramref name="appPrefix"/> is non-null,
+  /// only channels whose id equals it or starts with <c>"{prefix}/"</c> are
+  /// returned. When <paramref name="includeDeleted"/> is false, soft-deleted
+  /// channels are filtered out. Order is unspecified; callers sort as needed.
+  /// </summary>
+  Task<IReadOnlyList<ChannelSummary>> ListChannelsAsync(
+      string? appPrefix,
+      bool includeDeleted,
+      CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Admin-only: list every (clientId, role) entry for the channel. Empty for
+  /// public channels with no explicit grants and for channels that do not exist.
+  /// </summary>
+  Task<IReadOnlyList<ChannelMember>> ListMembersAsync(
+      string channelId,
+      CancellationToken cancellationToken = default);
 }
 
 public sealed class ChannelAlreadyExistsException(string channelId)

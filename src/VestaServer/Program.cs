@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using VestaCore.Storage;
+using VestaServer.Admin;
 using VestaServer.Connections;
 using VestaServer.Data;
 using VestaServer.Storage;
@@ -24,6 +25,7 @@ if (useInMemory)
     builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
     builder.Services.AddSingleton<IChannelAccessStore, InMemoryChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, InMemoryAppStore>();
+    builder.Services.AddSingleton<IChannelStatsService, InMemoryChannelStatsService>();
 }
 else if (!string.IsNullOrEmpty(connectionString))
 {
@@ -37,6 +39,7 @@ else if (!string.IsNullOrEmpty(connectionString))
     builder.Services.AddSingleton<IEventStore, NpgsqlEventStore>();
     builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, NpgsqlAppStore>();
+    builder.Services.AddSingleton<IChannelStatsService, NpgsqlChannelStatsService>();
 
     // Background sweep for events past their TTL. Opt-in via EventCleanup:Enabled.
     builder.Services.Configure<ExpiredEventCleanupOptions>(builder.Configuration.GetSection("EventCleanup"));
@@ -71,6 +74,10 @@ builder.Services.Configure<ProtocolOptions>(builder.Configuration.GetSection("Pr
 builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
 builder.Services.AddSingleton<IAdminStore, ConfigAdminStore>();
 
+// Admin HTTP API (challenge → bearer token).
+builder.Services.Configure<AdminApiOptions>(builder.Configuration.GetSection("AdminApi"));
+builder.Services.AddSingleton<AdminAuthService>();
+
 WebApplication app = builder.Build();
 
 // Apply pending migrations on startup (only when using PostgreSQL)
@@ -84,6 +91,15 @@ if (!useInMemory && !string.IsNullOrEmpty(connectionString))
 app.UseWebSockets();
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+
+app.MapAdminApi();
+
+// Serve the static admin GUI from /admin (single-page vanilla HTML).
+app.UseDefaultFiles(new Microsoft.AspNetCore.Builder.DefaultFilesOptions
+{
+    DefaultFileNames = new List<string> { "index.html" },
+});
+app.UseStaticFiles();
 
 app.Map("/ws", async (HttpContext context, ProtocolHandler handler) =>
 {

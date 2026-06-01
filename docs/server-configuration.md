@@ -92,9 +92,49 @@ A **server admin** is a connection whose Ed25519 public key is listed in the `Ad
 
 Entries are base64url-encoded 32-byte Ed25519 public keys (the same encoding used for `HelloMessage.PublicKey` and for event signing). Malformed or wrong-length entries are silently skipped at startup. An empty list (the default) means no connection is ever an admin.
 
-Today only one capability requires admin: **`DELETE_CHANNEL`**. The server soft-deletes the target channel (sets `channels.deleted_at`) and then rejects any further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel with `ERROR { code: "CHANNEL_DELETED" }`. Existing events are retained until a future hard-delete sweep (TODO #12b). Non-admin connections receive `ERROR { code: "NOT_ADMIN" }`; deleting a non-existent channel yields `ERROR { code: "CHANNEL_NOT_FOUND" }`. The operation is idempotent — repeated deletes succeed without changing the original `deleted_at` timestamp.
+Today the WebSocket protocol exposes one admin capability: **`DELETE_CHANNEL`**. The server soft-deletes the target channel (sets `channels.deleted_at`) and then rejects any further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel with `ERROR { code: "CHANNEL_DELETED" }`. Existing events are retained until the hard-delete sweep runs (see [`ChannelDeletionPruner`](#channeldeletionpruner-postgres-only)). Non-admin connections receive `ERROR { code: "NOT_ADMIN" }`; deleting a non-existent channel yields `ERROR { code: "CHANNEL_NOT_FOUND" }`. The operation is idempotent — repeated deletes succeed without changing the original `deleted_at` timestamp.
 
-There is no password / JWT layer. The trust root is the same Ed25519 keypair used everywhere else in Vesta. The admin allow-list is **bootstrap** state today — TODO #12c will add a managed admin store and an HTTP admin API.
+There is no password / JWT layer. The trust root is the same Ed25519 keypair used everywhere else in Vesta. Admins authenticate to the HTTP API by signing a challenge with their private key (see [Admin HTTP API](#admin-http-api)).
+
+## Admin HTTP API
+
+The server exposes a small HTTP surface under `/admin/*` for operator tooling and the bundled web GUI (served from `/`). Every key in the bootstrap allow-list can authenticate.
+
+### Auth flow
+
+1. `POST /admin/auth/challenge` → `{ "nonce": "<base64url>", "expiresAt": "..." }` — server issues a random 32-byte nonce, cached for `AdminApi:ChallengeTtl` (default 60 s).
+2. Client signs the decoded nonce bytes with their Ed25519 private key.
+3. `POST /admin/auth/verify { "publicKey": "...", "nonce": "...", "signature": "..." }` → `{ "token": "...", "expiresAt": "..." }` — server verifies the signature, checks the key against `Admin:BootstrapPublicKeys`, and issues a 32-byte bearer token cached for `AdminApi:TokenTtl` (default 1 h). Returns `401` on signature failure or unknown key.
+4. Subsequent requests carry `Authorization: Bearer <token>`. Missing or expired tokens return `401`.
+
+Tokens are kept in-process; a server restart invalidates everything. Multi-host deployments need a shared backend (tracked under TODO #15).
+
+```jsonc
+{
+    "AdminApi": {
+        "ChallengeTtl": "00:01:00",
+        "TokenTtl": "01:00:00",
+    },
+}
+```
+
+### Endpoints
+
+| Method   | Path                      | Description                                                                                     |
+| -------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `POST`   | `/admin/auth/challenge`   | Issue a nonce. No auth.                                                                         |
+| `POST`   | `/admin/auth/verify`      | Exchange a signed nonce for a bearer token. No auth.                                            |
+| `GET`    | `/admin/channels`         | List channels. Query: `?app=<prefix>` filter, `?includeDeleted=true\|false` (default true).     |
+| `GET`    | `/admin/channels/{id}`    | Channel detail: visibility, timestamps, event count / payload bytes / latest sequence, members. |
+| `DELETE` | `/admin/channels/{id}`    | Soft-delete a channel (same effect as the protocol `DELETE_CHANNEL` message).                   |
+| `GET`    | `/admin/apps`             | List registered apps with quotas and current storage usage.                                     |
+| `GET`    | `/admin/apps/{id}`        | App detail including channel count and storage rollup.                                          |
+| `PATCH`  | `/admin/apps/{id}/quotas` | Replace the app's `AppQuotas` body.                                                             |
+| `GET`    | `/admin/metrics`          | `{ activeConnections, totalApps, totalChannels }`.                                              |
+
+### Web GUI
+
+The static SPA at `/` (served from `wwwroot/admin/index.html`) provides a minimal RabbitMQ-style dashboard: overview metrics, channel browser with soft-delete, app list with editable quotas. The login screen takes a base64url-encoded 32-byte Ed25519 seed and performs the challenge / sign / verify dance entirely in the browser — the seed never leaves the page. Token + expiry are cached in `sessionStorage`.
 
 ## `AppQuotaPruner` (Postgres only)
 
