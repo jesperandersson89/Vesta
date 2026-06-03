@@ -255,6 +255,20 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        // Reserved-namespace enforcement: any channel under "vesta/" may only carry events
+        // whose type also begins with "vesta." — this prevents apps from co-opting the
+        // protocol-reserved channel space (e.g. injecting app data into identity channels).
+        if (ChannelId.IsProtocolChannel(publish.ChannelId) &&
+            !publish.Event.EventType.StartsWith("vesta.", StringComparison.Ordinal))
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "PROTOCOL_NAMESPACE_RESERVED",
+                    $"Channel '{publish.ChannelId}' is in the reserved 'vesta/' namespace; only events with type 'vesta.*' may be published there."),
+                cancellationToken);
+            return;
+        }
+
         if (!await EnsureAppRegisteredAsync(connection, publish.ChannelId, cancellationToken))
             return;
 
@@ -487,6 +501,18 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        // Apps must not explicitly create channels in the reserved 'vesta/' namespace —
+        // protocol channels (e.g. vesta/identity/{group}) are auto-created on first PUBLISH.
+        if (ChannelId.IsProtocolChannel(create.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "PROTOCOL_NAMESPACE_RESERVED",
+                    $"Channel '{create.ChannelId}' is in the reserved 'vesta/' namespace; protocol channels are auto-created on first PUBLISH."),
+                cancellationToken);
+            return;
+        }
+
         if (!await EnsureAppRegisteredAsync(connection, create.ChannelId, cancellationToken))
             return;
 
@@ -694,6 +720,12 @@ public sealed class ProtocolHandler(
         CancellationToken cancellationToken)
     {
         if (!_options.RequireAppRegistration || appStore is null)
+            return true;
+
+        // Protocol-reserved channels (vesta/*) are not an "app" — they are part of the SDK
+        // surface itself (e.g. vesta/identity/{group}). Skip the app-registration check so
+        // device-group bootstrap works on servers that otherwise require app registration.
+        if (ChannelId.IsProtocolChannel(channelId))
             return true;
 
         string? appId = AppId.ExtractFromChannelId(channelId);

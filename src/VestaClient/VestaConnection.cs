@@ -330,6 +330,143 @@ public sealed class VestaConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Create a new device group with this connection's identity as the founder, and
+    /// publish a <c>vesta.identity.announce</c> event on the group's identity channel.
+    /// Returns the freshly generated <c>groupId</c>.
+    /// <para>
+    /// Requires the connection to have been opened with a <see cref="VestaIdentity"/>.
+    /// The founder is self-trusted; subsequent devices must be vouched for via
+    /// <see cref="LinkDeviceAsync"/>.
+    /// </para>
+    /// </summary>
+    public async Task<string> CreateDeviceGroupAsync(
+        string? deviceName = null,
+        CancellationToken cancellationToken = default)
+    {
+        VestaIdentity identity = RequireIdentity(nameof(CreateDeviceGroupAsync));
+        string groupId = IdentityLinkBuilder.GenerateGroupId();
+        VestaEvent announce = IdentityLinkBuilder.BuildAnnounce(identity, groupId, deviceName);
+        await PublishAsync(announce, cancellationToken);
+        return groupId;
+    }
+
+    /// <summary>
+    /// Vouch for another device as a member of the given group. Publishes a
+    /// <c>vesta.identity.link</c> event signed by this connection's identity.
+    /// <para>
+    /// For other clients to honor the link, this connection's identity must already
+    /// be a trusted member of the group (typically because it created the group or
+    /// was itself linked by an existing member).
+    /// </para>
+    /// </summary>
+    /// <param name="groupId">The group ID returned by <see cref="CreateDeviceGroupAsync"/>.</param>
+    /// <param name="targetPublicKey">The 32-byte Ed25519 public key of the device being linked.</param>
+    /// <param name="reason">Optional human-readable hint (e.g. <c>"device-pairing"</c>).</param>
+    public async Task LinkDeviceAsync(
+        string groupId,
+        byte[] targetPublicKey,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        VestaIdentity identity = RequireIdentity(nameof(LinkDeviceAsync));
+        VestaEvent link = IdentityLinkBuilder.BuildLink(identity, groupId, targetPublicKey, reason);
+        await PublishAsync(link, cancellationToken);
+    }
+
+    /// <summary>
+    /// Announce this connection's identity as joining an existing group. Publishes a
+    /// <c>vesta.identity.announce</c> event signed by this connection's identity.
+    /// <para>
+    /// The announce alone is not enough to make this device a trusted member — an
+    /// existing trusted member must also publish a <see cref="LinkDeviceAsync"/>
+    /// event vouching for this device's public key.
+    /// </para>
+    /// </summary>
+    public async Task JoinDeviceGroupAsync(
+        string groupId,
+        string? deviceName = null,
+        CancellationToken cancellationToken = default)
+    {
+        VestaIdentity identity = RequireIdentity(nameof(JoinDeviceGroupAsync));
+        VestaEvent announce = IdentityLinkBuilder.BuildAnnounce(identity, groupId, deviceName);
+        await PublishAsync(announce, cancellationToken);
+    }
+
+    /// <summary>
+    /// Subscribe to the given group's identity channel, fetch the full history, replay it
+    /// into a <see cref="DeviceGroupProjection"/>, and return the materialized membership.
+    /// <para>
+    /// This is a one-shot convenience method intended for occasional inspection (e.g. "show
+    /// me my linked devices"). For continuous tracking, subscribe to the channel directly
+    /// and feed events into your own <see cref="DeviceGroupProjection"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="groupId">The group ID to query.</param>
+    /// <param name="timeout">How long to wait for the catch-up batch. Defaults to 5 seconds.</param>
+    public async Task<DeviceGroup> GetDeviceGroupMembersAsync(
+        string groupId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        string channelId = DeviceGroupChannel.For(groupId);
+        DeviceGroupProjection projection = new(groupId);
+
+        TaskCompletionSource<bool> batchReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnBatch(EventsBatchMessage batch)
+        {
+            if (batch.ChannelId != channelId)
+                return;
+            projection.Apply(batch.Events);
+            batchReceived.TrySetResult(true);
+        }
+
+        void OnEvt(EventMessage evt)
+        {
+            if (evt.Event.ChannelId != channelId)
+                return;
+            projection.Apply(new SequencedEvent(evt.Event, evt.Sequence, evt.ReceivedAt));
+        }
+
+        OnEventsBatch += OnBatch;
+        OnEvent += OnEvt;
+        try
+        {
+            await SubscribeAsync(channelId, fromSequence: 0, cancellationToken);
+
+            using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
+            try
+            {
+                await batchReceived.Task.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // No batch arrived within the timeout — the channel may be empty.
+                // Return whatever the projection has (likely an empty group).
+            }
+        }
+        finally
+        {
+            OnEventsBatch -= OnBatch;
+            OnEvent -= OnEvt;
+        }
+
+        return projection.State;
+    }
+
+    private VestaIdentity RequireIdentity(string methodName)
+    {
+        if (_identity is null)
+        {
+            throw new InvalidOperationException(
+                $"{methodName} requires the VestaConnection to be constructed with a VestaIdentity. " +
+                "Device-group operations need to sign events with the connection's identity.");
+        }
+        return _identity;
+    }
+
+    /// <summary>
     /// Gracefully disconnect from the server.
     /// Sends a close frame and waits for the receive loop to finish naturally.
     /// </summary>

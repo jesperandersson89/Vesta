@@ -9,6 +9,25 @@ export { createEvent } from "./events.js";
 export { loadOrCreateIdentity, VestaIdentity } from "./identity.js";
 export type { SerializedIdentity } from "./identity.js";
 export {
+    ANNOUNCE_EVENT_TYPE,
+    buildAnnounce,
+    buildLink,
+    buildUnlink,
+    DeviceGroupProjection,
+    deviceGroupChannel,
+    generateGroupId,
+    isProtocolChannel,
+    LINK_EVENT_TYPE,
+    PairingPayload,
+    PROTOCOL_CHANNEL_PREFIX,
+    UNLINK_EVENT_TYPE,
+} from "./device-groups.js";
+export type {
+    DeviceAnnouncePayload,
+    DeviceGroup,
+    DeviceLinkPayload,
+} from "./device-groups.js";
+export {
     AppendOnlyLog,
     EventReducer,
     LwwMap,

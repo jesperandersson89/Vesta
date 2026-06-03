@@ -1001,6 +1001,294 @@ This gives us full coverage of the protocol's capabilities with minimal overlap.
 
 ---
 
+## Cross-Device Identity (Device Groups)
+
+A single Vesta `clientId` represents one Ed25519 keypair on one device. To let
+a real human use the same "identity" across phone, laptop, and desktop —
+without ever sending the private key over the wire — Vesta introduces
+**device groups**: a set of independent keypairs that mutually vouch for each
+other as belonging to the same user.
+
+This is a deliberate counterpart to "self-sovereign identity, but only on one
+device." The user still owns every key. The group is just a published,
+auditable claim that *these keys are all me*.
+
+### Model: Peer Equality
+
+There is **no master key**. Every device in a group is equal:
+
+- Any existing member can vouch for a new device joining
+- Any member can declare another member removed (Phase 2)
+- Losing any single device does not lose the identity — the others can re-link
+  a replacement
+- The first device of a group is self-trusted as the founder (acceptable
+  bootstrap — no external root of trust)
+
+Alternatives considered and rejected:
+
+| Model                   | Rejected because                                                          |
+| ----------------------- | ------------------------------------------------------------------------- |
+| Primary + delegates     | A lost primary key bricks the identity; conflicts with self-sovereignty   |
+| Shared seed (BIP-39)    | Compromise of any device leaks every device's key                         |
+| Server-issued group IDs | Reintroduces the server as authority over identity                        |
+
+### Server Role: Oblivious
+
+The server has **no protocol-level awareness** of device groups. Link events
+are ordinary `VestaEvent`s in an ordinary channel. The server stores and
+relays them; clients interpret them. This preserves the "server is a relay,
+not an authority" principle.
+
+### Channel Convention: `vesta/identity/{groupId}`
+
+Each device group has a dedicated channel:
+
+```
+vesta/identity/{groupId}
+```
+
+- `groupId` is a random 22-char base64url string (same shape as `clientId`,
+  but not derived from any public key)
+- Channel is created implicitly on the first link event
+- Any client may subscribe to inspect a group's membership history
+
+The `vesta/` namespace is **reserved** for protocol-level channels. Apps must
+not publish to `vesta/...`; channel ID validation should reject this prefix
+for app-authored writes (Phase 1+). This carves out a stable place for
+protocol-defined channels (identity, future: presence registry, key
+revocation lists, etc.) without colliding with app namespaces.
+
+### Event Types
+
+| Event type                | Payload                                                       | Authored by      |
+| ------------------------- | ------------------------------------------------------------- | ---------------- |
+| `vesta.identity.announce` | `{ groupId, deviceName? }`                                    | The new device   |
+| `vesta.identity.link`     | `{ targetPublicKey, targetClientId, groupId, reason? }`       | An existing member |
+| `vesta.identity.unlink`   | `{ targetPublicKey, targetClientId, groupId, reason? }`       | An existing member |
+
+All three are normal signed events. The signature proves which device made
+the claim. There is no special wire-format handling — they are differentiated
+only by `eventType`.
+
+### Linking Flow
+
+```
+                  (Device A)                                (Device B)
+                      │                                          │
+                      │  1. Out-of-band: exchange public keys    │
+                      │     and groupId (QR, paste, short code)  │
+                      │ <───────────────────────────────────────> │
+                      │                                          │
+                      │  2. Publish link event                   │
+                      │     vesta/identity/{groupId}             │
+                      │     type=vesta.identity.link             │
+                      │     targetPublicKey = B's pubkey         │
+                      │     signed by A                          │
+                      │ ────────────────────────────────────────>│
+                      │                                          │
+                      │  3. Subscribe to vesta/identity/{groupId}│
+                      │  4. Publish announce event               │
+                      │     type=vesta.identity.announce         │
+                      │     signed by B                          │
+                      │ <────────────────────────────────────────│
+                      │                                          │
+                      │  5. (Optional) Reciprocal link from B    │
+                      │     strengthens the graph                │
+                      │ <────────────────────────────────────────│
+```
+
+### Membership Resolution (Client-Side)
+
+Clients build the current group membership by replaying the identity channel
+through a `DeviceGroupProjection`:
+
+1. Seed the trusted set with the channel's founder (first `announce` event)
+2. For each `link` event whose signer is in the trusted set, add the
+   `targetClientId` to the trusted set
+3. For each `unlink` event whose signer is in the trusted set, remove the
+   `targetClientId` from the trusted set
+4. Ignore events from signers not in the trusted set (no transitive trust
+   from outsiders)
+
+The projection lives in `VestaCore.Identity` (not `Projections`) because it
+embodies the identity protocol, not a generic CRDT.
+
+### Pairing UX
+
+The SDK provides primitives; apps choose the UX:
+
+```
+PairingPayload {
+    groupId:    string
+    publicKey:  byte[]       // the existing device's pubkey
+    serverUrl:  string?      // optional convenience
+}
+```
+
+- `PairingPayload.ToBase64()` / `FromBase64()` → for QR codes, deep links,
+  copy-paste
+- (Future) `PairingPayload.ToShortCode()` / `FromShortCode()` → numeric/
+  Bluetooth-style short code with a server-side ephemeral mapping (this
+  variant requires server cooperation and is **out of Phase 1**)
+
+### Phase 1: Minimal Implementation
+
+Goal: two devices can form a group and discover their shared membership.
+No revocation, no conflict resolution, no recovery.
+
+- `VestaCore.Identity.DeviceLink` record (the link payload shape)
+- `VestaCore.Identity.DeviceGroup` record (groupId + member set)
+- `VestaCore.Identity.IdentityLinkBuilder` static helpers that produce the
+  three event types as signed `VestaEvent`s
+- `VestaCore.Identity.DeviceGroupProjection` for client-side replay
+- `VestaCore.Identity.PairingPayload` with base64 round-trip
+- `ChannelId.IsProtocolChannel(id)` predicate + reservation enforcement
+- `VestaConnection` convenience methods: `CreateDeviceGroupAsync`,
+  `LinkDeviceAsync`, `JoinDeviceGroupAsync`, `GetDeviceGroupMembersAsync`
+- TS and Python client mirrors of all of the above
+- One example app updated to demonstrate linking
+
+**No server changes required** — link events are regular events, the identity
+channel is a regular channel.
+
+### Phase 2: Revocation & Conflict Resolution
+
+- Semantics: any member can unlink any other member
+- Conflict rule for simultaneous mutual revocation (open question; candidate
+  resolutions documented below)
+- `vesta.identity.revoke-all` nuclear option that dissolves the group
+
+Candidate conflict resolutions:
+
+| Rule                                | Tradeoff                                                      |
+| ----------------------------------- | ------------------------------------------------------------- |
+| Earliest timestamp wins             | Simple; relies on honest client clocks                        |
+| Majority wins (needs ≥3 devices)    | Unresolvable for 2-device groups                              |
+| Mutual revocation dissolves group   | Safest default — if devices disagree, neither is trusted      |
+| Self-revoke only (Phase 1.5)        | Sidesteps the problem — "log out this device" instead of "remove that device" |
+
+The likely Phase 2 default: **self-revocation** (a device removes itself)
+plus **mutual-revocation-dissolves-group** as a safety net.
+
+### Phase 3: Key Rotation
+
+- A device rotates its keypair while remaining in the group
+- Publishes `vesta.identity.rotate { oldPublicKey, newPublicKey }` signed
+  by the **old** key
+- The old key is invalid for new events after the rotate timestamp; the new
+  key inherits the slot
+
+### Phase 4: Cross-App Identity & Discovery
+
+- How does App B learn that `clientId_X` (in app A) and `clientId_Y` (in app B)
+  belong to the same user?
+- Options: well-known channel `vesta/identity/{groupId}` is already shared
+  across apps; apps publish per-app profile events that reference their
+  `groupId`
+- May require a user-chosen handle and a registry channel
+
+### Phase 5: Recovery
+
+If all devices are lost, the identity is lost — this is the price of
+self-sovereignty. Optional opt-in mechanisms:
+
+- Encrypted seed backup to a recovery channel (passphrase-encrypted)
+- Shamir's Secret Sharing of a recovery key across trusted contacts
+- Recovery contact: another user's device can publish a `link` for a freshly
+  generated replacement device (subject to social verification)
+
+### Phase 6: Scoped Delegation
+
+- A link can carry a permissions payload: "device B can publish on behalf of
+  the group, but only in channel X" or "only event types matching Y"
+- Useful for bots, IoT devices, limited-access laptops
+- Verification is purely client-side (server stays oblivious)
+
+### Idea Parking Lot: Server-Mediated Identity Transfer
+
+> **Status:** speculative — recorded for later evaluation, **not** part of
+> any current phase. Probably a bad idea. Listed here so the question
+> doesn't get lost.
+
+The peer-equality model above never moves a private key. Each device keeps
+its own keypair forever; "being the same user" is just a published web of
+attestations. That is the safe design.
+
+But there is a tempting shortcut: what if Device A could **send its private
+key to Device B through the server** after Device B logs in as the same
+user? The flow would look something like:
+
+```
+1. User installs app on Device B, signs in with some out-of-band
+   credential (e.g. email + magic link, OIDC token, recovery passphrase).
+2. Server authenticates Device B as "the same user as Device A".
+3. Server brokers a one-shot delivery channel between A and B.
+4. Device A encrypts its private key to Device B's freshly-generated
+   public key and publishes it on that channel.
+5. Device B decrypts, now holds the same Vesta identity as A.
+   No device group, no link events — A and B are literally the same
+   `clientId`.
+```
+
+**Why this is tempting:**
+
+- Trivial UX: no QR code, no manual pairing. "Sign in" is enough.
+- No protocol changes for apps — they still see one `clientId`.
+- Recovery story is "log in again on a new device".
+
+**Why this is probably a bad idea (the points to evaluate):**
+
+1. **Server becomes the identity authority.** Even if the key is end-to-end
+   encrypted in transit, the server decides *which* devices count as "the
+   same user". That is exactly the centralization Vesta is designed to
+   avoid — it reintroduces the "lose access to your provider, lose your
+   identity" failure mode.
+2. **Private keys on the wire, ever.** Even encrypted, the ciphertext sits
+   in a relay's storage and replay-able event log. A future Device B
+   public-key compromise → retroactive identity theft. The peer model
+   never has this property because the private key never leaves origin.
+3. **No revocation locality.** If the transfer is compromised, every device
+   that holds the key is silently equivalent. Compare to peer equality
+   where each device has its own key and can be individually revoked.
+4. **Audit trail collapses.** With device groups, every published event is
+   attributable to *which* device authored it. With key copying, A and B
+   are indistinguishable forever after the transfer.
+5. **Couples Vesta to a "user account" abstraction.** Step 2 ("server
+   authenticates Device B as the same user") requires the server to know
+   what a "user" is — email, OIDC subject, etc. — which is exactly the
+   layer Vesta has been keeping pluggable and optional.
+
+**If we were ever to pursue it anyway**, mitigations to evaluate:
+
+- Use the operator's existing auth backend (OIDC, magic link) only as a
+  *hint* — still require an out-of-band confirmation on Device A before
+  release.
+- One-shot, time-boxed, single-recipient encryption (server never holds
+  decryptable data; ciphertext deleted after first fetch).
+- Treat the transferred key as a **device key in a group** rather than as
+  the user's only identity — i.e. layer this on top of the device-group
+  model so revocation still works.
+- Make this strictly opt-in per server *and* per user, gated by the same
+  Phase 4 cross-app identity decisions.
+
+The honest summary: this is what password-managed accounts feel like, and
+that is the model Vesta is consciously not. The device-group model gives
+the same UX outcome ("my todo list is on my new phone") without any of
+these tradeoffs, at the cost of one pairing step. **Recommended outcome:
+keep this in the parking lot; revisit only if user research shows the
+pairing step is a real adoption blocker.**
+
+### Open Questions
+
+- Should `vesta/` reservation be enforced server-side, client-side, or both?
+  (Phase 1: both — client validation rejects, server validation rejects.)
+- Is a single identity channel per group sufficient, or do we need a separate
+  channel per device for rotation/revocation auditing?
+- How do apps surface device-group membership in their UI without leaking
+  cross-app correlation when undesired? (Phase 4 problem.)
+
+---
+
 ## Solution Structure
 
 The repo is split into two clear concerns:
@@ -1192,3 +1480,4 @@ Known gaps and deferred work, in rough priority order.
 | 14  | **Server observability**                       | No metrics today — if something goes wrong in prod the deployment is blind. Add Prometheus-compatible metrics (events/sec per channel and per app, active connections, log size, publish latency p50/p95/p99, ACL denials, quota rejections), structured logging with consistent fields (`channelId`, `clientId`, `appId`, `eventId`), and a `/health` + `/metrics` endpoint. Pairs naturally with #9b (you can only enforce quotas you can measure).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Operational prerequisite for running a public relay. Cheap to add now, painful to retrofit later.                                                                                                                                                                                     |
 | 15  | **Multi-server (design TBD)**                  | Three distinct flavours, each with open design questions: (1) **horizontal scale-out** — multiple ASP.NET instances behind a load balancer sharing one Postgres (LISTEN/NOTIFY already fans out; needs sticky-session decision); (2) **federation** — independent servers replicating channels (touches identity portability, sequence authority, trust model); (3) **client-side multi-relay** — one client connects to several servers, picks per channel (touches channel-ID qualification, projection merge). Needs a design discussion before becoming actionable. Captured here so the question doesn't get lost.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Not blocking v1. Decide flavour first, then split into concrete TODOs.                                                                                                                                                                                                                |
 | 16  | **Client portal (end-user self-service)**      | Public-facing website + HTTP API where humans can sign up, generate or import a Vesta identity (Ed25519 keypair, ideally generated client-side in the browser so the relay never sees the private key), register applications (#9a), see their owned apps and channels, current usage vs. quotas, rotate keys, and revoke compromised identities. Conceptually "GitHub.com for Vesta clients" — separate from #12c (operator-facing). The portal sits on top of a dedicated `/portal/` HTTP API with its own auth model (likely an Ed25519-signed bearer challenge issued at sign-in). Out of scope here: billing, OAuth-for-3rd-party-apps; in scope: identity lifecycle + app/channel inventory. The relay still works without it — the portal is a convenience layer on top of `IAppStore` and `IChannelAccessStore`. Needs a small design pass before becoming actionable (auth flow, browser key custody, recovery if the user loses their key).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | New TODO. Pairs with #12c (operator GUI) and #9a (apps + ownership). Decide auth model first, then split into concrete sub-slices.                                                                                                                                                    |
+| 17  | **Cross-device identity (Phase 1)**            | ✅ **Done.** `vesta/identity/{groupId}` channel convention + three signed event types (`vesta.identity.announce`, `vesta.identity.link`, `vesta.identity.unlink`). `IdentityLinkBuilder` (C#), `buildAnnounce/Link/Unlink` (TS + Python). `DeviceGroupProjection` (all three SDKs) replays the channel into a trusted-member set using peer-equality trust rules. `PairingPayload` encodes group + pubkey as base64url for QR/deep-link pairing. `VestaConnection` convenience methods (C#). Server enforces the namespace: PUBLISH to `vesta/*` requires `vesta.*` event type; `CREATE_CHANNEL` for `vesta/*` rejected. Unit tests in all three SDKs + server integration tests. Phases 2-6 and TS/Python connection convenience wrappers deferred. |

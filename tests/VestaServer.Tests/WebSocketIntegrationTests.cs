@@ -462,4 +462,65 @@ public class WebSocketIntegrationTests : IClassFixture<WebApplicationFactory<Pro
             Payload: payload
         );
     }
+
+    // ── Protocol-namespace enforcement (vesta/*) ─────────────────────────────
+
+    [Fact]
+    public async Task Publish_ToProtocolChannel_WithNonProtocolEventType_IsRejected()
+    {
+        using WebSocket ws = await ConnectAsync();
+        await SendAsync(ws, new HelloMessage(
+            ClientId: "test-client-001",
+            Channels: [],
+            LastSequences: new Dictionary<string, long>()));
+        await ReceiveAsync(ws); // WELCOME
+
+        // App-typed event into a vesta/* channel — must be rejected.
+        VestaEvent evt = CreateEvent("vesta/identity/abc123def", eventType: "app.todo.add", clientId: "test-client-001");
+        await SendAsync(ws, new PublishMessage("vesta/identity/abc123def", evt));
+
+        ProtocolMessage? response = await ReceiveAsync(ws);
+        ErrorMessage err = Assert.IsType<ErrorMessage>(response);
+        Assert.Equal("PROTOCOL_NAMESPACE_RESERVED", err.Code);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Publish_ToProtocolChannel_WithProtocolEventType_IsAccepted()
+    {
+        using WebSocket ws = await ConnectAsync();
+        await SendAsync(ws, new HelloMessage(
+            ClientId: "test-client-001",
+            Channels: [],
+            LastSequences: new Dictionary<string, long>()));
+        await ReceiveAsync(ws); // WELCOME
+
+        VestaEvent evt = CreateEvent("vesta/identity/abc123def", eventType: "vesta.identity.announce", clientId: "test-client-001");
+        await SendAsync(ws, new PublishMessage("vesta/identity/abc123def", evt));
+
+        ProtocolMessage? response = await ReceiveAsync(ws);
+        Assert.IsType<AckMessage>(response);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateChannel_InProtocolNamespace_IsRejected()
+    {
+        using WebSocket ws = await ConnectAsync();
+        await SendAsync(ws, new HelloMessage(
+            ClientId: "test-client-001",
+            Channels: [],
+            LastSequences: new Dictionary<string, long>()));
+        await ReceiveAsync(ws); // WELCOME
+
+        await SendAsync(ws, new CreateChannelMessage("vesta/identity/abc123def", Visibility: "private", InitialMembers: []));
+
+        ProtocolMessage? response = await ReceiveAsync(ws);
+        ErrorMessage err = Assert.IsType<ErrorMessage>(response);
+        Assert.Equal("PROTOCOL_NAMESPACE_RESERVED", err.Code);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+    }
 }
