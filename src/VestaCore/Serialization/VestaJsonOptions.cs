@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VestaCore.Identity;
 using VestaCore.Protocol;
 
 namespace VestaCore.Serialization;
@@ -48,6 +49,9 @@ public static class VestaJsonOptions
 [JsonSerializable(typeof(EventsBatchMessage))]
 [JsonSerializable(typeof(AckMessage))]
 [JsonSerializable(typeof(ErrorMessage))]
+[JsonSerializable(typeof(DeviceAnnounce))]
+[JsonSerializable(typeof(DeviceLink))]
+[JsonSerializable(typeof(PairingPayload))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

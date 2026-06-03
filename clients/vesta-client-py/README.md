@@ -61,6 +61,7 @@ VestaConnection(
     max_reconnect_delay: float = 30.0,
     last_sequences: dict[str, int] | None = None,
     public_key: str | None = None,
+    identity: VestaIdentity | None = None,  # enables device-group helpers
 )
 ```
 
@@ -74,6 +75,15 @@ VestaConnection(
 - `await unsubscribe(channel_id)` — Unsubscribe
 - `await fetch(channel_id, from_sequence, to_sequence=None, limit=None)` — Fetch history
 - `update_sequence(channel_id, sequence)` — Update catch-up position
+- `await delete_channel(channel_id)` — Soft-delete a channel
+
+**Device group helpers** (require `identity` in constructor):
+
+- `await create_device_group(device_name=None)` — Create a new group, publish an announce, return `group_id`
+- `await link_device(group_id, target_public_key, reason=None)` — Vouch for another device
+- `await join_device_group(group_id, device_name=None)` — Announce this device joining an existing group
+- `await unlink_device(group_id, target_public_key, reason=None)` — Remove a device from the group
+- `await get_device_group_members(group_id, timeout=5.0)` — Replay the identity channel and return current membership as `DeviceGroup`
 
 #### Event callbacks
 

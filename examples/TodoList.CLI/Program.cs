@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using VestaClient;
 using VestaClient.Storage;
@@ -7,16 +9,79 @@ using VestaCore.Protocol;
 using TodoList.CLI;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
-string serverUrl = args.Length > 0 ? args[0] : "ws://localhost:5150/ws";
-string listName = args.Length > 1 ? args[1] : "my-todos";
-string channel = $"todo/{listName}";
+
+// Flags: [--user <username>] [--password <password>] [serverUrl]
+string? username = null;
+string? password = null;
+List<string> positional = [];
+
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--user" && i + 1 < args.Length)
+        username = args[++i];
+    else if (args[i] == "--password" && i + 1 < args.Length)
+        password = args[++i];
+    else
+        positional.Add(args[i]);
+}
+
+string serverUrl = positional.Count > 0 ? positional[0] : "ws://localhost:5150/ws";
+
+// ─── Login Screen ───────────────────────────────────────────────────────────
+Console.WriteLine();
+Console.ForegroundColor = ConsoleColor.Cyan;
+Console.WriteLine("  ╭───────────────────────────────────────────────╮");
+Console.WriteLine("  │         Vesta Todo List  —  Sign In            │");
+Console.WriteLine("  ╰───────────────────────────────────────────────╯");
+Console.ResetColor();
+Console.WriteLine("  Any device that logs in with the same credentials");
+Console.WriteLine("  will share the same list automatically.");
+Console.WriteLine();
+
+// Prompt interactively if not supplied on the command line.
+if (string.IsNullOrWhiteSpace(username))
+{
+    Console.Write("  Username: ");
+    username = Console.ReadLine()?.Trim();
+    if (string.IsNullOrWhiteSpace(username))
+    {
+        Console.Error.WriteLine("Username is required.");
+        return;
+    }
+}
+else
+{
+    Console.WriteLine($"  Username: {username}");
+}
+
+if (string.IsNullOrWhiteSpace(password))
+{
+    Console.Write("  Password: ");
+    password = ReadPassword();
+    if (string.IsNullOrWhiteSpace(password))
+    {
+        Console.Error.WriteLine("Password is required.");
+        return;
+    }
+}
+else
+{
+    Console.WriteLine("  Password: (provided)");
+}
+Console.WriteLine();
+
+// Derive the channel from the credentials so any device with the same
+// username + password automatically lands on the same list.
+string channelSuffix = DeriveChannelSuffix(username, password);
+string channel = $"todo/{channelSuffix}";
+string listName = $"{username}'s list";
 
 // ─── Identity & Storage ──────────────────────────────────────────────────────
 string vestaDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".vesta");
 Directory.CreateDirectory(vestaDir);
 
 string identityPath = Path.Combine(vestaDir, "todo-identity.json");
-string dbPath = Path.Combine(vestaDir, $"todo-{listName}.db");
+string dbPath = Path.Combine(vestaDir, $"todo-{channelSuffix}.db");
 
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
@@ -113,15 +178,15 @@ catch (Exception ex)
     Console.ResetColor();
 }
 
+
 // ─── Banner ──────────────────────────────────────────────────────────────────
 Console.WriteLine();
-Console.WriteLine("╔══════════════════════════════════════════╗");
-Console.WriteLine("║        Vesta Todo List Example           ║");
-Console.WriteLine("╠══════════════════════════════════════════╣");
-Console.WriteLine($"║  List:     {listName,-30}║");
-Console.WriteLine($"║  Channel:  {channel,-30}║");
-Console.WriteLine($"║  Status:   {(isConnected ? "online" : "offline"),-30}║");
-Console.WriteLine("╚══════════════════════════════════════════╝");
+Console.WriteLine("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+Console.WriteLine("┃        Vesta Todo List                  ┃");
+Console.WriteLine("┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫");
+Console.WriteLine($"┃  Signed in as  {username,-25}┃");
+Console.WriteLine($"┃  Status        {(isConnected ? "✔ online" : "⚠ offline"),-25}┃");
+Console.WriteLine("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
 Console.WriteLine();
 PrintHelp();
 PrintTodos();
@@ -330,7 +395,47 @@ async Task RemoveItemAsync(int index)
     Console.ResetColor();
 }
 
-// ─── Display Helpers ─────────────────────────────────────────────────────────
+// ─── Credential & Display Helpers ────────────────────────────────────────────
+
+/// <summary>
+/// Derives a stable 16-character hex channel suffix from username + password
+/// using SHA-256. Any device with the same credentials lands on the same channel.
+/// </summary>
+static string DeriveChannelSuffix(string user, string pass)
+{
+    byte[] input = Encoding.UTF8.GetBytes($"{user}:{pass}");
+    byte[] hash  = SHA256.HashData(input);
+    return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+}
+
+/// <summary>Reads a password, echoing <c>*</c> for each character typed.</summary>
+static string ReadPassword()
+{
+    StringBuilder sb = new();
+    while (true)
+    {
+        ConsoleKeyInfo key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.WriteLine();
+            break;
+        }
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (sb.Length > 0)
+            {
+                sb.Remove(sb.Length - 1, 1);
+                Console.Write("\b \b"); // erase the last *
+            }
+        }
+        else if (key.KeyChar >= ' ') // printable characters only
+        {
+            sb.Append(key.KeyChar);
+            Console.Write('*');
+        }
+    }
+    return sb.ToString();
+}
 
 void PrintTodos()
 {

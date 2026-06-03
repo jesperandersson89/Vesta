@@ -9,6 +9,16 @@ import type {
     VestaEvent,
     WelcomeMessage,
 } from "./types.js";
+import type { VestaIdentity } from "./identity.js";
+import {
+    buildAnnounce,
+    buildLink,
+    buildUnlink,
+    DeviceGroupProjection,
+    deviceGroupChannel,
+    generateGroupId,
+} from "./device-groups.js";
+import type { DeviceGroup } from "./device-groups.js";
 
 // ── WebSocket abstraction ────────────────────────────────────────────────────
 // We support both the `ws` package (Node.js) and the browser WebSocket API.
@@ -74,6 +84,13 @@ export interface VestaConnectionOptions {
     publicKey?: string;
 
     /**
+     * Optional identity. When provided, enables device-group convenience
+     * methods (`createDeviceGroup`, `linkDevice`, etc.).
+     * The `publicKey` option is automatically derived from it if not set explicitly.
+     */
+    identity?: VestaIdentity;
+
+    /**
      * Optional local store. When provided, events published while disconnected
      * are enqueued and flushed on the next WELCOME. Events received from the
      * server (EVENT, EVENTS_BATCH, ACK) are also cached locally.
@@ -118,6 +135,7 @@ export class VestaConnection {
     private readonly maxReconnectDelay: number;
     private readonly lastSequences: Record<string, number>;
     private readonly publicKey: string | undefined;
+    private readonly identity: VestaIdentity | undefined;
     private readonly localStore: ClientEventStore | undefined;
     private readonly pendingPublishes = new Map<string, VestaEvent>();
 
@@ -130,7 +148,8 @@ export class VestaConnection {
         this.initialReconnectDelay = options.initialReconnectDelay ?? 1000;
         this.maxReconnectDelay = options.maxReconnectDelay ?? 30000;
         this.lastSequences = { ...options.lastSequences };
-        this.publicKey = options.publicKey;
+        this.identity = options.identity;
+        this.publicKey = options.publicKey ?? options.identity?.publicKeyB64;
         this.localStore = options.localStore;
 
         // Default all channels to sequence 0
@@ -354,6 +373,111 @@ export class VestaConnection {
             type: "DELETE_CHANNEL",
             channelId,
         });
+    }
+
+    // ── Device group convenience methods ─────────────────────────────────────
+
+    /**
+     * Create a new device group with this connection's identity as the founder.
+     * Publishes a `vesta.identity.announce` event and returns the generated `groupId`.
+     * Requires `identity` to be set in connection options.
+     */
+    createDeviceGroup(deviceName?: string): string {
+        const identity = this.requireIdentity("createDeviceGroup");
+        const groupId = generateGroupId();
+        this.publish(buildAnnounce(identity, groupId, deviceName));
+        return groupId;
+    }
+
+    /**
+     * Vouch for another device as a member of the given group.
+     * Publishes a `vesta.identity.link` event signed by this connection's identity.
+     * Requires `identity` to be set in connection options.
+     */
+    linkDevice(groupId: string, targetPublicKey: Uint8Array, reason?: string): void {
+        const identity = this.requireIdentity("linkDevice");
+        this.publish(buildLink(identity, groupId, targetPublicKey, reason));
+    }
+
+    /**
+     * Announce this connection's identity as joining an existing group.
+     * Publishes a `vesta.identity.announce` event.
+     * Requires `identity` to be set in connection options.
+     */
+    joinDeviceGroup(groupId: string, deviceName?: string): void {
+        const identity = this.requireIdentity("joinDeviceGroup");
+        this.publish(buildAnnounce(identity, groupId, deviceName));
+    }
+
+    /**
+     * Remove a device from the group. Publishes a `vesta.identity.unlink` event.
+     * Requires `identity` to be set in connection options.
+     */
+    unlinkDevice(groupId: string, targetPublicKey: Uint8Array, reason?: string): void {
+        const identity = this.requireIdentity("unlinkDevice");
+        this.publish(buildUnlink(identity, groupId, targetPublicKey, reason));
+    }
+
+    /**
+     * Subscribe to the group's identity channel, replay the full history into a
+     * `DeviceGroupProjection`, and resolve with the current membership.
+     *
+     * This is a one-shot convenience method for occasional inspection.
+     * For continuous tracking, subscribe to the channel directly and feed
+     * events into your own `DeviceGroupProjection`.
+     */
+    getDeviceGroupMembers(
+        groupId: string,
+        timeoutMs = 5000,
+    ): Promise<DeviceGroup> {
+        const channelId = deviceGroupChannel(groupId);
+        const projection = new DeviceGroupProjection(groupId);
+
+        return new Promise((resolve) => {
+            let settled = false;
+
+            const onBatch = (msg: EventsBatchMessage) => {
+                if (msg.channelId !== channelId) return;
+                projection.applyBatch(msg.events);
+                if (!settled) {
+                    settled = true;
+                    cleanup();
+                    resolve(projection.state);
+                }
+            };
+
+            const onEvt = (msg: EventMessage) => {
+                if (msg.channelId !== channelId) return;
+                projection.apply({ event: msg.event, sequence: msg.sequence, receivedAt: msg.receivedAt });
+            };
+
+            const timer = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    cleanup();
+                    resolve(projection.state);
+                }
+            }, timeoutMs);
+
+            const cleanup = () => {
+                clearTimeout(timer);
+                this.off("eventsBatch", onBatch);
+                this.off("event", onEvt);
+            };
+
+            this.on("eventsBatch", onBatch);
+            this.on("event", onEvt);
+            this.subscribe(channelId, 0);
+        });
+    }
+
+    private requireIdentity(methodName: string): VestaIdentity {
+        if (!this.identity) {
+            throw new Error(
+                `${methodName}() requires the VestaConnection to be constructed with an 'identity' option.`,
+            );
+        }
+        return this.identity;
     }
 
     // ── Sequence tracking ────────────────────────────────────────────────────

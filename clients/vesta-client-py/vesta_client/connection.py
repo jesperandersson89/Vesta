@@ -12,6 +12,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from vesta_client.identity import VestaIdentity
 from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
     AckMessage,
@@ -48,6 +49,7 @@ class VestaConnection:
         last_sequences: dict[str, int] | None = None,
         public_key: str | None = None,
         local_store: ClientEventStore | None = None,
+        identity: VestaIdentity | None = None,
     ):
         self.server_url = server_url
         self.client_id = client_id
@@ -58,7 +60,8 @@ class VestaConnection:
         self._last_sequences: dict[str, int] = {ch: 0 for ch in channels}
         if last_sequences:
             self._last_sequences.update(last_sequences)
-        self.public_key = public_key
+        self._identity = identity
+        self.public_key = public_key or (identity.public_key_b64 if identity else None)
         self._local_store = local_store
         self._pending_publishes: dict[str, VestaEvent] = {}
 
@@ -298,6 +301,125 @@ class VestaConnection:
             "type": "DELETE_CHANNEL",
             "channelId": channel_id,
         })
+
+    # ── Device group convenience methods ────────────────────────────────────
+
+    async def create_device_group(
+        self,
+        device_name: str | None = None,
+    ) -> str:
+        """
+        Create a new device group with this connection's identity as the founder.
+        Publishes a ``vesta.identity.announce`` event and returns the new ``group_id``.
+        Requires ``identity`` to be set in the constructor.
+        """
+        from vesta_client.device_groups import build_announce, generate_group_id
+        identity = self._require_identity("create_device_group")
+        group_id = generate_group_id()
+        await self.publish(build_announce(identity, group_id, device_name))
+        return group_id
+
+    async def link_device(
+        self,
+        group_id: str,
+        target_public_key: bytes,
+        reason: str | None = None,
+    ) -> None:
+        """
+        Vouch for another device as a member of the group.
+        Publishes a ``vesta.identity.link`` event signed by this connection's identity.
+        Requires ``identity`` to be set in the constructor.
+        """
+        from vesta_client.device_groups import build_link
+        identity = self._require_identity("link_device")
+        await self.publish(build_link(identity, group_id, target_public_key, reason))
+
+    async def join_device_group(
+        self,
+        group_id: str,
+        device_name: str | None = None,
+    ) -> None:
+        """
+        Announce this connection's identity as joining an existing group.
+        Publishes a ``vesta.identity.announce`` event.
+        Requires ``identity`` to be set in the constructor.
+        """
+        from vesta_client.device_groups import build_announce
+        identity = self._require_identity("join_device_group")
+        await self.publish(build_announce(identity, group_id, device_name))
+
+    async def unlink_device(
+        self,
+        group_id: str,
+        target_public_key: bytes,
+        reason: str | None = None,
+    ) -> None:
+        """
+        Remove a device from the group.
+        Publishes a ``vesta.identity.unlink`` event signed by this connection's identity.
+        Requires ``identity`` to be set in the constructor.
+        """
+        from vesta_client.device_groups import build_unlink
+        identity = self._require_identity("unlink_device")
+        await self.publish(build_unlink(identity, group_id, target_public_key, reason))
+
+    async def get_device_group_members(
+        self,
+        group_id: str,
+        timeout: float = 5.0,
+    ):
+        """
+        Subscribe to the group's identity channel, replay the full history into a
+        ``DeviceGroupProjection``, and return the current membership as a
+        ``DeviceGroup``.
+
+        This is a one-shot convenience method for occasional inspection.
+        For continuous tracking, subscribe to the channel directly and feed
+        events into your own ``DeviceGroupProjection``.
+        """
+        from vesta_client.device_groups import DeviceGroupProjection, device_group_channel
+        channel_id = device_group_channel(group_id)
+        projection = DeviceGroupProjection(group_id)
+        batch_event = asyncio.Event()
+
+        orig_batch = self._on_events_batch
+        orig_event = self._on_event
+
+        def _on_batch(msg: EventsBatchMessage) -> None:
+            if msg.channel_id == channel_id:
+                projection.apply_batch(msg.events)
+                batch_event.set()
+            if orig_batch:
+                orig_batch(msg)
+
+        def _on_evt(msg: EventMessage) -> None:
+            if msg.event.channel_id == channel_id:
+                projection.apply(
+                    SequencedEvent(event=msg.event, sequence=msg.sequence, received_at=msg.received_at)
+                )
+            if orig_event:
+                orig_event(msg)
+        self._on_events_batch = _on_batch
+        self._on_event = _on_evt
+        try:
+            await self.subscribe(channel_id, from_sequence=0)
+            try:
+                await asyncio.wait_for(batch_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass  # Channel may be empty; return whatever we have.
+        finally:
+            self._on_events_batch = orig_batch
+            self._on_event = orig_event
+
+        return projection.state
+
+    def _require_identity(self, method_name: str) -> VestaIdentity:
+        if self._identity is None:
+            raise RuntimeError(
+                f"{method_name}() requires the VestaConnection to be constructed "
+                "with an 'identity' argument."
+            )
+        return self._identity
 
     # ── Sequence tracking ─────────────────────────────────────────────────────
 

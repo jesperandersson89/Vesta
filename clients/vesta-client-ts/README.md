@@ -73,6 +73,7 @@ The main class for managing a WebSocket connection to a Vesta server.
 | `maxReconnectDelay` | `number` | `30000` | Max backoff in ms |
 | `lastSequences` | `Record<string, number>` | `{}` | Catch-up positions |
 | `publicKey` | `string` | — | Ed25519 public key (base64url) |
+| `identity` | `VestaIdentity` | — | Full Ed25519 identity. Enables device-group helpers; `publicKey` is derived from it automatically. |
 
 #### Methods
 
@@ -84,6 +85,15 @@ The main class for managing a WebSocket connection to a Vesta server.
 - `unsubscribe(channelId)` — Unsubscribe from a channel
 - `fetch(channelId, fromSequence, options?)` — Fetch historical events
 - `updateSequence(channelId, sequence)` — Update catch-up position
+- `deleteChannel(channelId)` — Soft-delete a channel
+
+**Device group helpers** (require `identity` in constructor options):
+
+- `createDeviceGroup(deviceName?)` — Create a new group, publish an announce, return `groupId`
+- `linkDevice(groupId, targetPublicKey, reason?)` — Vouch for another device
+- `joinDeviceGroup(groupId, deviceName?)` — Announce this device joining an existing group
+- `unlinkDevice(groupId, targetPublicKey, reason?)` — Remove a device from the group
+- `getDeviceGroupMembers(groupId, timeoutMs?)` — Replay the identity channel and return current membership as `DeviceGroup`
 
 #### Events
 

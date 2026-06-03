@@ -5,6 +5,14 @@
     "dotnet ef": true,
     "dotnet build": true,
     "dotnet test": true,
-    "npm test": true
+    "npm test": true,
+    "/^python -m compileall clients/vesta-client-py/vesta_client 2>&1$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^python -m compileall clients/vesta-client-py/vesta_client$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }
