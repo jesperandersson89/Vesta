@@ -977,7 +977,7 @@ This gives us full coverage of the protocol's capabilities with minimal overlap.
 ### Milestone 2: Persistence & Sync (Week 2–3)
 
 - [ ] Server-side PostgreSQL persistence with LISTEN/NOTIFY
-- [ ] Client-side SQLite local storage
+- [ ] Client-side SQLite local storage — **TODO: evaluate alternative embedded stores** (CVE-2025-6965 / GHSA-2m69-gcr7-jv3q affects all `SQLitePCLRaw.lib.e_sqlite3` <= 2.1.11 with no patched release yet; consider LiteDB, RocksDB, or waiting for a SQLitePCLRaw patch)
 - [ ] Offline outbox + sync-on-reconnect
 - [ ] Cursor tracking and catch-up (FETCH)
 - [x] Ephemeral/volatile channel support (TTL on events for presence) — `VestaEvent.Metadata` carries unsigned `ttlSeconds`; `VestaEventMetadata.TryGetTtlSeconds` reads it; server persists `expires_at` column; `ExpiredEventCleanupService` sweeps expired rows; both stores filter expired events from catch-up
