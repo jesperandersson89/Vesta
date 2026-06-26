@@ -25,17 +25,17 @@ jobs:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Login to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4572A8CB87F74681B717C2AFB5476B68 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_022AC360768D495B9C57A308841215E4 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_986C7808523F4FE4BD28833B0D56B3D4 }}
 
       - name: Deploy Bicep (relay stack)
-        uses: azure/cli@v2
+        uses: azure/cli@v3
         env:
           VESTA_PG_PASSWORD: ${{ secrets.VESTA_PG_PASSWORD }}
           VESTA_RELAY_ADMIN_PUBLICKEY: ${{ secrets.VESTA_RELAY_ADMIN_PUBLICKEY }}
@@ -54,10 +54,10 @@ jobs:
       contents: read #This is required for actions/checkout
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up .NET Core
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.x'
 
@@ -71,7 +71,7 @@ jobs:
         run: dotnet publish src/VestaServer/VestaServer.csproj -c Release -o ${{env.DOTNET_ROOT}}/myapp
 
       - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: .net-app
           path: ${{env.DOTNET_ROOT}}/myapp
@@ -86,12 +86,12 @@ jobs:
 
     steps:
       - name: Download artifact from build job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: .net-app
       
       - name: Login to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4572A8CB87F74681B717C2AFB5476B68 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_022AC360768D495B9C57A308841215E4 }}
