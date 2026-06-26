@@ -20,6 +20,7 @@ Read `PLANNING.md` at the repo root for full architecture decisions.
 
 ```
 Vesta/
+├── .github/infra/              # Bicep IaC for the relay (App Service + Postgres + Key Vault)
 ├── src/                        # Core infrastructure (the "product")
 │   ├── VestaCore/              # Shared types, protocol, serialization
 │   ├── VestaServer/            # ASP.NET Core host (relay + persistence)
@@ -146,6 +147,27 @@ Rules of thumb:
 - **Stop and ask** when encountering environment/infrastructure problems (Docker not running, database not reachable, missing tools, permission errors, etc.) — do NOT silently work around them
 - Do not substitute a different tool or approach just because the expected one isn't available — ask the user to fix the environment first
 - If a test or command fails due to external dependencies being unavailable, report the issue clearly and wait for confirmation before proceeding
+
+## Infrastructure (IaC)
+
+- The relay's Azure footprint is defined as **Bicep** under `.github/infra/` (`main.bicep` +
+  `modules/`), deployed subscription-scoped. It provisions a resource group, Burstable
+  PostgreSQL Flexible Server, Log Analytics + Application Insights, Key Vault, and the relay
+  Web App (Linux, .NET 10, WebSockets + Always On, managed identity → Key Vault Secrets User).
+- **Keep it Atrium-agnostic.** This stack only knows the relay's own config surface
+  (`ConnectionStrings:Vesta`, `Admin:BootstrapPublicKeys`, `AdminApi`, `Protocol`, pruners).
+  The managed portal has its **own separate** Bicep in the `vesta_atrium` repo — never
+  reference it here.
+- Secrets (DB password, operator public key) come from env vars at deploy time via
+  `.github/infra/params/dev.bicepparam` — never commit them. App settings read secrets through
+  `@Microsoft.KeyVault(...)` references.
+- Cost controls: `.github/infra/scripts/dev-stop.ps1` / `dev-start.ps1` (stop/start compute) and
+  `dev-teardown.ps1` (`az group delete`). Dev sizing is Burstable `Standard_B1ms` + B1 plan.
+- Azure PostgreSQL Flexible Server tops out at major **16**; `postgresVersion` defaults to `16`.
+- CI: `main_vestaserver.yml` has an opt-in `infrastructure` job (`workflow_dispatch`).
+- The **how-to-deploy** companion is the `## Deployment & Operations (relay stack)` runbook in
+  `PLANNING.md` (bootstrap secrets, deploy command/order, cost scripts, gotchas). Keep it in
+  sync whenever `.github/infra/`, the deploy workflow, or the required deploy secrets change.
 
 ## EF Core Migrations
 

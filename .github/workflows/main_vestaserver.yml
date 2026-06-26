@@ -11,8 +11,43 @@ on:
       - 'src/**'
       - '.github/workflows/**'
   workflow_dispatch:
+    inputs:
+      deployInfrastructure:
+        description: 'Provision/update Azure infrastructure (Bicep) before deploying'
+        type: boolean
+        default: false
 
 jobs:
+  infrastructure:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deployInfrastructure }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4572A8CB87F74681B717C2AFB5476B68 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_022AC360768D495B9C57A308841215E4 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_986C7808523F4FE4BD28833B0D56B3D4 }}
+
+      - name: Deploy Bicep (relay stack)
+        uses: azure/cli@v2
+        env:
+          VESTA_PG_PASSWORD: ${{ secrets.VESTA_PG_PASSWORD }}
+          VESTA_RELAY_ADMIN_PUBLICKEY: ${{ secrets.VESTA_RELAY_ADMIN_PUBLICKEY }}
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az bicep install
+            az deployment sub create \
+              --location norwayeast \
+              --template-file .github/infra/main.bicep \
+              --parameters .github/infra/params/dev.bicepparam
+
   build:
     runs-on: ubuntu-latest
     permissions:
