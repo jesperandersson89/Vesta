@@ -27,6 +27,7 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly IClientEventStore? _localStore;
     private readonly VestaIdentity? _identity;
+    private readonly VestaAppConfig _appConfig;
     private readonly Dictionary<Guid, VestaEvent> _pendingPublishes = new();
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
@@ -83,9 +84,10 @@ public sealed class VestaConnection : IAsyncDisposable
     public event Action? OnReconnected;
 
     /// <summary>
-    /// Fired when a newer, validly-signed relay manifest is accepted (only when a
-    /// <see cref="RelayDirectory"/> is attached via <see cref="AttachRelayDirectory"/>).
-    /// The candidate list has already been refreshed when this fires.
+    /// Fired when a newer, validly-signed relay manifest is accepted. Relay self-reconfiguration is
+    /// on by default — every connection carries a <see cref="RelayDirectory"/> — so this fires whenever
+    /// the app owner steers the swarm to new relays. The candidate list has already been refreshed
+    /// when this fires.
     /// </summary>
     public event Action<RelayManifest>? OnManifestApplied;
 
@@ -120,15 +122,68 @@ public sealed class VestaConnection : IAsyncDisposable
     public IReadOnlyList<Uri> Relays => _relayCandidates;
 
     /// <summary>
+    /// The app configuration (relay-independence trust anchor + default relays) this
+    /// connection was created with.
+    /// </summary>
+    public VestaAppConfig AppConfig => _appConfig;
+
+    /// <summary>
+    /// The relay directory powering self-reconfiguration: default-relay bootstrap, owner-signed
+    /// manifest adoption (anti-rollback), and the user's local relay override. Always present —
+    /// relay independence is on by default.
+    /// </summary>
+    public RelayDirectory RelayDirectory => _relayDirectory!;
+
+    /// <summary>
     /// Whether the connection is currently open.
     /// </summary>
     public bool IsConnected => _socket?.State == WebSocketState.Open;
 
-    public VestaConnection(string clientId, IClientEventStore? localStore = null, VestaIdentity? identity = null)
+    /// <summary>
+    /// Create a connection for an app. The <paramref name="appConfig"/> is required: it carries the
+    /// relay-independence trust anchor (the app owner's public key) and the compiled-in default
+    /// relays, so relay self-reconfiguration — owner-signed manifest discovery, anti-rollback, and
+    /// multi-relay failover — is ON by default and the app never silently becomes abandonware.
+    /// A file-backed <see cref="RelayDirectory"/> (cached under <c>~/.vesta/relays/</c>) is created
+    /// automatically; pass a custom <paramref name="relayDirectory"/> to change persistence or to
+    /// supply in-memory stores.
+    /// </summary>
+    public VestaConnection(
+        string clientId,
+        VestaAppConfig appConfig,
+        IClientEventStore? localStore = null,
+        VestaIdentity? identity = null,
+        RelayDirectory? relayDirectory = null)
     {
+        ArgumentNullException.ThrowIfNull(appConfig);
+
         _clientId = clientId;
+        _appConfig = appConfig;
         _localStore = localStore;
         _identity = identity;
+
+        AttachRelayDirectory(relayDirectory ?? RelayDirectory.CreateDefault(appConfig));
+    }
+
+    /// <summary>
+    /// Connect using the relays resolved from the app config — the user override, then the latest
+    /// owner-signed manifest, then the compiled-in defaults, in that precedence. This is the default
+    /// connect path: relay selection, manifest adoption, and failover are handled for you. Use the
+    /// <see cref="ConnectAsync(IReadOnlyList{Uri}, IReadOnlyList{string}, IReadOnlyDictionary{string, long}, CancellationToken)"/>
+    /// overload only to force an explicit relay list (e.g. in tests).
+    /// </summary>
+    public Task ConnectAsync(
+        IReadOnlyList<string> channels,
+        IReadOnlyDictionary<string, long>? lastSequences = null,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<Uri> candidates = _relayDirectory!.ResolveCandidates();
+        if (candidates.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "No relays available — the app config declared no default relays and no manifest or override is set.");
+        }
+        return ConnectAsync(candidates, channels, lastSequences, cancellationToken);
     }
 
     /// <summary>
@@ -322,6 +377,32 @@ public sealed class VestaConnection : IAsyncDisposable
         }
 
         _activeRelayIndex = index;
+        return await ReconnectAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Set the user's local relay override — the individual escape hatch that always wins locally —
+    /// persist it via the relay directory, and switch to it immediately. This is how an end-user
+    /// keeps an app alive on a relay of their choosing regardless of what the app ships with.
+    /// Returns true if the switch connected.
+    /// </summary>
+    public async Task<bool> SetUserRelayOverrideAsync(Uri relay, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(relay);
+
+        _relayDirectory!.SetUserOverride(relay);
+        UpdateRelayCandidates(_relayDirectory.ResolveCandidates());
+        return await SwitchRelayAsync(relay, cancellationToken);
+    }
+
+    /// <summary>
+    /// Clear the user's local relay override, reverting to owner-manifest / default resolution, and
+    /// reconnect using the freshly resolved candidate list. Returns true if reconnection succeeded.
+    /// </summary>
+    public async Task<bool> ClearUserRelayOverrideAsync(CancellationToken cancellationToken = default)
+    {
+        _relayDirectory!.ClearUserOverride();
+        UpdateRelayCandidates(_relayDirectory.ResolveCandidates());
         return await ReconnectAsync(cancellationToken);
     }
 

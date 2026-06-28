@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using VestaClient;
+using VestaClient.Relay;
 using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Identity;
@@ -93,6 +94,14 @@ string dbPath = Path.Combine(vestaDir, $"todo-{channelSuffix}.db");
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
 
+// Every app declares a relay-independence trust anchor. VESTA_APP_OWNER_KEY (base64url)
+// overrides it; with no env set we use this client's own public key. The relay comes from
+// VESTA_RELAY_URL / the positional arg as the compiled-in default.
+byte[] todoOwnerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") is { Length: > 0 } ownerEnv
+    ? VestaCore.Utilities.Base64Url.Decode(ownerEnv.Trim())
+    : identity.PublicKey;
+VestaAppConfig appConfig = new(appId, todoOwnerKey, [new Uri(serverUrl)]);
+
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
 
 // ─── Rebuild State from Local Cache ─────────────────────────────────────────
@@ -109,7 +118,7 @@ if (lastSeq > 0)
 bool isConnected = false;
 object displayLock = new();
 
-await using VestaConnection connection = new(clientId, localStore, identity)
+await using VestaConnection connection = new(clientId, appConfig, localStore, identity)
 {
     AutoReconnect = true
 };
@@ -174,7 +183,7 @@ connection.OnReconnected += () =>
 // ─── Connect ─────────────────────────────────────────────────────────────────
 try
 {
-    await connection.ConnectAsync(new Uri(serverUrl), channels: [channel]);
+    await connection.ConnectAsync(channels: [channel]);
     isConnected = true;
 }
 catch (Exception ex)

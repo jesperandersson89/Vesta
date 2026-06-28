@@ -40,6 +40,44 @@ public sealed class RelayDirectory
         }
     }
 
+    /// <summary>
+    /// Create a directory wired to the default file-backed stores — the user override and the
+    /// manifest cache are persisted under <c>~/.vesta/relays/</c>, keyed by the app id. This is the
+    /// zero-config path used by <see cref="VestaConnection"/> so relay self-reconfiguration (manifest
+    /// adoption + the local escape hatch) survives restarts without any per-app plumbing.
+    /// </summary>
+    public static RelayDirectory CreateDefault(VestaAppConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        string directory = DefaultStoreDirectory();
+        string safeAppId = SanitizeAppId(config.AppId);
+
+        return new RelayDirectory(
+            config,
+            new FileRelayOverrideStore(Path.Combine(directory, $"{safeAppId}.override.json")),
+            new FileManifestStore(Path.Combine(directory, $"{safeAppId}.manifest.json")));
+    }
+
+    private static string DefaultStoreDirectory()
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(home, ".vesta", "relays");
+    }
+
+    private static string SanitizeAppId(string appId)
+    {
+        char[] chars = appId.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (Array.IndexOf(Path.GetInvalidFileNameChars(), chars[i]) >= 0)
+            {
+                chars[i] = '_';
+            }
+        }
+        return new string(chars);
+    }
+
     /// <summary>The channel this app's relay manifests are published to.</summary>
     public string ManifestChannel => RelayManifest.ChannelFor(_config.AppId);
 

@@ -127,6 +127,14 @@ lets the owner publish a new manifest to migrate the swarm to fresh relays while
 malicious relay trying to hijack the app's clients. Each client also keeps a personal override
 that takes precedence locally regardless of the manifest.
 
+**SDK behaviour (C#):** this is on by default — it is not something an app has to build. A
+`VestaConnection` **requires** a `VestaAppConfig` and automatically manages a `RelayDirectory`
+(file-backed under `~/.vesta/relays/`), so it auto-subscribes to the manifest channel, verifies
+and adopts newer manifests (anti-rollback), and fails over across the resolved candidates with no
+per-app wiring. Apps connect with `ConnectAsync(channels)` (relays come from the config) and can
+surface the user escape hatch via `SetUserRelayOverrideAsync` / `ClearUserRelayOverrideAsync`. The
+TypeScript and Python clients ship the same primitives but still attach the directory explicitly.
+
 
 ## See also
 

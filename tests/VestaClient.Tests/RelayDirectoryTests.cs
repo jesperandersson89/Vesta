@@ -143,4 +143,19 @@ public sealed class RelayDirectoryTests : IDisposable
         Assert.Contains(new Uri("wss://active.example/ws"), candidates);
         Assert.DoesNotContain(new Uri("wss://future.example/ws"), candidates);
     }
+
+    [Fact]
+    public void CreateDefault_WithNoCachedState_ResolvesToAppDefaults()
+    {
+        // A unique app id guarantees no override/manifest file exists under ~/.vesta/relays,
+        // so the default-backed directory falls back to the compiled-in app defaults.
+        string appId = $"test-{Guid.NewGuid():N}";
+        VestaAppConfig config = new(appId, _owner.PublicKey, [Default]);
+
+        RelayDirectory directory = RelayDirectory.CreateDefault(config);
+
+        Assert.Equal(RelayManifest.ChannelFor(appId), directory.ManifestChannel);
+        Assert.Null(directory.CurrentManifest);
+        Assert.Equal([Default], directory.ResolveCandidates());
+    }
 }

@@ -28,7 +28,12 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
     public async Task PublishWhileDisconnected_EnqueuesToOutbox()
     {
         using SqliteClientEventStore store = SqliteClientEventStore.CreateInMemory();
-        VestaConnection connection = new("offline-client", store);
+        VestaClient.Relay.VestaAppConfig appConfig = new("test", new byte[32], [new Uri("ws://localhost:1/ws")]);
+        VestaConnection connection = new(
+            "offline-client",
+            appConfig,
+            store,
+            relayDirectory: new VestaClient.Relay.RelayDirectory(appConfig));
 
         VestaEvent evt = CreateEvent("test/offline", clientId: "offline-client");
         await connection.PublishAsync(evt);

@@ -1,10 +1,14 @@
 ﻿using System.Text;
 using System.Text.Json;
 using VestaClient;
+using VestaClient.Relay;
 using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Identity;
 using VestaCore.Protocol;
+using VestaCore.Relay;
+using VestaCore.Serialization;
+using VestaCore.Utilities;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 // Relay URLs: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > local default.
@@ -50,6 +54,28 @@ Console.ForegroundColor = ConsoleColor.DarkGray;
 Console.WriteLine($"Identity: {Path.GetFileName(identityPath)} ({clientId[..16]}...)");
 Console.ResetColor();
 
+// ─── App config (relay-independence trust anchor) ────────────────────────────
+// Every Vesta app declares a trust anchor: the owner's Ed25519 public key. Only relay
+// manifests signed by this key are ever adopted, so the owner can move the swarm to a new
+// relay without the relay's cooperation. VESTA_APP_OWNER_KEY (base64url) overrides it; with
+// no env set we use THIS client's own public key so the demo is self-signing — you can publish
+// a manifest with /publish-manifest and watch it get adopted.
+byte[] ownerPublicKey;
+string? ownerKeyEnv = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY");
+bool weHoldOwnerKey;
+if (!string.IsNullOrWhiteSpace(ownerKeyEnv))
+{
+    ownerPublicKey = Base64Url.Decode(ownerKeyEnv.Trim());
+    weHoldOwnerKey = ownerPublicKey.AsSpan().SequenceEqual(identity.PublicKey);
+}
+else
+{
+    ownerPublicKey = identity.PublicKey;
+    weHoldOwnerKey = true;
+}
+
+VestaAppConfig appConfig = new(appId, ownerPublicKey, relays);
+
 // ─── Local Store (SQLite) ────────────────────────────────────────────────────
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
 
@@ -58,7 +84,7 @@ Console.WriteLine("╔═══════════════════�
 Console.WriteLine("║         Vesta Chat Room Example          ║");
 Console.WriteLine("╠══════════════════════════════════════════╣");
 Console.WriteLine($"║  User:     {username,-30}║");
-Console.WriteLine($"║  Server:   {serverUrl[..25]}...{"",-2}║");
+Console.WriteLine($"║  Server:   {(serverUrl.Length > 30 ? serverUrl[..27] + "..." : serverUrl),-30}║");
 Console.WriteLine($"║  Channel:  {channel,-30}║");
 Console.WriteLine($"║  Identity: {clientId[..16]}...{"",-11}║");
 Console.WriteLine("╚══════════════════════════════════════════╝");
@@ -114,7 +140,7 @@ void PrintAboveInput(Action printAction)
 }
 
 // ─── Connect ─────────────────────────────────────────────────────────────────
-await using VestaConnection connection = new(clientId, localStore, identity)
+await using VestaConnection connection = new(clientId, appConfig, localStore, identity)
 {
     AutoReconnect = true
 };
@@ -231,6 +257,17 @@ connection.OnRelaySwitched += (Uri relay) =>
     });
 };
 
+connection.OnManifestApplied += (RelayManifest manifest) =>
+{
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"  [MANIFEST] adopted owner-signed relay manifest v{manifest.Version} " +
+            $"({manifest.Relays.Count} relay(s)) — takes effect on next reconnect/failover");
+        Console.ResetColor();
+    });
+};
+
 connection.OnReconnected += () =>
 {
     isConnected = true;
@@ -262,7 +299,6 @@ async Task PublishJoinAsync()
 try
 {
     await connection.ConnectAsync(
-        relays,
         channels: [channel]);
 
     isConnected = true;
@@ -271,12 +307,15 @@ try
     Console.ForegroundColor = ConsoleColor.Green;
     Console.WriteLine($"Connected to server: {connection.ServerId} via {connection.ActiveRelay}");
     Console.ResetColor();
-    if (relays.Count > 1)
+    if (connection.Relays.Count > 1)
     {
         Console.ForegroundColor = ConsoleColor.DarkGray;
-        Console.WriteLine($"  Failover relays configured: {relays.Count} (will switch automatically if the active one drops)");
+        Console.WriteLine($"  Failover relays configured: {connection.Relays.Count} (will switch automatically if the active one drops)");
         Console.ResetColor();
     }
+    Console.ForegroundColor = ConsoleColor.DarkGray;
+    Console.WriteLine("  Type /help for relay commands (failover, override, owner manifests).");
+    Console.ResetColor();
     Console.WriteLine("Type a message and press Enter. Press Ctrl+C to quit.\n");
 }
 catch (Exception ex)
@@ -286,6 +325,160 @@ catch (Exception ex)
     Console.ForegroundColor = ConsoleColor.Yellow;
     Console.WriteLine("Running in offline mode — will try to reconnect on next message.\n");
     Console.ResetColor();
+}
+
+// ─── Relay commands ──────────────────────────────────────────────────────────
+async Task HandleCommandAsync(string input)
+{
+    string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    string cmd = parts[0].ToLowerInvariant();
+
+    switch (cmd)
+    {
+        case "/help":
+            PrintAboveInput(() =>
+            {
+                Console.ForegroundColor = ConsoleColor.DarkCyan;
+                Console.WriteLine("  Commands:");
+                Console.WriteLine("    /relays                            show the current relay candidate list");
+                Console.WriteLine("    /relay use <ws-url>                set a local relay override and switch to it");
+                Console.WriteLine("    /relay clear                       clear the local override (back to manifest/defaults)");
+                Console.WriteLine("    /publish-manifest <url> [url...]   sign & publish an owner relay manifest");
+                Console.WriteLine("    /help                              show this help");
+                Console.ResetColor();
+            });
+            break;
+
+        case "/relays":
+            PrintAboveInput(() =>
+            {
+                Console.ForegroundColor = ConsoleColor.DarkCyan;
+                Uri? active = connection.ActiveRelay;
+                Console.WriteLine($"  Relay candidates ({connection.Relays.Count}):");
+                foreach (Uri r in connection.Relays)
+                {
+                    Console.WriteLine($"    {r}{(r == active ? "  * active" : "")}");
+                }
+                RelayManifest? m = connection.RelayDirectory.CurrentManifest;
+                Console.WriteLine(m is null
+                    ? "  Manifest: none adopted"
+                    : $"  Manifest: v{m.Version} ({m.Relays.Count} relay(s))");
+                Console.ResetColor();
+            });
+            break;
+
+        case "/relay":
+            if (parts.Length >= 2 && parts[1].Equals("clear", StringComparison.OrdinalIgnoreCase))
+            {
+                bool ok = await connection.ClearUserRelayOverrideAsync();
+                PrintAboveInput(() =>
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkCyan;
+                    Console.WriteLine(ok
+                        ? "  Override cleared — reconnected on resolved relays."
+                        : "  Override cleared — but could not reconnect to any relay.");
+                    Console.ResetColor();
+                });
+            }
+            else if (parts.Length >= 3 && parts[1].Equals("use", StringComparison.OrdinalIgnoreCase)
+                && Uri.TryCreate(parts[2], UriKind.Absolute, out Uri? relayUri))
+            {
+                bool ok = await connection.SetUserRelayOverrideAsync(relayUri);
+                PrintAboveInput(() =>
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkCyan;
+                    Console.WriteLine(ok
+                        ? $"  Override set — now using {relayUri}."
+                        : $"  Override saved, but could not connect to {relayUri}.");
+                    Console.ResetColor();
+                });
+            }
+            else
+            {
+                PrintAboveInput(() =>
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("  Usage: /relay use <ws-url> | /relay clear");
+                    Console.ResetColor();
+                });
+            }
+            break;
+
+        case "/publish-manifest":
+            await PublishManifestAsync(parts);
+            break;
+
+        default:
+            PrintAboveInput(() =>
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  Unknown command '{cmd}'. Type /help.");
+                Console.ResetColor();
+            });
+            break;
+    }
+}
+
+async Task PublishManifestAsync(string[] parts)
+{
+    if (!weHoldOwnerKey)
+    {
+        PrintAboveInput(() =>
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("  Cannot publish: this client does not hold the app-owner signing key.");
+            Console.WriteLine("  (VESTA_APP_OWNER_KEY points at a different key than this identity.)");
+            Console.ResetColor();
+        });
+        return;
+    }
+
+    List<RelayEndpoint> endpoints = new();
+    for (int i = 1; i < parts.Length; i++)
+    {
+        if (Uri.TryCreate(parts[i], UriKind.Absolute, out _))
+        {
+            endpoints.Add(new RelayEndpoint(parts[i], i - 1));
+        }
+    }
+    if (endpoints.Count == 0)
+    {
+        PrintAboveInput(() =>
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("  Usage: /publish-manifest <ws-url> [ws-url...]");
+            Console.ResetColor();
+        });
+        return;
+    }
+
+    int nextVersion = (connection.RelayDirectory.CurrentManifest?.Version ?? 0) + 1;
+    RelayManifest manifest = new()
+    {
+        AppId = appId,
+        Version = nextVersion,
+        IssuedAt = DateTimeOffset.UtcNow,
+        Relays = endpoints,
+        OwnerPublicKey = string.Empty
+    };
+    RelayManifest signed = ManifestSigner.Sign(manifest, identity);
+
+    JsonElement manifestPayload = JsonSerializer.SerializeToElement(signed, VestaJsonOptions.Default);
+    VestaEvent manifestEvent = new(
+        Id: Guid.NewGuid(),
+        ChannelId: RelayManifest.ChannelFor(appId),
+        Timestamp: DateTimeOffset.UtcNow,
+        ClientId: clientId,
+        EventType: RelayManifest.EventType,
+        Payload: manifestPayload);
+
+    await connection.PublishAsync(manifestEvent);
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
+        Console.WriteLine($"  Published owner manifest v{nextVersion} with {endpoints.Count} relay(s).");
+        Console.ResetColor();
+    });
 }
 
 // ─── Message Loop (char-by-char) ─────────────────────────────────────────────
@@ -338,6 +531,19 @@ try
 
             if (!string.IsNullOrWhiteSpace(input))
             {
+                if (input.StartsWith('/'))
+                {
+                    await HandleCommandAsync(input);
+
+                    // Redraw prompt and continue — commands are not chat messages.
+                    lock (consoleLock)
+                    {
+                        Console.ForegroundColor = isConnected ? ConsoleColor.Green : ConsoleColor.Yellow;
+                        Console.Write(GetPrompt());
+                        Console.ResetColor();
+                    }
+                    continue;
+                }
 
                 JsonElement payload = JsonDocument.Parse(
                     JsonSerializer.Serialize(new { text = input, sender = username })).RootElement;
