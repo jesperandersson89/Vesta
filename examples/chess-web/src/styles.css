@@ -269,6 +269,47 @@ footer {
 button.hidden {
     display: none;
 }
+.relay-panel {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid #344;
+    border-radius: 6px;
+    background: #141a1a;
+    font-size: 0.85rem;
+}
+.relay-panel.hidden {
+    display: none;
+}
+.relay-panel h3 {
+    margin: 0;
+    font-size: 0.9rem;
+    color: #8cc;
+}
+.relay-active {
+    font-family: monospace;
+    color: #6c9;
+}
+.relay-active-row,
+.relay-manifest {
+    margin: 0;
+}
+.relay-override-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    flex-basis: 100%;
+}
+.relay-manifest {
+    flex-basis: 100%;
+    color: #c9a;
+    font-size: 0.8rem;
+}
 footer label {
     font-size: 0.85rem;
     display: flex;

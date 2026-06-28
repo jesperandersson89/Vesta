@@ -7,9 +7,17 @@ using VestaCore.Identity;
 using VestaCore.Protocol;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
-// Relay URL: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > local default.
-string serverUrl = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
+// Relay URLs: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > local default.
+// Supply a COMMA-SEPARATED list to enable failover — the client tries each in order and
+// automatically switches to the next reachable relay if the active one goes away.
+string relayConfig = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
     ?? (args.Length > 0 ? args[0] : "ws://localhost:5150/ws");
+
+List<Uri> relays = relayConfig
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .Select(u => new Uri(u))
+    .ToList();
+string serverUrl = relays[0].ToString();
 
 // App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
 // provisioned in Atrium so every channel is scoped under it. Defaults to "chat".
@@ -213,6 +221,16 @@ connection.OnDisconnected += (string reason) =>
     });
 };
 
+connection.OnRelaySwitched += (Uri relay) =>
+{
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"  [RELAY] now using {relay}");
+        Console.ResetColor();
+    });
+};
+
 connection.OnReconnected += () =>
 {
     isConnected = true;
@@ -244,15 +262,21 @@ async Task PublishJoinAsync()
 try
 {
     await connection.ConnectAsync(
-        new Uri(serverUrl),
+        relays,
         channels: [channel]);
 
     isConnected = true;
     await PublishJoinAsync();
 
     Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"Connected to server: {connection.ServerId}");
+    Console.WriteLine($"Connected to server: {connection.ServerId} via {connection.ActiveRelay}");
     Console.ResetColor();
+    if (relays.Count > 1)
+    {
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"  Failover relays configured: {relays.Count} (will switch automatically if the active one drops)");
+        Console.ResetColor();
+    }
     Console.WriteLine("Type a message and press Enter. Press Ctrl+C to quit.\n");
 }
 catch (Exception ex)

@@ -13,6 +13,11 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from vesta_client.identity import VestaIdentity
+from vesta_client.relay import (
+    RELAY_MANIFEST_EVENT_TYPE,
+    RelayDirectory,
+    RelayManifest,
+)
 from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
     AckMessage,
@@ -43,6 +48,7 @@ class VestaConnection:
         client_id: str,
         channels: list[str],
         *,
+        relays: list[str] | None = None,
         auto_reconnect: bool = True,
         initial_reconnect_delay: float = 1.0,
         max_reconnect_delay: float = 30.0,
@@ -50,8 +56,12 @@ class VestaConnection:
         public_key: str | None = None,
         local_store: ClientEventStore | None = None,
         identity: VestaIdentity | None = None,
+        relay_directory: RelayDirectory | None = None,
     ):
         self.server_url = server_url
+        self._relay_candidates = list(relays) if relays else [server_url]
+        self._active_relay_index = 0
+        self._notified_relay_index = -1
         self.client_id = client_id
         self._channels = list(channels)
         self.auto_reconnect = auto_reconnect
@@ -63,6 +73,7 @@ class VestaConnection:
         self._identity = identity
         self.public_key = public_key or (identity.public_key_b64 if identity else None)
         self._local_store = local_store
+        self._relay_directory = relay_directory
         self._pending_publishes: dict[str, VestaEvent] = {}
 
         self._ws: ClientConnection | None = None
@@ -79,6 +90,8 @@ class VestaConnection:
         self._on_error: Callable[[ErrorMessage], None] | None = None
         self._on_connected: Callable[[WelcomeMessage], None] | None = None
         self._on_disconnected: Callable[[str], None] | None = None
+        self._on_relay_switched: Callable[[str], None] | None = None
+        self._on_manifest_applied: Callable[[RelayManifest], None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -91,6 +104,16 @@ class VestaConnection:
     @property
     def channels(self) -> list[str]:
         return list(self._channels)
+
+    @property
+    def active_relay(self) -> str:
+        """The relay the connection is currently using (or last attempted)."""
+        return self._relay_candidates[self._active_relay_index]
+
+    @property
+    def relays(self) -> list[str]:
+        """The ordered relay candidate list tried on connect/failover."""
+        return list(self._relay_candidates)
 
     # ── Event registration ────────────────────────────────────────────────────
 
@@ -112,14 +135,78 @@ class VestaConnection:
     def on_disconnected(self, callback: Callable[[str], None]) -> None:
         self._on_disconnected = callback
 
+    def on_relay_switched(self, callback: Callable[[str], None]) -> None:
+        self._on_relay_switched = callback
+
+    def on_manifest_applied(self, callback: Callable[[RelayManifest], None]) -> None:
+        self._on_manifest_applied = callback
+
+    # ── Relay directory / failover ────────────────────────────────────────────
+
+    def attach_relay_directory(self, directory: RelayDirectory) -> None:
+        """
+        Attach a relay directory so the connection discovers, verifies, and adopts
+        owner-signed manifests. Call BEFORE :meth:`connect`. Accepted manifests refresh the
+        candidate list and fire ``on_manifest_applied``.
+        """
+        self._relay_directory = directory
+
+    def update_relay_candidates(self, relays: list[str]) -> None:
+        """
+        Replace the relay candidate list (e.g. after a newer manifest). Keeps the active
+        relay if still present, else resets to the top. Does not reconnect.
+        """
+        if not relays:
+            raise ValueError("At least one relay URL is required.")
+        active = self.active_relay
+        self._relay_candidates = list(relays)
+        if active in self._relay_candidates:
+            self._active_relay_index = self._relay_candidates.index(active)
+        else:
+            self._active_relay_index = 0
+            self._notified_relay_index = -1
+
+    async def switch_relay(self, url: str) -> None:
+        """Switch to a specific relay (must be in the candidate list) and reconnect now."""
+        if url not in self._relay_candidates:
+            raise ValueError(f"Relay '{url}' is not in the current candidate list.")
+        self._active_relay_index = self._relay_candidates.index(url)
+        await self.disconnect()
+        await self.connect()
+
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
     async def connect(self) -> None:
-        """Open the WebSocket connection and perform the HELLO handshake."""
+        """Connect to the first reachable relay candidate and perform the HELLO handshake."""
         if self._disposed:
             raise RuntimeError("Connection has been disposed")
 
-        self._ws = await websockets.connect(self.server_url)
+        if not await self._try_connect_candidates():
+            raise RuntimeError(
+                f"Could not connect to any of the {len(self._relay_candidates)} configured relay(s)."
+            )
+
+    async def _try_connect_candidates(self) -> bool:
+        count = len(self._relay_candidates)
+        for offset in range(count):
+            index = (self._active_relay_index + offset) % count
+            relay = self._relay_candidates[index]
+            try:
+                await self._connect_to(relay)
+            except Exception:
+                continue
+
+            self._active_relay_index = index
+            if self._notified_relay_index != index:
+                self._notified_relay_index = index
+                if self._on_relay_switched:
+                    self._on_relay_switched(relay)
+            return True
+        return False
+
+    async def _connect_to(self, relay: str) -> None:
+        """Open the WebSocket connection to a specific relay and perform the HELLO handshake."""
+        self._ws = await websockets.connect(relay)
 
         # Send HELLO
         hello: dict[str, Any] = {
@@ -148,6 +235,13 @@ class VestaConnection:
 
         # Start receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
+
+        # Ensure we are subscribed to the manifest channel when a directory is attached.
+        if (
+            self._relay_directory is not None
+            and self._relay_directory.manifest_channel not in self._channels
+        ):
+            await self.subscribe(self._relay_directory.manifest_channel, 0)
 
         # Flush any pending outbox events
         if self._local_store is not None:
@@ -479,6 +573,7 @@ class VestaConnection:
                             )
                         )
                     )
+                self._maybe_apply_manifest_event(m.channel_id, m.event)
                 if self._on_event:
                     self._on_event(m)
             case EventsBatchMessage() as m:
@@ -486,6 +581,12 @@ class VestaConnection:
                     self.update_sequence(m.channel_id, m.events[-1].sequence)
                     if self._local_store is not None:
                         asyncio.create_task(self._local_store.store_events(m.events))
+                if (
+                    self._relay_directory is not None
+                    and m.channel_id == self._relay_directory.manifest_channel
+                ):
+                    for se in m.events:
+                        self._maybe_apply_manifest_event(m.channel_id, se.event)
                 if self._on_events_batch:
                     self._on_events_batch(m)
             case AckMessage() as m:
@@ -497,6 +598,25 @@ class VestaConnection:
             case ErrorMessage() as m:
                 if self._on_error:
                     self._on_error(m)
+
+    def _maybe_apply_manifest_event(self, channel_id: str, event: VestaEvent) -> None:
+        directory = self._relay_directory
+        if directory is None or channel_id != directory.manifest_channel:
+            return
+        if event.event_type != RELAY_MANIFEST_EVENT_TYPE:
+            return
+
+        try:
+            manifest = RelayManifest.from_dict(event.payload)
+        except (KeyError, TypeError):
+            return
+
+        if not directory.try_apply_manifest(manifest):
+            return
+
+        self.update_relay_candidates(directory.resolve_candidates())
+        if self._on_manifest_applied:
+            self._on_manifest_applied(manifest)
 
     async def _cache_event_on_ack(self, ack: AckMessage) -> None:
         if self._local_store is None:

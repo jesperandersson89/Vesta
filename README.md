@@ -128,6 +128,7 @@ The server assigns a per-channel monotonic **sequence number** and broadcasts to
 - **Volatile events** — `volatile: true` skips DB storage entirely, just relays to current subscribers. Ideal for real-time ephemeral data.
 - **Offline-first** — clients queue events to a local outbox and sync on reconnect.
 - **Auto-reconnect** — exponential backoff with seamless catch-up via sequence tracking.
+- **Server independence** — clients fail over across an ordered list of relays and follow an owner-signed relay manifest, so an app survives its relay (or developer) going away. Each user can also pin a personal relay override. See [docs/protocol.md](docs/protocol.md#relay-manifests-server-independence).
 - **Cross-language** — the protocol is JSON over WebSocket; examples exist in C#, Python, and TypeScript.
 
 ## License

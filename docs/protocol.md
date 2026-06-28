@@ -86,6 +86,48 @@ Channel IDs are validated on every `PUBLISH`, `SUBSCRIBE`, and `FETCH`.
 
 Admin is a role within a private channel — only admins can `GRANT_ACCESS`.
 
+## Relay manifests (server independence)
+
+An app's relay set is not hard-wired to a single endpoint. A client resolves an ordered list
+of relay candidates and fails over between them, so an app survives its designated relay (or
+its developer) going away.
+
+Candidate order (highest priority first):
+
+1. **User local override** — a relay the end-user pins client-side. The ownership escape hatch; always wins.
+2. **Owner-signed manifest relays** — primary relays (by `priority`) then any active pre-signed escape fallbacks.
+3. **App compiled-in defaults** — the relay(s) the developer shipped in `VestaAppConfig.defaultRelays`.
+
+The manifest is an ordinary signed event, so the relay stays a pure relay — no server changes:
+
+- **Channel:** `{appId}/vesta/relays` (a normal app channel; it does _not_ start with the reserved `vesta/` prefix).
+- **Event type:** `vesta.relay-manifest`
+- **Payload:**
+
+  ```jsonc
+  {
+    "appId": "myapp",
+    "version": 3,                       // monotonic; clients keep the highest seen (anti-rollback)
+    "issuedAt": "2025-01-01T00:00:00Z", // display only
+    "relays": [
+      { "url": "wss://r1.example/ws", "priority": 0, "label": "primary" },
+      { "url": "wss://r2.example/ws", "priority": 1 }
+    ],
+    "escapeFallbacks": [
+      { "url": "wss://rescue.example/ws", "validFrom": "2025-06-01T00:00:00Z" }
+    ],
+    "ownerPublicKey": "<base64url>",     // the manifest trust anchor
+    "signature": "<base64url>"           // Ed25519 over the RFC 8785 (JCS) canonicalization of all other fields
+  }
+  ```
+
+Trust: clients accept a manifest only if it is signed by the **compiled-in app-owner key**
+(`VestaAppConfig.ownerPublicKey`) and its `version` is newer than the one already cached. This
+lets the owner publish a new manifest to migrate the swarm to fresh relays while defeating a
+malicious relay trying to hijack the app's clients. Each client also keeps a personal override
+that takes precedence locally regardless of the manifest.
+
+
 ## See also
 
 - [events.md](events.md) — the `VestaEvent` carried in `PUBLISH` / `EVENT` / `EVENTS_BATCH`

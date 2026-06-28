@@ -1,9 +1,11 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using VestaClient.Relay;
 using VestaClient.Storage;
 using VestaCore.Events;
 using VestaCore.Identity;
 using VestaCore.Protocol;
+using VestaCore.Relay;
 using VestaCore.Serialization;
 using VestaCore.Utilities;
 
@@ -28,7 +30,9 @@ public sealed class VestaConnection : IAsyncDisposable
     private readonly Dictionary<Guid, VestaEvent> _pendingPublishes = new();
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveLoop;
-    private Uri? _serverUri;
+    private IReadOnlyList<Uri> _relayCandidates = [];
+    private int _activeRelayIndex;
+    private RelayDirectory? _relayDirectory;
     private IReadOnlyList<string>? _channels;
 
     /// <summary>
@@ -79,6 +83,20 @@ public sealed class VestaConnection : IAsyncDisposable
     public event Action? OnReconnected;
 
     /// <summary>
+    /// Fired when a newer, validly-signed relay manifest is accepted (only when a
+    /// <see cref="RelayDirectory"/> is attached via <see cref="AttachRelayDirectory"/>).
+    /// The candidate list has already been refreshed when this fires.
+    /// </summary>
+    public event Action<RelayManifest>? OnManifestApplied;
+
+    /// <summary>
+    /// Fired when the active relay changes — either on first connect or when a
+    /// failover/migration moves the connection to a different relay in the
+    /// candidate list. The argument is the newly-active relay URI.
+    /// </summary>
+    public event Action<Uri>? OnRelaySwitched;
+
+    /// <summary>
     /// The server ID returned in the WELCOME message.
     /// </summary>
     public string? ServerId { get; private set; }
@@ -87,6 +105,19 @@ public sealed class VestaConnection : IAsyncDisposable
     /// The channels confirmed by the server in the WELCOME message.
     /// </summary>
     public IReadOnlyList<string> Channels { get; private set; } = [];
+
+    /// <summary>
+    /// The relay the connection is currently using (or last attempted). Null
+    /// before the first <see cref="ConnectAsync(Uri, IReadOnlyList{string}, IReadOnlyDictionary{string, long}, CancellationToken)"/> call.
+    /// </summary>
+    public Uri? ActiveRelay { get; private set; }
+
+    /// <summary>
+    /// The ordered list of candidate relays the connection will try, in priority
+    /// order. Populated by <c>ConnectAsync</c>; on failover the connection walks
+    /// this list starting from the active relay.
+    /// </summary>
+    public IReadOnlyList<Uri> Relays => _relayCandidates;
 
     /// <summary>
     /// Whether the connection is currently open.
@@ -103,27 +134,56 @@ public sealed class VestaConnection : IAsyncDisposable
     /// <summary>
     /// Connect to a Vesta server and perform the HELLO/WELCOME handshake.
     /// </summary>
-    public async Task ConnectAsync(
+    public Task ConnectAsync(
         Uri serverUri,
         IReadOnlyList<string> channels,
         IReadOnlyDictionary<string, long>? lastSequences = null,
         CancellationToken cancellationToken = default)
     {
-        // Store for reconnection
-        _serverUri = serverUri;
-        _channels = channels;
-
-        await ConnectInternalAsync(lastSequences, cancellationToken);
+        ArgumentNullException.ThrowIfNull(serverUri);
+        return ConnectAsync([serverUri], channels, lastSequences, cancellationToken);
     }
 
     /// <summary>
-    /// Reconnect to the server using the same URI and channels from the original ConnectAsync call.
-    /// Uses stored channel positions from the local store for smart catch-up.
-    /// Returns true if reconnection succeeded, false if it failed.
+    /// Connect to the first reachable relay in an ordered candidate list, performing
+    /// the HELLO/WELCOME handshake. Candidates are tried in order; if the active
+    /// relay later drops, reconnection walks the same list (failover). The list is
+    /// the resolved priority order — e.g. user override, then signed-manifest relays,
+    /// then app defaults.
+    /// </summary>
+    public async Task ConnectAsync(
+        IReadOnlyList<Uri> relays,
+        IReadOnlyList<string> channels,
+        IReadOnlyDictionary<string, long>? lastSequences = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(relays);
+        if (relays.Count == 0)
+        {
+            throw new ArgumentException("At least one relay URI is required.", nameof(relays));
+        }
+
+        // Store for reconnection / failover
+        _relayCandidates = relays;
+        _channels = channels;
+        _activeRelayIndex = 0;
+
+        if (!await TryConnectCandidatesAsync(lastSequences, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"Could not connect to any of the {relays.Count} configured relay(s).");
+        }
+    }
+
+    /// <summary>
+    /// Reconnect using the relay candidate list and channels from the original
+    /// ConnectAsync call. Walks the candidate list starting from the active relay,
+    /// so a dead primary fails over to the next relay. Uses stored channel positions
+    /// from the local store for smart catch-up. Returns true if reconnection succeeded.
     /// </summary>
     public async Task<bool> ReconnectAsync(CancellationToken cancellationToken = default)
     {
-        if (_serverUri is null || _channels is null)
+        if (_relayCandidates.Count == 0 || _channels is null)
         {
             throw new InvalidOperationException("Cannot reconnect — ConnectAsync has not been called yet.");
         }
@@ -131,24 +191,192 @@ public sealed class VestaConnection : IAsyncDisposable
         // Clean up old socket and receive loop
         await CleanupAsync();
 
-        try
+        bool success = await TryConnectCandidatesAsync(lastSequences: null, cancellationToken);
+        if (success)
         {
-            await ConnectInternalAsync(lastSequences: null, cancellationToken);
             OnReconnected?.Invoke();
-            return true;
         }
-        catch
+        return success;
+    }
+
+    /// <summary>
+    /// Attach a <see cref="RelayDirectory"/> so the connection automatically discovers, verifies,
+    /// and adopts owner-signed relay manifests. Call this BEFORE <c>ConnectAsync</c>: on connect the
+    /// connection subscribes to the manifest channel, and accepted manifests refresh the candidate
+    /// list (firing <see cref="OnManifestApplied"/>). The new relays take effect on the next failover,
+    /// or call <see cref="ReconnectAsync"/> / <see cref="SwitchRelayAsync"/> to switch immediately.
+    /// </summary>
+    public void AttachRelayDirectory(RelayDirectory directory)
+    {
+        ArgumentNullException.ThrowIfNull(directory);
+
+        if (_relayDirectory is not null)
         {
-            return false;
+            OnEvent -= HandleManifestEvent;
+            OnEventsBatch -= HandleManifestBatch;
+        }
+
+        _relayDirectory = directory;
+        OnEvent += HandleManifestEvent;
+        OnEventsBatch += HandleManifestBatch;
+    }
+
+    private void HandleManifestEvent(EventMessage message)
+    {
+        if (_relayDirectory is null || message.Event.ChannelId != _relayDirectory.ManifestChannel)
+        {
+            return;
+        }
+        ApplyManifestFromEvent(message.Event);
+    }
+
+    private void HandleManifestBatch(EventsBatchMessage batch)
+    {
+        if (_relayDirectory is null || batch.ChannelId != _relayDirectory.ManifestChannel)
+        {
+            return;
+        }
+        foreach (SequencedEvent sequenced in batch.Events)
+        {
+            ApplyManifestFromEvent(sequenced.Event);
         }
     }
 
+    private void ApplyManifestFromEvent(VestaEvent evt)
+    {
+        if (evt.EventType != RelayManifest.EventType)
+        {
+            return;
+        }
+
+        RelayManifest? manifest;
+        try
+        {
+            manifest = evt.Payload.Deserialize<RelayManifest>(_jsonOptions);
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+
+        if (manifest is null || !_relayDirectory!.TryApplyManifest(manifest))
+        {
+            return;
+        }
+
+        UpdateRelayCandidates(_relayDirectory.ResolveCandidates());
+        OnManifestApplied?.Invoke(manifest);
+    }
+
+    /// <summary>
+    /// Replace the relay candidate list — e.g. after a newer owner-signed manifest is applied.
+    /// Keeps the currently-active relay as the starting point if it is still present in the new
+    /// list; otherwise resets to the top. Does not reconnect: failover adopts the new list on the
+    /// next drop, or call <see cref="ReconnectAsync"/> to switch immediately.
+    /// </summary>
+    public void UpdateRelayCandidates(IReadOnlyList<Uri> relays)
+    {
+        ArgumentNullException.ThrowIfNull(relays);
+        if (relays.Count == 0)
+        {
+            throw new ArgumentException("At least one relay URI is required.", nameof(relays));
+        }
+
+        _relayCandidates = relays;
+
+        int activeIndex = -1;
+        if (ActiveRelay is not null)
+        {
+            for (int i = 0; i < relays.Count; i++)
+            {
+                if (relays[i] == ActiveRelay)
+                {
+                    activeIndex = i;
+                    break;
+                }
+            }
+        }
+        _activeRelayIndex = activeIndex >= 0 ? activeIndex : 0;
+    }
+
+    /// <summary>
+    /// Switch to a specific relay and reconnect immediately. The relay must be one of the
+    /// current <see cref="Relays"/> candidates. Returns true if the switch connected.
+    /// </summary>
+    public async Task<bool> SwitchRelayAsync(Uri relay, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(relay);
+
+        int index = -1;
+        for (int i = 0; i < _relayCandidates.Count; i++)
+        {
+            if (_relayCandidates[i] == relay)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0)
+        {
+            throw new ArgumentException($"Relay '{relay}' is not in the current candidate list.", nameof(relay));
+        }
+
+        _activeRelayIndex = index;
+        return await ReconnectAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Walk the candidate list once, starting at the active relay, attempting each
+    /// until one connects. On success, updates <see cref="ActiveRelay"/> and fires
+    /// <see cref="OnRelaySwitched"/> if the relay changed. Returns false if every
+    /// candidate failed.
+    /// </summary>
+    private async Task<bool> TryConnectCandidatesAsync(
+        IReadOnlyDictionary<string, long>? lastSequences,
+        CancellationToken cancellationToken)
+    {
+        int count = _relayCandidates.Count;
+        for (int offset = 0; offset < count; offset++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            int index = (_activeRelayIndex + offset) % count;
+            Uri candidate = _relayCandidates[index];
+            try
+            {
+                await ConnectInternalAsync(candidate, lastSequences, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // This candidate is unreachable — clean up and try the next one.
+                await CleanupAsync();
+                continue;
+            }
+
+            bool switched = ActiveRelay != candidate;
+            _activeRelayIndex = index;
+            ActiveRelay = candidate;
+            if (switched)
+            {
+                OnRelaySwitched?.Invoke(candidate);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task ConnectInternalAsync(
+        Uri relay,
         IReadOnlyDictionary<string, long>? lastSequences,
         CancellationToken cancellationToken)
     {
         _socket = new ClientWebSocket();
-        await _socket.ConnectAsync(_serverUri!, cancellationToken);
+        await _socket.ConnectAsync(relay, cancellationToken);
 
         // Build lastSequences for catch-up: include ALL subscribed channels.
         // Channels with no local position get 0 (meaning "send me everything").
@@ -212,6 +440,13 @@ public sealed class VestaConnection : IAsyncDisposable
         // Start the background receive loop
         _receiveCts = new CancellationTokenSource();
         _receiveLoop = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+
+        // If a relay directory is attached, make sure we are subscribed to the manifest channel
+        // so we discover owner-signed relay changes even if the app did not list it explicitly.
+        if (_relayDirectory is not null && !_channels!.Contains(_relayDirectory.ManifestChannel))
+        {
+            await SubscribeAsync(_relayDirectory.ManifestChannel, fromSequence: 0, cancellationToken);
+        }
 
         // Flush any pending outbox events
         if (_localStore is not null)

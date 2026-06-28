@@ -38,6 +38,27 @@ export type { ProjectionCheckpoint } from "./projections/index.js";
 export { InMemoryClientEventStore } from "./storage.js";
 export type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 export {
+    buildManifestSigningInput,
+    InMemoryManifestStore,
+    InMemoryRelayOverrideStore,
+    LocalStorageManifestStore,
+    LocalStorageRelayOverrideStore,
+    manifestChannelFor,
+    RELAY_MANIFEST_EVENT_TYPE,
+    RelayDirectory,
+    resolveRelayCandidates,
+    signManifest,
+    verifyManifest,
+} from "./relay.js";
+export type {
+    EscapeFallback,
+    ManifestStore,
+    RelayEndpoint,
+    RelayManifest,
+    RelayOverrideStore,
+    VestaAppConfig,
+} from "./relay.js";
+export {
     base64UrlToBytes,
     bytesToBase64Url,
     buildSigningInput,

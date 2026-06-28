@@ -53,11 +53,12 @@
             <footer>
                 <div id="connect-controls">
                     <label>
-                        Server:
+                        Relays:
                         <input
                             id="server-url"
                             type="text"
                             value="ws://localhost:5050/ws"
+                            title="One or more relay URLs, comma-separated. The client fails over in order."
                         />
                     </label>
                     <label>
@@ -67,6 +68,33 @@
                     <button id="connect-btn">Connect</button>
                 </div>
                 <button id="logout-btn" class="hidden">Log out</button>
+
+                <!-- Relay independence panel: active relay, failover candidates,
+                     and the per-user override (the ownership escape hatch). -->
+                <div id="relay-panel" class="relay-panel hidden">
+                    <h3>Relay</h3>
+                    <p class="relay-active-row">
+                        Active: <span id="relay-active" class="relay-active">—</span>
+                    </p>
+                    <label>
+                        Switch to:
+                        <select id="relay-select"></select>
+                    </label>
+                    <button id="relay-switch-btn">Switch</button>
+                    <div class="relay-override-row">
+                        <label>
+                            My relay override:
+                            <input
+                                id="relay-override"
+                                type="text"
+                                placeholder="wss://my-relay.example/ws"
+                            />
+                        </label>
+                        <button id="relay-override-btn">Use this relay</button>
+                        <button id="relay-override-clear">Clear override</button>
+                    </div>
+                    <p id="relay-manifest" class="relay-manifest"></p>
+                </div>
             </footer>
         </div>
 

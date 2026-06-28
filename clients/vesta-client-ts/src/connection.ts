@@ -19,6 +19,8 @@ import {
     generateGroupId,
 } from "./device-groups.js";
 import type { DeviceGroup } from "./device-groups.js";
+import { RELAY_MANIFEST_EVENT_TYPE } from "./relay.js";
+import type { RelayDirectory, RelayManifest } from "./relay.js";
 
 // ── WebSocket abstraction ────────────────────────────────────────────────────
 // We support both the `ws` package (Node.js) and the browser WebSocket API.
@@ -49,8 +51,15 @@ export type SocketFactory = (url: string) => VestaSocket;
 // ── Connection options ───────────────────────────────────────────────────────
 
 export interface VestaConnectionOptions {
-    /** The WebSocket URL to connect to (e.g. "ws://localhost:5150/ws"). */
-    serverUrl: string;
+    /** The WebSocket URL to connect to (e.g. "ws://localhost:5150/ws"). Use this OR `relays`. */
+    serverUrl?: string;
+
+    /**
+     * Ordered list of candidate relay URLs to try, in priority order. On failover the
+     * connection walks this list. Supersedes `serverUrl` when provided. Typically the
+     * resolved output of a {@link RelayDirectory}.
+     */
+    relays?: string[];
 
     /** Unique client identifier. */
     clientId: string;
@@ -99,6 +108,13 @@ export interface VestaConnectionOptions {
      * between SEND and ACK is safely retried on reconnect.
      */
     localStore?: ClientEventStore;
+
+    /**
+     * Optional relay directory. When provided, the connection subscribes to the app's manifest
+     * channel, verifies owner-signed manifests, and refreshes its relay candidate list when a
+     * newer manifest is accepted (emitting `manifestApplied`).
+     */
+    relayDirectory?: RelayDirectory;
 }
 
 // ── Event emitter types ──────────────────────────────────────────────────────
@@ -111,6 +127,8 @@ export interface VestaConnectionEvents {
     connected: (msg: WelcomeMessage) => void;
     disconnected: (reason: string) => void;
     reconnecting: (attempt: number) => void;
+    relaySwitched: (url: string) => void;
+    manifestApplied: (manifest: RelayManifest) => void;
 }
 
 type EventKey = keyof VestaConnectionEvents;
@@ -126,8 +144,12 @@ export class VestaConnection {
     private _isConnected = false;
     private _serverId: string | null = null;
     private _channels: string[];
+    private relayCandidates: string[];
+    private activeRelayIndex = 0;
+    private notifiedRelayIndex = -1;
+    private attemptReachedWelcome = false;
+    private relayDirectory: RelayDirectory | undefined;
 
-    private readonly serverUrl: string;
     private readonly clientId: string;
     private readonly createSocket: SocketFactory;
     private readonly autoReconnect: boolean;
@@ -140,7 +162,18 @@ export class VestaConnection {
     private readonly pendingPublishes = new Map<string, VestaEvent>();
 
     constructor(options: VestaConnectionOptions) {
-        this.serverUrl = options.serverUrl;
+        const candidates =
+            options.relays && options.relays.length > 0
+                ? [...options.relays]
+                : options.serverUrl
+                  ? [options.serverUrl]
+                  : [];
+        if (candidates.length === 0) {
+            throw new Error(
+                "VestaConnection requires either 'serverUrl' or a non-empty 'relays' list.",
+            );
+        }
+        this.relayCandidates = candidates;
         this.clientId = options.clientId;
         this._channels = [...options.channels];
         this.createSocket = options.createSocket;
@@ -151,6 +184,7 @@ export class VestaConnection {
         this.identity = options.identity;
         this.publicKey = options.publicKey ?? options.identity?.publicKeyB64;
         this.localStore = options.localStore;
+        this.relayDirectory = options.relayDirectory;
 
         // Default all channels to sequence 0
         for (const ch of this._channels) {
@@ -175,6 +209,58 @@ export class VestaConnection {
         return this._channels;
     }
 
+    /** The relay the connection is currently using (or last attempted). */
+    get activeRelay(): string {
+        return this.relayCandidates[this.activeRelayIndex]!;
+    }
+
+    /** The ordered relay candidate list tried on connect/failover. */
+    get relays(): readonly string[] {
+        return this.relayCandidates;
+    }
+
+    /**
+     * Attach a relay directory so the connection discovers, verifies, and adopts owner-signed
+     * manifests. Call BEFORE `connect()`. Accepted manifests refresh the candidate list and emit
+     * `manifestApplied`; the new relays take effect on the next failover, or call `switchRelay()`.
+     */
+    attachRelayDirectory(directory: RelayDirectory): void {
+        this.relayDirectory = directory;
+    }
+
+    /**
+     * Replace the relay candidate list (e.g. after a newer manifest). Keeps the active relay if
+     * still present, else resets to the top. Does not reconnect.
+     */
+    updateRelayCandidates(relays: string[]): void {
+        if (relays.length === 0) {
+            throw new Error("At least one relay URL is required.");
+        }
+        const active = this.activeRelay;
+        this.relayCandidates = [...relays];
+        const idx = this.relayCandidates.indexOf(active);
+        this.activeRelayIndex = idx >= 0 ? idx : 0;
+        if (idx < 0) this.notifiedRelayIndex = -1;
+    }
+
+    /**
+     * Switch to a specific relay (must be in the candidate list) and reconnect immediately.
+     */
+    switchRelay(url: string): void {
+        const idx = this.relayCandidates.indexOf(url);
+        if (idx < 0) {
+            throw new Error(`Relay '${url}' is not in the current candidate list.`);
+        }
+        this.activeRelayIndex = idx;
+        this.cancelReconnect();
+        if (this.socket) {
+            this.socket.close(1000, "Switching relay");
+            this.socket = null;
+        }
+        this._isConnected = false;
+        this.connect();
+    }
+
     // ── Connection lifecycle ─────────────────────────────────────────────────
 
     /** Open the WebSocket connection. */
@@ -182,7 +268,8 @@ export class VestaConnection {
         if (this.disposed) throw new Error("Connection has been disposed");
         if (this.socket) return;
 
-        this.socket = this.createSocket(this.serverUrl);
+        this.attemptReachedWelcome = false;
+        this.socket = this.createSocket(this.activeRelay);
 
         this.socket.addEventListener("open", () => {
             this.sendRaw({
@@ -212,9 +299,16 @@ export class VestaConnection {
         this.socket.addEventListener("close", (ev) => {
             this._isConnected = false;
             this.socket = null;
+            const reached = this.attemptReachedWelcome;
             this.emit("disconnected", ev.reason || "Connection closed");
 
             if (this.autoReconnect && !this.disposed) {
+                // If this attempt never reached WELCOME, the relay is unreachable —
+                // fail over to the next candidate before retrying.
+                if (!reached && this.relayCandidates.length > 1) {
+                    this.activeRelayIndex =
+                        (this.activeRelayIndex + 1) % this.relayCandidates.length;
+                }
                 this.scheduleReconnect();
             }
         });
@@ -518,7 +612,18 @@ export class VestaConnection {
                 this._serverId = msg.serverId;
                 this._channels = [...msg.channels];
                 this.reconnectAttempt = 0;
+                this.attemptReachedWelcome = true;
+                if (this.activeRelayIndex !== this.notifiedRelayIndex) {
+                    this.notifiedRelayIndex = this.activeRelayIndex;
+                    this.emit("relaySwitched", this.activeRelay);
+                }
                 this.emit("connected", msg);
+                if (
+                    this.relayDirectory &&
+                    !this._channels.includes(this.relayDirectory.manifestChannel)
+                ) {
+                    this.subscribe(this.relayDirectory.manifestChannel, 0);
+                }
                 if (this.localStore) {
                     void this.flushOutbox();
                 }
@@ -533,6 +638,7 @@ export class VestaConnection {
                         receivedAt: msg.receivedAt,
                     });
                 }
+                this.maybeApplyManifestEvent(msg.channelId, msg.event);
                 this.emit("event", msg);
                 break;
 
@@ -543,6 +649,11 @@ export class VestaConnection {
                 }
                 if (this.localStore && msg.events.length > 0) {
                     void this.localStore.storeEvents(msg.events);
+                }
+                if (this.relayDirectory && msg.channelId === this.relayDirectory.manifestChannel) {
+                    for (const se of msg.events) {
+                        this.maybeApplyManifestEvent(msg.channelId, se.event);
+                    }
                 }
                 this.emit("eventsBatch", msg);
                 break;
@@ -559,6 +670,18 @@ export class VestaConnection {
                 this.emit("error", msg);
                 break;
         }
+    }
+
+    private maybeApplyManifestEvent(channelId: string, event: VestaEvent): void {
+        const directory = this.relayDirectory;
+        if (!directory || channelId !== directory.manifestChannel) return;
+        if (event.eventType !== RELAY_MANIFEST_EVENT_TYPE) return;
+
+        const manifest = event.payload as RelayManifest;
+        if (!directory.tryApplyManifest(manifest)) return;
+
+        this.updateRelayCandidates(directory.resolveCandidates());
+        this.emit("manifestApplied", manifest);
     }
 
     private async cacheEventOnAck(ack: AckMessage): Promise<void> {

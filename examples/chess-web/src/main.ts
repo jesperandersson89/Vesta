@@ -17,10 +17,15 @@
 import { Chess, type Square } from "chess.js";
 import {
     createEvent,
+    LocalStorageManifestStore,
+    LocalStorageRelayOverrideStore,
+    RelayDirectory,
     VestaConnection,
     type EventMessage,
     type EventsBatchMessage,
+    type RelayManifest,
     type SequencedEvent,
+    type VestaAppConfig,
     type VestaSocket,
     type WelcomeMessage,
 } from "vesta-client";
@@ -34,12 +39,16 @@ import {
 
 // Build-time configuration (Vite). Set these in `.env` / the environment when
 // building so the demo points at the relay + app you provisioned in Atrium:
-//   VITE_VESTA_RELAY_URL  e.g. wss://relay.example/ws
-//   VITE_VESTA_APP_ID     the app namespace; every channel is scoped under it
+//   VITE_VESTA_RELAY_URL          e.g. wss://relay.example/ws (comma-separated for failover)
+//   VITE_VESTA_APP_ID             the app namespace; every channel is scoped under it
+//   VITE_VESTA_OWNER_PUBLIC_KEY   base64url app-owner key = the relay-manifest trust anchor.
+//                                 When set, the client discovers + verifies owner-signed
+//                                 relay manifests on `{appId}/vesta/relays` and follows them.
 const ENV = (import.meta as unknown as {
     env?: Record<string, string | undefined>;
 }).env ?? {};
 const APP_ID = ENV.VITE_VESTA_APP_ID ?? "chess";
+const OWNER_PUBLIC_KEY = ENV.VITE_VESTA_OWNER_PUBLIC_KEY ?? "";
 
 const LOBBY = `${APP_ID}/lobby`;
 const PRESENCE_TTL_SEC = 20;
@@ -71,6 +80,16 @@ const serverInput = $<HTMLInputElement>("server-url");
 const usernameInput = $<HTMLInputElement>("username");
 const connectBtn = $<HTMLButtonElement>("connect-btn");
 const logoutBtn = $<HTMLButtonElement>("logout-btn");
+
+// Relay-independence panel
+const relayPanel = $("relay-panel");
+const relayActiveEl = $("relay-active");
+const relaySelect = $<HTMLSelectElement>("relay-select");
+const relaySwitchBtn = $<HTMLButtonElement>("relay-switch-btn");
+const relayOverrideInput = $<HTMLInputElement>("relay-override");
+const relayOverrideBtn = $<HTMLButtonElement>("relay-override-btn");
+const relayOverrideClearBtn = $<HTMLButtonElement>("relay-override-clear");
+const relayManifestEl = $("relay-manifest");
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -114,6 +133,7 @@ const activeMatches = new Map<string, ActiveMatch>();
 const declinedInvites = new Set<string>();
 let currentMatchId: string | null = null;
 let connection: VestaConnection | null = null;
+let relayDirectory: RelayDirectory | null = null;
 let username: string = usernameInput.value;
 let presenceTimer: number | null = null;
 let pruneTimer: number | null = null;
@@ -463,6 +483,23 @@ function setConnectedUi(connected: boolean): void {
     const controls = document.getElementById("connect-controls");
     if (controls) controls.classList.toggle("hidden", connected);
     logoutBtn.classList.toggle("hidden", !connected);
+    relayPanel.classList.toggle("hidden", !connected);
+    if (connected) updateRelayPanel();
+}
+
+// Refresh the relay panel from the live connection: active relay + candidate list.
+function updateRelayPanel(): void {
+    if (!connection) return;
+    relayActiveEl.textContent = connection.activeRelay;
+    const current = connection.activeRelay;
+    relaySelect.innerHTML = "";
+    for (const url of connection.relays) {
+        const opt = document.createElement("option");
+        opt.value = url;
+        opt.textContent = url;
+        if (url === current) opt.selected = true;
+        relaySelect.appendChild(opt);
+    }
 }
 
 // ─── Local actions ─────────────────────────────────────────────────────────
@@ -759,13 +796,53 @@ async function connect(): Promise<void> {
         usernameInput.value.trim() || `player-${identity.clientId.slice(0, 6)}`;
     saveUsername(username);
 
+    // Parse the comma-separated relay list — the app's compiled-in/default candidates.
+    const relays = serverInput.value
+        .split(",")
+        .map((u) => u.trim())
+        .filter((u) => u.length > 0);
+    if (relays.length === 0) {
+        matchMessageEl.textContent = "Enter at least one relay URL.";
+        return;
+    }
+
+    // When an app-owner key is configured, build a relay directory so the client
+    // discovers + verifies owner-signed manifests and persists a per-user override.
+    if (OWNER_PUBLIC_KEY) {
+        const config: VestaAppConfig = {
+            appId: APP_ID,
+            ownerPublicKey: OWNER_PUBLIC_KEY,
+            defaultRelays: relays,
+        };
+        relayDirectory = new RelayDirectory(
+            config,
+            new LocalStorageRelayOverrideStore("vesta-chess-relay-override"),
+            new LocalStorageManifestStore("vesta-chess-relay-manifest"),
+        );
+    } else {
+        relayDirectory = null;
+    }
+
+    // Resolve the final candidate order (override > manifest > defaults) when a
+    // directory exists; otherwise just use the typed list.
+    const candidates = relayDirectory?.resolveCandidates() ?? relays;
+
     connection = new VestaConnection({
-        serverUrl: serverInput.value,
+        relays: candidates,
         clientId: identity.clientId,
         publicKey: identity.publicKeyB64,
         channels: [LOBBY],
         createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
         autoReconnect: true,
+        ...(relayDirectory ? { relayDirectory } : {}),
+    });
+
+    connection.on("relaySwitched", () => updateRelayPanel());
+    connection.on("manifestApplied", (manifest: RelayManifest) => {
+        relayManifestEl.textContent =
+            `Adopted owner-signed manifest v${manifest.version} ` +
+            `(${manifest.relays.length} relay(s), issued ${manifest.issuedAt}).`;
+        updateRelayPanel();
     });
 
     connection.on("connected", (welcome: WelcomeMessage) => {
@@ -834,6 +911,40 @@ connectBtn.addEventListener("click", () => {
         console.error(err);
         matchMessageEl.textContent = `Connection failed: ${err.message ?? err}`;
     });
+});
+
+// Relay panel: switch the active relay, and set/clear the per-user override.
+relaySwitchBtn.addEventListener("click", () => {
+    if (!connection) return;
+    const target = relaySelect.value;
+    if (target && target !== connection.activeRelay) {
+        connection.switchRelay(target);
+    }
+});
+
+relayOverrideBtn.addEventListener("click", () => {
+    const url = relayOverrideInput.value.trim();
+    if (!url) return;
+    if (!relayDirectory) {
+        relayManifestEl.textContent =
+            "Relay override needs an app-owner key (VITE_VESTA_OWNER_PUBLIC_KEY) configured.";
+        return;
+    }
+    relayDirectory.setUserOverride(url);
+    relayManifestEl.textContent = `Override set: ${url} (reconnecting…)`;
+    if (connection) connection.updateRelayCandidates(relayDirectory.resolveCandidates());
+    connection?.switchRelay(url);
+    relayOverrideInput.value = "";
+});
+
+relayOverrideClearBtn.addEventListener("click", () => {
+    if (!relayDirectory) return;
+    relayDirectory.clearUserOverride();
+    relayManifestEl.textContent = "Override cleared.";
+    if (connection) {
+        connection.updateRelayCandidates(relayDirectory.resolveCandidates());
+        updateRelayPanel();
+    }
 });
 
 logoutBtn.addEventListener("click", () => {
