@@ -35,18 +35,16 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_986C7808523F4FE4BD28833B0D56B3D4 }}
 
       - name: Deploy Bicep (relay stack)
-        uses: azure/cli@v3
+        shell: bash
         env:
           VESTA_PG_PASSWORD: ${{ secrets.VESTA_PG_PASSWORD }}
           VESTA_RELAY_ADMIN_PUBLICKEY: ${{ secrets.VESTA_RELAY_ADMIN_PUBLICKEY }}
-        with:
-          azcliversion: latest
-          inlineScript: |
-            az bicep install
-            az deployment sub create \
-              --location norwayeast \
-              --template-file .github/infra/main.bicep \
-              --parameters .github/infra/params/dev.bicepparam
+        run: |
+          az bicep install
+          az deployment sub create \
+            --location norwayeast \
+            --template-file .github/infra/main.bicep \
+            --parameters .github/infra/params/dev.bicepparam
 
   build:
     runs-on: ubuntu-latest
