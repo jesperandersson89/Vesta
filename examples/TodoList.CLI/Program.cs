@@ -25,7 +25,8 @@ for (int i = 0; i < args.Length; i++)
         positional.Add(args[i]);
 }
 
-string serverUrl = positional.Count > 0 ? positional[0] : "ws://localhost:5150/ws";
+string serverUrl = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
+    ?? (positional.Count > 0 ? positional[0] : "ws://localhost:5150/ws");
 
 // ─── Login Screen ───────────────────────────────────────────────────────────
 Console.WriteLine();
@@ -71,16 +72,22 @@ else
 Console.WriteLine();
 
 // Derive the channel from the credentials so any device with the same
-// username + password automatically lands on the same list.
+// username + password automatically lands on the same list. The app namespace
+// (first segment) comes from VESTA_APP_ID so you can scope it under the app id
+// you provisioned in Atrium. Defaults to "todo".
+string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "todo";
 string channelSuffix = DeriveChannelSuffix(username, password);
-string channel = $"todo/{channelSuffix}";
+string channel = $"{appId}/{channelSuffix}";
 string listName = $"{username}'s list";
 
 // ─── Identity & Storage ──────────────────────────────────────────────────────
 string vestaDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".vesta");
 Directory.CreateDirectory(vestaDir);
 
-string identityPath = Path.Combine(vestaDir, "todo-identity.json");
+// VESTA_IDENTITY_FILE lets you point at an identity downloaded from Atrium
+// (the app-owner key) instead of the local default.
+string identityPath = Environment.GetEnvironmentVariable("VESTA_IDENTITY_FILE")
+    ?? Path.Combine(vestaDir, "todo-identity.json");
 string dbPath = Path.Combine(vestaDir, $"todo-{channelSuffix}.db");
 
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);

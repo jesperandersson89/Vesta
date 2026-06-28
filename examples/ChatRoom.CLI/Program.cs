@@ -7,8 +7,14 @@ using VestaCore.Identity;
 using VestaCore.Protocol;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
-string serverUrl = args.Length > 0 ? args[0] : "ws://localhost:5150/ws";
-string channel = args.Length > 1 ? args[1] : "chat/general";
+// Relay URL: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > local default.
+string serverUrl = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
+    ?? (args.Length > 0 ? args[0] : "ws://localhost:5150/ws");
+
+// App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
+// provisioned in Atrium so every channel is scoped under it. Defaults to "chat".
+string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "chat";
+string channel = args.Length > 1 ? args[1] : $"{appId}/general";
 
 // ─── Username Prompt ─────────────────────────────────────────────────────────
 Console.Write("Enter your username: ");
@@ -22,7 +28,10 @@ if (string.IsNullOrWhiteSpace(username))
 string vestaDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".vesta");
 Directory.CreateDirectory(vestaDir);
 
-string identityPath = Path.Combine(vestaDir, $"chat-{username}-identity.json");
+// VESTA_IDENTITY_FILE lets you point at an identity you downloaded from Atrium
+// (the app-owner key) instead of a per-username key generated locally.
+string identityPath = Environment.GetEnvironmentVariable("VESTA_IDENTITY_FILE")
+    ?? Path.Combine(vestaDir, $"chat-{username}-identity.json");
 string dbPath = Path.Combine(vestaDir, $"chat-{username}.db");
 
 // ─── Identity ────────────────────────────────────────────────────────────────

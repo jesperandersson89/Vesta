@@ -32,7 +32,16 @@ import {
     saveUsername,
 } from "./identity.js";
 
-const LOBBY = "chess/lobby";
+// Build-time configuration (Vite). Set these in `.env` / the environment when
+// building so the demo points at the relay + app you provisioned in Atrium:
+//   VITE_VESTA_RELAY_URL  e.g. wss://relay.example/ws
+//   VITE_VESTA_APP_ID     the app namespace; every channel is scoped under it
+const ENV = (import.meta as unknown as {
+    env?: Record<string, string | undefined>;
+}).env ?? {};
+const APP_ID = ENV.VITE_VESTA_APP_ID ?? "chess";
+
+const LOBBY = `${APP_ID}/lobby`;
 const PRESENCE_TTL_SEC = 20;
 const PRESENCE_REPUBLISH_MS = 7_000;
 const PRESENCE_PRUNE_MS = 2_000;
@@ -66,6 +75,9 @@ const logoutBtn = $<HTMLButtonElement>("logout-btn");
 // ─── State ─────────────────────────────────────────────────────────────────
 
 const identity = loadOrCreateBrowserIdentity();
+if (ENV.VITE_VESTA_RELAY_URL) {
+    serverInput.value = ENV.VITE_VESTA_RELAY_URL;
+}
 meEl.textContent = `${identity.clientId.slice(0, 10)}…`;
 usernameInput.value =
     loadUsername() || `player-${identity.clientId.slice(0, 6)}`;
@@ -235,7 +247,7 @@ function saveDeclined(): void {
 // ─── Wire helpers ──────────────────────────────────────────────────────────
 
 function matchChannel(matchId: string): string {
-    return `chess/match/${matchId}`;
+    return `${APP_ID}/match/${matchId}`;
 }
 
 function publishLobby(

@@ -7,13 +7,14 @@ A tkinter GUI where each user picks a color from a wheel and sees
 all other connected users' current colors update in real time.
 
 Event schema
-  Channel:   colorwheel/{room}
+  Channel:   {appId}/{room}   (appId defaults to "colorwheel")
   Event:     app.colorwheel.update
   Payload:   { "color": "#rrggbb", "username": "..." }
   Volatile:  true  (no need to store colour in db, just relay to current subscribers)
   Replace:   true  (server keeps only the latest per user)
 
 Run:  python main.py [ws://host:port/ws] [room-name]
+Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
 """
 
 import asyncio
@@ -398,19 +399,43 @@ def prompt_username() -> str | None:
     return result[0]
 
 
+def resolve_identity(prefix: str) -> VestaIdentity:
+    """Load an identity from VESTA_IDENTITY_FILE (e.g. the ``{appId}.identity.json``
+    downloaded from Atrium) when set, otherwise use a local persistent identity."""
+    import base64
+    import json
+    import os
+
+    path = os.environ.get("VESTA_IDENTITY_FILE")
+    if path:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw = data["privateKey"]
+        raw += "=" * (-len(raw) % 4)  # restore base64url padding
+        return VestaIdentity.from_private_key(base64.urlsafe_b64decode(raw))
+    return load_or_create_identity(prefix)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import os
     import sys
 
-    server_url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER
-    room       = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_ROOM
-    channel    = f"colorwheel/{room}"
+    # Relay URL: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > default.
+    server_url = os.environ.get("VESTA_RELAY_URL") or (
+        sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER
+    )
+    room = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_ROOM
+    # App namespace = first channel segment. Set VESTA_APP_ID to the app id you
+    # provisioned in Atrium so the channel is scoped under it. Defaults to "colorwheel".
+    app_id = os.environ.get("VESTA_APP_ID", "colorwheel")
+    channel = f"{app_id}/{room}"
 
     username = prompt_username()
     if not username:
         sys.exit(0)
 
-    identity = load_or_create_identity(f"colorwheel-{room}-{username}")
+    identity = resolve_identity(f"colorwheel-{room}-{username}")
 
     root = tk.Tk()
     app  = App(root, username, identity, server_url, channel)

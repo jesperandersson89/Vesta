@@ -11,9 +11,13 @@ using VestaCore.Protocol;
 const int HeartbeatIntervalSeconds = 5;
 const int TtlSeconds = 15; // 3× heartbeat — user considered offline after this
 
-string serverUrl = args.Length > 0 ? args[0] : "ws://localhost:5150/ws";
+string serverUrl = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
+    ?? (args.Length > 0 ? args[0] : "ws://localhost:5150/ws");
 string appName = args.Length > 1 ? args[1] : "vesta-presence";
-string channel = $"presence/{appName}";
+// App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
+// provisioned in Atrium so the channel is scoped under it. Defaults to "presence".
+string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "presence";
+string channel = $"{appId}/{appName}";
 
 // ─── Username ─────────────────────────────────────────────────────────────────
 Console.Write("Enter your display name: ");
@@ -28,7 +32,10 @@ if (string.IsNullOrWhiteSpace(username))
 string vestaDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".vesta");
 Directory.CreateDirectory(vestaDir);
 
-string identityPath = Path.Combine(vestaDir, $"presence-{appName}-{username}-identity.json");
+// VESTA_IDENTITY_FILE lets you point at an identity downloaded from Atrium
+// (the app-owner key) instead of a per-user key generated locally.
+string identityPath = Environment.GetEnvironmentVariable("VESTA_IDENTITY_FILE")
+    ?? Path.Combine(vestaDir, $"presence-{appName}-{username}-identity.json");
 string dbPath = Path.Combine(vestaDir, $"presence-{appName}-{username}.db");
 string snapshotDbPath = Path.Combine(vestaDir, $"presence-{appName}-{username}-snapshots.db");
 

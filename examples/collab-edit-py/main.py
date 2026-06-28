@@ -7,7 +7,7 @@ A tkinter GUI where multiple users edit the same text document in real time.
 Uses last-writer-wins on the full document text, with debounced publishing.
 
 Event schema:
-  Channel:   collab-edit/{room}
+  Channel:   {appId}/{room}   (appId defaults to "collab-edit")
   Event:     app.collab.document-update
   Payload:   { "text": "...", "username": "...", "cursorPos": 42 }
   Replace:   true (server keeps only the latest version per user)
@@ -19,6 +19,7 @@ Conflict model:
   are deferred to avoid fighting with the user's input.
 
 Run:  python main.py [ws://host:port/ws] [room-name]
+Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
 """
 
 import asyncio
@@ -402,17 +403,42 @@ def prompt_username() -> str | None:
     return result[0]
 
 
+def resolve_identity(prefix: str) -> VestaIdentity:
+    """Load an identity from VESTA_IDENTITY_FILE (e.g. the ``{appId}.identity.json``
+    downloaded from Atrium) when set, otherwise use a local persistent identity."""
+    import base64
+    import json
+    import os
+
+    path = os.environ.get("VESTA_IDENTITY_FILE")
+    if path:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw = data["privateKey"]
+        raw += "=" * (-len(raw) % 4)  # restore base64url padding
+        return VestaIdentity.from_private_key(base64.urlsafe_b64decode(raw))
+    return load_or_create_identity(prefix)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    server_url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER
+    import os
+
+    # Relay URL: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > default.
+    server_url = os.environ.get("VESTA_RELAY_URL") or (
+        sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERVER
+    )
     room = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_ROOM
-    channel = f"collab-edit/{room}"
+    # App namespace = first channel segment. Set VESTA_APP_ID to the app id you
+    # provisioned in Atrium so the channel is scoped under it. Defaults to "collab-edit".
+    app_id = os.environ.get("VESTA_APP_ID", "collab-edit")
+    channel = f"{app_id}/{room}"
 
     username = prompt_username()
     if not username:
         sys.exit(0)
 
-    identity = load_or_create_identity(f"collab-edit-{room}-{username}")
+    identity = resolve_identity(f"collab-edit-{room}-{username}")
 
     root = tk.Tk()
     app = App(root, username, identity, server_url, channel)

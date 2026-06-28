@@ -4,12 +4,13 @@
  * A CLI tool that syncs your system clipboard across machines via Vesta.
  *
  * Event schema:
- *   Channel:   clipboard/{room}
+ *   Channel:   {appId}/{room}   (appId defaults to "clipboard")
  *   Event:     app.clipboard.update
  *   Payload:   { "text": "...", "username": "..." }
  *   Replace:   true (server keeps only the latest per user)
  *
  * Run:  npx tsx src/main.ts [ws://host:port/ws] [room-name]
+ * Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
  */
 
 import { createInterface } from "node:readline";
@@ -19,6 +20,7 @@ import {
     LwwMap,
     LwwMapUpdate,
     VestaConnection,
+    VestaIdentity,
     createEvent,
     loadOrCreateIdentity,
     type EventMessage,
@@ -30,8 +32,9 @@ import {
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const DEFAULT_SERVER = "ws://localhost:5150/ws";
-const DEFAULT_ROOM = "main";
-const POLL_INTERVAL_MS = 300;
+const DEFAULT_ROOM = "main";// App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
+// provisioned in Atrium so every channel is scoped under it. Defaults to "clipboard".
+const DEFAULT_APP_ID = "clipboard";const POLL_INTERVAL_MS = 300;
 
 // ── State ────────────────────────────────────────────────────────────────────
 interface ClipboardEntry {
@@ -145,11 +148,26 @@ function renderUI(
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
+/**
+ * Load an identity from VESTA_IDENTITY_FILE (e.g. the `{appId}.identity.json`
+ * downloaded from Atrium) when set, otherwise fall back to a local persistent
+ * identity stored under ~/.vesta.
+ */
+async function resolveIdentity(prefix: string): Promise<VestaIdentity> {
+    const file = process.env.VESTA_IDENTITY_FILE;
+    if (file) {
+        const { readFileSync } = await import("node:fs");
+        return VestaIdentity.fromJSON(JSON.parse(readFileSync(file, "utf-8")));
+    }
+    return loadOrCreateIdentity(prefix);
+}
+
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
-    const serverUrl = args[0] ?? DEFAULT_SERVER;
+    const serverUrl = process.env.VESTA_RELAY_URL ?? args[0] ?? DEFAULT_SERVER;
     const room = args[1] ?? DEFAULT_ROOM;
-    const channel = `clipboard/${room}`;
+    const appId = process.env.VESTA_APP_ID ?? DEFAULT_APP_ID;
+    const channel = `${appId}/${room}`;
 
     // Prompt for username
     const maybeUsername = await promptUsername();
@@ -158,9 +176,9 @@ async function main(): Promise<void> {
     }
     const username: string = maybeUsername;
 
-    const identity = await loadOrCreateIdentity(
-        `clipboard-${room}-${username}`,
-    );
+    // VESTA_IDENTITY_FILE lets you load an identity downloaded from Atrium
+    // (the app-owner key) instead of a per-room/user key generated locally.
+    const identity = await resolveIdentity(`clipboard-${room}-${username}`);
     const clientId = identity.clientId;
     const state = new LwwMap<string, ClipboardEntry>(clipboardProjector);
     let lastClipboard = "";
