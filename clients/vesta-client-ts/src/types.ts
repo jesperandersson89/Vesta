@@ -137,6 +137,10 @@ export interface ErrorMessage {
     type: "ERROR";
     code: string;
     message: string;
+    /** The event the error applied to, when the relay correlated it (e.g. publish rejections). */
+    eventId?: string;
+    /** The channel the failed request targeted, when the relay stamped it. */
+    channelId?: string;
 }
 
 /** Union of all client → server messages. */

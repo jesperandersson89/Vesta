@@ -61,6 +61,15 @@ public interface IClientEventStore
     Task MarkOutboxConfirmedAsync(Guid eventId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Mark an outbox entry as permanently rejected by the server (dead-letter).
+    /// The entry is retained for inspection but excluded from <see cref="GetPendingOutboxAsync"/>
+    /// so it is never retried. Used when the relay refuses an event for a reason that a retry
+    /// cannot fix (e.g. <c>QUOTA_EXCEEDED</c>, <c>ACCESS_DENIED</c>, <c>UNKNOWN_APP</c>).
+    /// </summary>
+    /// <param name="code">The server error code that caused the rejection.</param>
+    Task MarkOutboxRejectedAsync(Guid eventId, string code, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Get all channels that have cached events, with their latest sequence.
     /// Used on reconnect to request catch-up from the server.
     /// </summary>
@@ -82,5 +91,6 @@ public enum OutboxStatus
 {
     Pending,
     Sent,
-    Confirmed
+    Confirmed,
+    Rejected
 }

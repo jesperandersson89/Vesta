@@ -40,7 +40,17 @@ public sealed record AckMessage(
 /// <summary>
 /// SERVER → CLIENT: Error response.
 /// </summary>
+/// <remarks>
+/// When the error was triggered by a specific client request that carried an event
+/// (notably PUBLISH rejections — quota, rate-limit, access, signature), the server
+/// stamps <see cref="EventId"/> and <see cref="ChannelId"/> so the client can correlate
+/// the failure back to the exact publish. This lets the client stop retrying a doomed
+/// outbox entry and surface a precise "this event was limited" signal. Both fields are
+/// optional and remain null for connection-level errors that aren't tied to one event.
+/// </remarks>
 public sealed record ErrorMessage(
     string Code,
-    string Message
+    string Message,
+    Guid? EventId = null,
+    string? ChannelId = null
 ) : ProtocolMessage;

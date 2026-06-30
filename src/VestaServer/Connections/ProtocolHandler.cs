@@ -31,6 +31,17 @@ public sealed class ProtocolOptions
     /// and any namespace may be used implicitly.
     /// </summary>
     public bool RequireAppRegistration { get; set; }
+
+    /// <summary>
+    /// An optional operator allow-list of app IDs the server has acknowledged. When non-empty,
+    /// only these app namespaces may be used or registered — every other PUBLISH / SUBSCRIBE /
+    /// FETCH / CREATE_CHANNEL / REGISTER_APP is rejected with <c>APP_NOT_ALLOWED</c>. This is the
+    /// simple "flip a flag in appsettings" admission gate for self-hosters who don't want any app
+    /// connecting to their relay without prior acknowledgement; it applies independently of
+    /// <see cref="RequireAppRegistration"/>. When empty (default), no allow-list gating is applied
+    /// and the relay stays open. Protocol-reserved (<c>vesta/*</c>) channels are never gated.
+    /// </summary>
+    public IReadOnlyList<string> AllowedApps { get; set; } = [];
 }
 
 /// <summary>
@@ -250,7 +261,8 @@ public sealed class ProtocolHandler(
         if (!ChannelId.IsValid(publish.ChannelId))
         {
             await connection.SendAsync(
-                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{publish.ChannelId}'"),
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{publish.ChannelId}'",
+                    publish.Event.Id, publish.ChannelId),
                 cancellationToken);
             return;
         }
@@ -264,7 +276,9 @@ public sealed class ProtocolHandler(
             await connection.SendAsync(
                 new ErrorMessage(
                     "PROTOCOL_NAMESPACE_RESERVED",
-                    $"Channel '{publish.ChannelId}' is in the reserved 'vesta/' namespace; only events with type 'vesta.*' may be published there."),
+                    $"Channel '{publish.ChannelId}' is in the reserved 'vesta/' namespace; only events with type 'vesta.*' may be published there.",
+                    publish.Event.Id,
+                    publish.ChannelId),
                 cancellationToken);
             return;
         }
@@ -278,7 +292,8 @@ public sealed class ProtocolHandler(
         if (!await accessStore.CanAccessAsync(publish.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
-                new ErrorMessage("ACCESS_DENIED", $"Not authorized to publish to '{publish.ChannelId}'"),
+                new ErrorMessage("ACCESS_DENIED", $"Not authorized to publish to '{publish.ChannelId}'",
+                    publish.Event.Id, publish.ChannelId),
                 cancellationToken);
             return;
         }
@@ -292,7 +307,8 @@ public sealed class ProtocolHandler(
             !string.Equals(publish.Event.ClientId, connection.ClientId, StringComparison.Ordinal))
         {
             await connection.SendAsync(
-                new ErrorMessage("CLIENT_ID_MISMATCH", "Event clientId does not match connection clientId"),
+                new ErrorMessage("CLIENT_ID_MISMATCH", "Event clientId does not match connection clientId",
+                    publish.Event.Id, publish.ChannelId),
                 cancellationToken);
             return;
         }
@@ -303,7 +319,8 @@ public sealed class ProtocolHandler(
             if (string.IsNullOrEmpty(publish.Event.Signature))
             {
                 await connection.SendAsync(
-                    new ErrorMessage("SIGNATURE_REQUIRED", "Events must be signed when public key is registered"),
+                    new ErrorMessage("SIGNATURE_REQUIRED", "Events must be signed when public key is registered",
+                        publish.Event.Id, publish.ChannelId),
                     cancellationToken);
                 return;
             }
@@ -311,7 +328,8 @@ public sealed class ProtocolHandler(
             if (!EventSigner.VerifyEvent(publish.Event, connection.PublicKey))
             {
                 await connection.SendAsync(
-                    new ErrorMessage("INVALID_SIGNATURE", "Event signature verification failed"),
+                    new ErrorMessage("INVALID_SIGNATURE", "Event signature verification failed",
+                        publish.Event.Id, publish.ChannelId),
                     cancellationToken);
                 return;
             }
@@ -614,6 +632,17 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        // Operator allow-list gate: a self-hoster who pinned AllowedApps must have acknowledged
+        // this app id before it can be registered/claimed.
+        if (_options.AllowedApps.Count > 0 &&
+            !_options.AllowedApps.Contains(register.AppId, StringComparer.Ordinal))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("APP_NOT_ALLOWED", $"App '{register.AppId}' is not on this server's allow-list"),
+                cancellationToken);
+            return;
+        }
+
         if (appStore is null)
         {
             await connection.SendAsync(
@@ -719,13 +748,29 @@ public sealed class ProtocolHandler(
         string channelId,
         CancellationToken cancellationToken)
     {
-        if (!_options.RequireAppRegistration || appStore is null)
+        // Protocol-reserved channels (vesta/*) are not an "app" — they are part of the SDK
+        // surface itself (e.g. vesta/identity/{group}). Skip both gates so device-group
+        // bootstrap works on servers that otherwise restrict apps.
+        if (ChannelId.IsProtocolChannel(channelId))
             return true;
 
-        // Protocol-reserved channels (vesta/*) are not an "app" — they are part of the SDK
-        // surface itself (e.g. vesta/identity/{group}). Skip the app-registration check so
-        // device-group bootstrap works on servers that otherwise require app registration.
-        if (ChannelId.IsProtocolChannel(channelId))
+        // Operator allow-list gate (acknowledgement). When configured, only listed app
+        // namespaces may be used at all — independent of RequireAppRegistration / appStore.
+        if (_options.AllowedApps.Count > 0)
+        {
+            string? allowedAppId = AppId.ExtractFromChannelId(channelId);
+            if (allowedAppId is null || !_options.AllowedApps.Contains(allowedAppId, StringComparer.Ordinal))
+            {
+                await connection.SendAsync(
+                    new ErrorMessage(
+                        "APP_NOT_ALLOWED",
+                        $"App '{allowedAppId ?? channelId}' is not on this server's allow-list"),
+                    cancellationToken);
+                return false;
+            }
+        }
+
+        if (!_options.RequireAppRegistration || appStore is null)
             return true;
 
         string? appId = AppId.ExtractFromChannelId(channelId);
@@ -783,7 +828,9 @@ public sealed class ProtocolHandler(
                 await connection.SendAsync(
                     new ErrorMessage(
                         "QUOTA_EXCEEDED",
-                        $"Event payload ({size} B) exceeds max_payload_bytes ({maxBytes} B) for app '{appId}'"),
+                        $"Event payload ({size} B) exceeds max_payload_bytes ({maxBytes} B) for app '{appId}'",
+                        publish.Event.Id,
+                        publish.ChannelId),
                     cancellationToken);
                 return false;
             }
@@ -800,7 +847,9 @@ public sealed class ProtocolHandler(
                     await connection.SendAsync(
                         new ErrorMessage(
                             "QUOTA_EXCEEDED",
-                            $"App '{appId}' would exceed total_storage_bytes ({maxStorage} B; currently {current} B)"),
+                            $"App '{appId}' would exceed total_storage_bytes ({maxStorage} B; currently {current} B)",
+                            publish.Event.Id,
+                            publish.ChannelId),
                         cancellationToken);
                     return false;
                 }
@@ -817,7 +866,9 @@ public sealed class ProtocolHandler(
                 await connection.SendAsync(
                     new ErrorMessage(
                         "RATE_LIMITED",
-                        $"Publish rate exceeded ({rate}/min) for client on app '{appId}'"),
+                        $"Publish rate exceeded ({rate}/min) for client on app '{appId}'",
+                        publish.Event.Id,
+                        publish.ChannelId),
                     cancellationToken);
                 return false;
             }

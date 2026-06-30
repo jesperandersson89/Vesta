@@ -104,20 +104,28 @@ Vesta/
 
 ## Keeping Clients and Examples in Sync
 
-When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` shape, signing rules, metadata semantics, channel ACL, etc.) or in `src/VestaClient/`, you MUST sweep the other SDKs and the examples before declaring the task done:
+> **⚠️ TS & Python clients are SHELVED (temporary).** While the protocol and C# SDK are still in
+> flux, do **not** port new behavior to the TypeScript or Python clients — it triples the work on
+> a moving target. Treat **C# (`src/VestaClient/`) as the reference implementation** and let the
+> other two drift. Exception: tiny, zero-risk wire-type mirrors (e.g. adding an optional field to
+> a DTO) are fine to keep parsing from breaking, but skip behavior ports (outbox logic, classifiers,
+> reconnect, etc.). When the design settles we'll do a single catch-up sweep. If a change makes the
+> TS/Py clients meaningfully stale, just note it in the response — don't fix it.
 
-- **TypeScript client** — `clients/vesta-client-ts/src/` (`types.ts`, `events.ts`, `connection.ts`, `identity.ts`, `index.ts`). Mirror new fields, message types, signing rules.
-- **Python client** — `clients/vesta-client-py/vesta_client/` (`types.py`, `events.py`, `connection.py`, `identity.py`). Same mirror.
+When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` shape, signing rules, metadata semantics, channel ACL, etc.) or in `src/VestaClient/`, sweep the examples before declaring the task done (the TS/Py client sweep is paused per the note above):
+
+- **TypeScript client** — `clients/vesta-client-ts/src/` — SHELVED; wire-type mirror only, no behavior ports.
+- **Python client** — `clients/vesta-client-py/vesta_client/` — SHELVED; wire-type mirror only, no behavior ports.
 - **C# examples** — every `examples/*.CLI/` project that uses the changed surface. Build each affected project.
-- **TS/JS examples** — `examples/chess-web/`, `examples/clipboard-ts/` if affected.
-- **Python examples** — `examples/colorwheel-py/`, `examples/collab-edit-py/` if affected.
+- **TS/JS examples** — `examples/chess-web/`, `examples/clipboard-ts/` — SHELVED with the TS client.
+- **Python examples** — `examples/colorwheel-py/`, `examples/collab-edit-py/` — SHELVED with the Python client.
 
 Rules of thumb:
 
-- If you added a wire-level field (e.g. `metadata` on `VestaEvent`), all three client libraries must serialize / deserialize it round-trip and exclude it from signing input where applicable.
+- If you added a wire-level field (e.g. `metadata` on `VestaEvent`), the C# client must serialize / deserialize it round-trip and exclude it from signing input where applicable. (TS/Py: optional wire-type mirror only — see the shelving note above.)
 - If you added an SDK primitive (e.g. `VestaCore.Projections.*`), pick at least one example to refactor onto it as a smoke test — don't leave the primitive unused.
 - If an example would need a large rewrite, note that explicitly in the response instead of silently leaving it stale.
-- After edits, run `dotnet build Vesta.sln` and, for touched non-C# clients, the relevant `npm run build` / `python -m compileall` (or import-check) to confirm nothing rotted.
+- After edits, run `dotnet build Vesta.sln` and, for touched non-C# clients, the relevant `npm run build` / `python -m compileall` (or import-check) to confirm nothing rotted. (TS/Py are shelved — only run their builds if you made a wire-type mirror edit.)
 
 ## Documentation
 

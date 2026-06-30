@@ -19,6 +19,33 @@ The goal: if the server disappears tomorrow, the application still works locally
 | 3   | **Protocol over platform**              | Any client that speaks Vesta protocol can participate           |
 | 4   | **Offline-first**                       | Operations queue locally and sync when connectivity returns     |
 | 5   | **Conflict resolution is explicit**     | The protocol provides mechanisms; the app decides policy        |
+| 6   | **Endpoint fungibility**                | Connecting to a managed relay (Atrium) is indistinguishable from a self-hosted one — same protocol, no special client path |
+
+---
+
+## Managed vs Self-Hosted: Connection Parity
+
+There will always be a Vesta server to connect to. A central design constraint is that **it must not matter which one** — pointing an app at Atrium's managed relay and pointing it at a relay you run yourself must be the *same act*: a WebSocket URL + your Ed25519 identity, speaking the stock protocol. Atrium is "just an operator" of an ordinary `VestaServer`; it earns money on convenience (signup, dashboard, quotas, hosting), **never** on a proprietary connection.
+
+### Where there is genuinely no difference (and must stay that way)
+
+- **The wire.** `HELLO` / `WELCOME`, signed `VestaEvent`s, channels, `SUBSCRIBE` / `FETCH`, sequences — identical. Atrium runs unmodified `VestaServer`.
+- **Identity.** The same self-sovereign Ed25519 keypair works against any relay. No Atrium account is part of an app's runtime identity.
+- **The SDK.** `VestaClient` / `vesta-client-ts` / `vesta-client-py` contain **zero** Atrium-specific code — no managed-mode flag, no proprietary handshake, no Atrium-only headers or endpoints. If an app needs to know it's talking to Atrium, we've already failed.
+- **The admin surface.** `/admin/*` and `REGISTER_APP` ship in the OSS relay; a self-hoster gets the exact same provisioning/quota machinery Atrium uses.
+
+### Where a difference exists today — and the directive is to shrink it
+
+| Difference | Self-hosted (default) | Atrium (managed) | Directive |
+| --- | --- | --- | --- |
+| **Provisioning before connect** | Open mode: first `PUBLISH`/`SUBSCRIBE` implicitly creates the channel — no registration | App must be registered (`REGISTER_APP`) and is gated by tier quotas | Keep registration a **standard protocol step that also works on a self-hosted relay**, not an Atrium-only ritual. An app should bootstrap identically; "open mode" is just a relay that auto-approves. _Realized:_ a self-hoster can close the relay with a single `Protocol:AllowedApps` acknowledgement list (anything off-list → `APP_NOT_ALLOWED`), or stay open. |
+| **Quota / limit errors** | Typically unlimited | May return quota/storage limit errors | Express every limit through **standard protocol error codes** the SDK already handles, so the only observable difference is *whether* a limit trips, never *how* it's reported. _Realized:_ the relay stamps `eventId`/`channelId` on publish-limit errors; the C# SDK classifies them (`VestaErrorCodes`), raises a typed `OnLimited` signal, and dead-letters doomed outbox events so they don't retry forever. TS/Py mirror the wire fields; the typed behavior is C#-only so far. |
+| **Endpoint + identity bootstrap** | You bring your own URL + key | Atrium hands you a managed URL + a downloaded identity file | With relay-independence (`VestaAppConfig.defaultRelays` + owner-signed manifest), both collapse to "a URL (or list) + an identity." Migrating Atrium ⇄ self-hosted is a config/manifest change, **not** a code change. |
+| **Account / dashboard / billing** | None | Developer-facing portal | Developer-plane only — must never reach the app/runtime plane. |
+
+### The test we hold ourselves to
+
+Take any example app, swap its relay URL from a self-hosted `ws://…` to an Atrium endpoint (or vice versa), and it should run unchanged — no recompile, no SDK branch, no feature it loses. Any proposed feature that would make that swap require app-side changes is a **portability regression** and should be redesigned to live in the operator plane (Atrium) or be contributed generically to the OSS relay. This is the same fire as Principle #1: the value lives in the app + its data, not in whose server it happens to be pointed at.
 
 ---
 
@@ -55,6 +82,14 @@ The goal: if the server disappears tomorrow, the application still works locally
 | **vesta-client-py** | Python client library implementing the protocol        | Python (pip package)                      |
 
 Example apps (in `examples/`) consume these libraries to prove the protocol works across languages.
+
+> **⚠️ Decision (temporary): the TypeScript and Python clients are SHELVED.** While the protocol
+> and C# SDK are still in flux, **C# (`src/VestaClient/`) is the single reference implementation**.
+> New behavior (outbox/dead-letter logic, limit classification, reconnect, etc.) lands in C# only —
+> porting it three ways on a moving target is wasted work. The TS/Py clients are allowed to drift;
+> only trivial wire-type mirrors (e.g. an added optional DTO field) are kept current so parsing
+> doesn't break. When the design settles we'll do one deliberate catch-up sweep to bring all three
+> back to parity. Until then, "keep clients in sync" means **C# + examples**, not all three SDKs.
 
 ---
 

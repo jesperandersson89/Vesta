@@ -50,7 +50,16 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 | `EVENT`        | `EventMessage`       | A single real-time event pushed to subscribers: `(channelId, event, sequence, receivedAt)`.                                                                                                                                                                    |
 | `EVENTS_BATCH` | `EventsBatchMessage` | A batch of `SequencedEvent` (response to `FETCH` or initial catch-up after `HELLO`).                                                                                                                                                                           |
 | `ACK`          | `AckMessage`         | Acknowledges a `PUBLISH`: `(channelId, eventId, sequence)`.                                                                                                                                                                                                    |
-| `ERROR`        | `ErrorMessage`       | `(code, message)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), etc. |
+| `ERROR`        | `ErrorMessage`       | `(code, message, eventId?, channelId?)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), plus the per-app limit codes `RATE_LIMITED`, `QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED` (app not on the server's allow-list). On publish rejections the relay stamps the optional `eventId` / `channelId` so the client can correlate the failure to the exact event. |
+
+### Limits and the client's reaction
+
+When the relay limits an app (managed quotas on Atrium, or `AppQuotas` on a self-hosted server), the publish is rejected with an `ERROR` frame carrying the offending `eventId` / `channelId`. The C# client interprets these codes (see `VestaErrorCodes.Classify`) and:
+
+- raises a typed `OnLimited(VestaLimitNotice)` event (distinct from the raw `OnError`) so apps can back off, surface UI, or prompt an upgrade without string-matching codes;
+- **dead-letters** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`) are left in the outbox to retry later.
+
+The TypeScript and Python `ErrorMessage` types carry the same optional `eventId` / `channelId` fields; the typed limit/dead-letter behavior is currently C#-only.
 
 ## Wire format
 

@@ -47,6 +47,8 @@ public class AppQuotasTests : IClassFixture<WebApplicationFactory<Program>>
     ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(ws));
     Assert.Equal("QUOTA_EXCEEDED", error.Code);
     Assert.Contains("max_payload_bytes", error.Message);
+    Assert.Equal(big.Id, error.EventId);
+    Assert.Equal("sizeapp/chat", error.ChannelId);
 
     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
   }
@@ -92,6 +94,8 @@ public class AppQuotasTests : IClassFixture<WebApplicationFactory<Program>>
     await SendAsync(ws, new PublishMessage("rateapp/chat", overflow));
     ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(ws));
     Assert.Equal("RATE_LIMITED", error.Code);
+    Assert.Equal(overflow.Id, error.EventId);
+    Assert.Equal("rateapp/chat", error.ChannelId);
 
     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
   }

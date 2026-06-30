@@ -234,6 +234,24 @@ public sealed class SqliteClientEventStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task MarkOutboxRejectedAsync_RemovesEntryFromFlushSet()
+    {
+        // A doomed event (e.g. QUOTA_EXCEEDED) must be dead-lettered so the outbox
+        // never re-sends it on reconnect.
+        VestaEvent doomed = CreateEvent("test/rejected");
+        VestaEvent healthy = CreateEvent("test/rejected");
+        await _store.EnqueueOutboxAsync(doomed);
+        await _store.EnqueueOutboxAsync(healthy);
+        await _store.MarkOutboxSentAsync(doomed.Id);
+
+        await _store.MarkOutboxRejectedAsync(doomed.Id, "QUOTA_EXCEEDED");
+
+        IReadOnlyList<OutboxEntry> pending = await _store.GetPendingOutboxAsync();
+        Assert.Single(pending);
+        Assert.Equal(healthy.Id, pending[0].Event.Id);
+    }
+
+    [Fact]
     public async Task OutboxPreservesPayload()
     {
         JsonElement payload = JsonDocument.Parse("""{"task": "buy milk"}""").RootElement.Clone();

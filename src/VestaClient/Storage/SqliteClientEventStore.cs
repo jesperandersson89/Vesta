@@ -192,6 +192,17 @@ public sealed class SqliteClientEventStore : IClientEventStore, IDisposable
         return Task.CompletedTask;
     }
 
+    public Task MarkOutboxRejectedAsync(Guid eventId, string code, CancellationToken cancellationToken = default)
+    {
+        // Keep the row (dead-letter) but flip it out of the retry set. 'rejected' is excluded
+        // from GetPendingOutboxAsync, so a doomed event is never re-sent on reconnect.
+        using SqliteCommand cmd = _connection.CreateCommand();
+        cmd.CommandText = "UPDATE outbox SET status = 'rejected' WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", eventId.ToString());
+        cmd.ExecuteNonQuery();
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyDictionary<string, long>> GetChannelPositionsAsync(CancellationToken cancellationToken = default)
     {
         using SqliteCommand cmd = _connection.CreateCommand();
@@ -301,6 +312,7 @@ public sealed class SqliteClientEventStore : IClientEventStore, IDisposable
         {
             "sent" => OutboxStatus.Sent,
             "confirmed" => OutboxStatus.Confirmed,
+            "rejected" => OutboxStatus.Rejected,
             _ => OutboxStatus.Pending
         };
 

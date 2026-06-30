@@ -25,6 +25,7 @@ string serverUrl = relays[0].ToString();
 
 // App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
 // provisioned in Atrium so every channel is scoped under it. Defaults to "chat".
+
 string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "chat";
 string channel = args.Length > 1 ? args[1] : $"{appId}/general";
 

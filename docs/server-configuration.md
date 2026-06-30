@@ -28,6 +28,7 @@ The in-memory backend is intended for development and tests only — it loses ev
     "Protocol": {
         "RequireSignedEvents": false,
         "RequireAppRegistration": false,
+        "AllowedApps": [],
     },
 }
 ```
@@ -58,6 +59,20 @@ A client registers an app with `REGISTER_APP { appId }`. The connecting client b
 App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also stores nullable per-app quotas (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, `max_payload_bytes`, `total_storage_bytes`). All six are now enforced — see [App quotas & rate limits](#app-quotas--rate-limits).
 
 Leave registration off in development. Turn it on for shared / multi-tenant deployments where you want explicit ownership of namespaces.
+
+#### Allow-list (operator acknowledgement)
+
+`Protocol:RequireAppRegistration` lets *anyone* claim an unclaimed namespace (first `REGISTER_APP` wins). If you self-host and don't want **any** app touching your relay without your say-so, pin an allow-list:
+
+```jsonc
+{
+    "Protocol": {
+        "AllowedApps": ["myapp"]
+    }
+}
+```
+
+With a non-empty `AllowedApps`, only the listed app namespaces may be used or registered — every other `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` / `REGISTER_APP` is rejected with `ERROR { code: "APP_NOT_ALLOWED" }`. This gate is independent of `RequireAppRegistration`: listing your app is enough to make it work, and nothing else connects. Protocol-reserved (`vesta/*`) channels are never gated. Empty (the default) means no allow-list — the relay stays open so it's trivial to try out. This is intentionally a single config knob; deployments that need richer, dynamic admission can extend the server.
 
 ### App quotas & rate limits
 

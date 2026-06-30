@@ -105,6 +105,10 @@ class AckMessage:
 class ErrorMessage:
     code: str
     message: str
+    # Set by the relay when the error correlates to a specific event (e.g. publish
+    # rejections such as QUOTA_EXCEEDED / RATE_LIMITED) so the client can react precisely.
+    event_id: str | None = None
+    channel_id: str | None = None
 
 
 ServerMessage = WelcomeMessage | EventMessage | EventsBatchMessage | AckMessage | ErrorMessage
@@ -141,6 +145,8 @@ def parse_server_message(data: dict[str, Any]) -> ServerMessage:
             return ErrorMessage(
                 code=data["code"],
                 message=data["message"],
+                event_id=data.get("eventId"),
+                channel_id=data.get("channelId"),
             )
         case _:
             raise ValueError(f"Unknown message type: {msg_type}")

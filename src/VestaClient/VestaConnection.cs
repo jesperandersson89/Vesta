@@ -74,6 +74,14 @@ public sealed class VestaConnection : IAsyncDisposable
     public event Action<ErrorMessage>? OnError;
 
     /// <summary>
+    /// Fired when the relay limits or refuses the app — quota exhausted, publish rate exceeded,
+    /// app not registered, or access denied. This is the client's semantic interpretation of the
+    /// underlying <see cref="ErrorMessage"/>, so apps can react (back off, prompt an upgrade) without
+    /// string-matching error codes. <see cref="OnError"/> still fires for every error, limit or not.
+    /// </summary>
+    public event Action<VestaLimitNotice>? OnLimited;
+
+    /// <summary>
     /// Fired when the connection is closed.
     /// </summary>
     public event Action<string>? OnDisconnected;
@@ -510,7 +518,7 @@ public sealed class VestaConnection : IAsyncDisposable
             }
             else if (response is ErrorMessage error)
             {
-                OnError?.Invoke(error);
+                HandleErrorMessage(error);
             }
             else if (response is null)
             {
@@ -950,8 +958,36 @@ public sealed class VestaConnection : IAsyncDisposable
                 OnAck?.Invoke(ack);
                 break;
             case ErrorMessage error:
-                OnError?.Invoke(error);
+                HandleErrorMessage(error);
                 break;
+        }
+    }
+
+    private void HandleErrorMessage(ErrorMessage error)
+    {
+        // Always surface the raw error.
+        OnError?.Invoke(error);
+
+        VestaErrorCodes.Classification classification = VestaErrorCodes.Classify(error.Code);
+
+        // Dead-letter a doomed publish so the offline outbox never re-sends it on reconnect.
+        // Transient limits (e.g. RATE_LIMITED) are left in place to retry later.
+        if (error.EventId is Guid eventId && classification.IsEventFatal)
+        {
+            _pendingPublishes.Remove(eventId);
+            if (_localStore is not null)
+                _ = _localStore.MarkOutboxRejectedAsync(eventId, error.Code);
+        }
+
+        // Surface a typed limit signal so apps can react without string-matching codes.
+        if (classification.IsLimit)
+        {
+            OnLimited?.Invoke(new VestaLimitNotice(
+                error.Code,
+                error.Message,
+                error.ChannelId,
+                error.EventId,
+                classification.IsTransient));
         }
     }
 
