@@ -12,7 +12,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     const string sql = """
             SELECT id, owner_client_id, created_at,
                    max_payload_bytes, publish_rate_per_minute, max_channels,
-                   max_events_per_channel, retention_days, total_storage_bytes
+                   max_events_per_channel, retention_days, total_storage_bytes, discoverable
             FROM apps WHERE id = $1
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -31,7 +31,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
         reader.GetString(0),
         reader.GetString(1),
         reader.GetFieldValue<DateTimeOffset>(2),
-        quotas);
+        quotas,
+        reader.GetBoolean(9));
   }
 
   public async Task<bool> ExistsAsync(string appId, CancellationToken cancellationToken = default)
@@ -43,12 +44,13 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     return result is not null;
   }
 
-  public async Task RegisterAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default)
+  public async Task RegisterAsync(string appId, string ownerClientId, bool discoverable = false, CancellationToken cancellationToken = default)
   {
-    const string sql = "INSERT INTO apps (id, owner_client_id) VALUES ($1, $2)";
+    const string sql = "INSERT INTO apps (id, owner_client_id, discoverable) VALUES ($1, $2, $3)";
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ownerClientId });
+    cmd.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = discoverable });
     try
     {
       await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -57,6 +59,16 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     {
       throw new AppAlreadyRegisteredException(appId);
     }
+  }
+
+  public async Task<bool> SetDiscoverableAsync(string appId, bool discoverable, CancellationToken cancellationToken = default)
+  {
+    const string sql = "UPDATE apps SET discoverable = $2 WHERE id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = discoverable });
+    int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
+    return rows > 0;
   }
 
   public async Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default)
@@ -88,7 +100,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     const string sql = """
             SELECT id, owner_client_id, created_at,
                    max_payload_bytes, publish_rate_per_minute, max_channels,
-                   max_events_per_channel, retention_days, total_storage_bytes
+                   max_events_per_channel, retention_days, total_storage_bytes, discoverable
             FROM apps
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -107,7 +119,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
           reader.GetString(0),
           reader.GetString(1),
           reader.GetFieldValue<DateTimeOffset>(2),
-          quotas));
+          quotas,
+          reader.GetBoolean(9)));
     }
     return apps;
   }

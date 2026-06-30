@@ -29,11 +29,13 @@ public sealed record AppQuotas(
 /// <param name="OwnerClientId">The client that registered the app.</param>
 /// <param name="CreatedAt">When the app was registered.</param>
 /// <param name="Quotas">Per-app limits (see <see cref="AppQuotas"/>).</param>
+/// <param name="Discoverable">Whether the app owner has opted this app into server-to-server discovery (federation). When true and the host relay has discovery enabled, the relay advertises this app in its signed <c>ServerDescriptor</c>.</param>
 public sealed record AppInfo(
     string Id,
     string OwnerClientId,
     DateTimeOffset CreatedAt,
-    AppQuotas Quotas);
+    AppQuotas Quotas,
+    bool Discoverable = false);
 
 /// <summary>
 /// Server-side abstraction for app namespace registration.
@@ -57,7 +59,14 @@ public interface IAppStore
   /// Registers a new app namespace owned by <paramref name="ownerClientId"/>.
   /// Throws <see cref="AppAlreadyRegisteredException"/> if the app already exists.
   /// </summary>
-  Task RegisterAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default);
+  /// <param name="discoverable">Whether the owner opts this app into server-to-server discovery at registration time.</param>
+  Task RegisterAsync(string appId, string ownerClientId, bool discoverable = false, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Set the discoverability flag on an existing app (owner opt-in for federation).
+  /// Returns false if the app does not exist.
+  /// </summary>
+  Task<bool> SetDiscoverableAsync(string appId, bool discoverable, CancellationToken cancellationToken = default);
 
   /// <summary>
   /// Update the quotas attached to an existing app. Any <c>null</c> field clears that limit.

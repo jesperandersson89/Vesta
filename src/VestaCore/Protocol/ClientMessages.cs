@@ -40,8 +40,11 @@ public sealed record GrantAccessMessage(
 /// (PUBLISH, SUBSCRIBE, CREATE_CHANNEL) reject channels whose app namespace
 /// has not been registered. The connecting client becomes the app owner.
 /// </summary>
+/// <param name="AppId">The app namespace to claim.</param>
+/// <param name="Discoverable">When true, the owner opts the app into server-to-server discovery (federation) so discovery-enabled relays may advertise it.</param>
 public sealed record RegisterAppMessage(
-    string AppId
+    string AppId,
+    bool Discoverable = false
 ) : ProtocolMessage;
 
 /// <summary>

@@ -11,6 +11,13 @@ public sealed class AppEntity
   public string OwnerClientId { get; set; } = string.Empty;
   public DateTimeOffset CreatedAt { get; set; }
 
+  /// <summary>
+  /// Whether the app owner has opted this app into server-to-server discovery (federation).
+  /// When true and the host relay has discovery enabled, the relay advertises the app in its
+  /// signed server descriptor. Default false (opt-in).
+  /// </summary>
+  public bool Discoverable { get; set; }
+
   // === Reserved for TODO #9b (per-app quotas & rate limits) ===
   // Nullable means "no limit". Server does not enforce these yet.
   public int? MaxChannels { get; set; }

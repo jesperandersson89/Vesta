@@ -18,14 +18,27 @@ public sealed class InMemoryAppStore : IAppStore
   public Task<bool> ExistsAsync(string appId, CancellationToken cancellationToken = default)
       => Task.FromResult(_apps.ContainsKey(appId));
 
-  public Task RegisterAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default)
+  public Task RegisterAsync(string appId, string ownerClientId, bool discoverable = false, CancellationToken cancellationToken = default)
   {
-    AppInfo info = new(appId, ownerClientId, DateTimeOffset.UtcNow, AppQuotas.None);
+    AppInfo info = new(appId, ownerClientId, DateTimeOffset.UtcNow, AppQuotas.None, discoverable);
     if (!_apps.TryAdd(appId, info))
     {
       throw new AppAlreadyRegisteredException(appId);
     }
     return Task.CompletedTask;
+  }
+
+  public Task<bool> SetDiscoverableAsync(string appId, bool discoverable, CancellationToken cancellationToken = default)
+  {
+    while (true)
+    {
+      if (!_apps.TryGetValue(appId, out AppInfo? existing))
+        return Task.FromResult(false);
+
+      AppInfo updated = existing with { Discoverable = discoverable };
+      if (_apps.TryUpdate(appId, updated, existing))
+        return Task.FromResult(true);
+    }
   }
 
   public Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default)

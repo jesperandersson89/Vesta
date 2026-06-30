@@ -39,7 +39,7 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 | `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                                                                                                                                                                                                                                                      |
 | `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                                                                                                                                                                                                                                              |
 | `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin` role on a private channel.                                                                                                                                                                                                                                                                                |
-| `REGISTER_APP`   | `RegisterAppMessage`   | Register an app namespace (`appId`). Connecting client becomes the app owner. See [server-configuration.md](server-configuration.md#app-registration).                                                                                                                                                                                       |
+| `REGISTER_APP`   | `RegisterAppMessage`   | Register an app namespace (`appId`, optional `discoverable`). Connecting client becomes the app owner. `discoverable` opts the app into [server-to-server discovery](#server-to-server-discovery-federation). See [server-configuration.md](server-configuration.md#app-registration).                                                                                                                                                                                       |
 | `DELETE_CHANNEL` | `DeleteChannelMessage` | **Server admin only.** Soft-delete a channel: stamps a deletion tombstone. Existing events are retained for a future hard-delete sweep; further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel are rejected with `CHANNEL_DELETED`. Idempotent. See [server-configuration.md](server-configuration.md#server-admins). |
 
 ## Server → Client messages
@@ -143,6 +143,83 @@ and adopts newer manifests (anti-rollback), and fails over across the resolved c
 per-app wiring. Apps connect with `ConnectAsync(channels)` (relays come from the config) and can
 surface the user escape hatch via `SetUserRelayOverrideAsync` / `ClearUserRelayOverrideAsync`. The
 TypeScript and Python clients ship the same primitives but still attach the directory explicitly.
+
+
+## Server-to-server discovery (federation)
+
+Relay manifests cover the **planned** migration: the owner pre-lists relays and signs them. But
+if a relay dies and the owner never published a fresh manifest, a client's candidate list can run
+dry. Federation is the **recovery** path — relays optionally gossip signed self-descriptions to
+each other, so a client reaching any one relay in the mesh can ask "who *else* hosts this app?"
+**without a central hub.**
+
+This is an HTTP side-channel; it does **not** add any WebSocket message. It is off by default and
+enabled per relay via `Discovery:Enabled` (see
+[server-configuration.md](server-configuration.md#server-to-server-discovery-federation)).
+
+### Dual opt-in
+
+A relay only advertises an app when **both** parties agree:
+
+1. **The relay operator** turns on `Discovery:Enabled`.
+2. **The app owner** sets the per-app `discoverable` flag — either at registration
+   (`REGISTER_APP { appId, discoverable: true }`) or later via the admin API
+   (`PATCH /admin/apps/{id}/discoverable`). This is a relay-side metadata flag, **not** parsed
+   from any event payload, so the relay still never interprets app data.
+
+### Server descriptor
+
+Each discovery-enabled relay maintains a signed `ServerDescriptor` advertising itself and the
+discoverable apps it hosts:
+
+```jsonc
+{
+  "relayPublicKey": "<base64url>",          // the relay's Ed25519 identity (and signer)
+  "urls": ["wss://r1.example/ws"],          // publicly reachable WebSocket URLs, preference order
+  "apps": [
+    { "appId": "myapp", "ownerClientId": "<base64url[:22]>" }  // owner client id = sha256(ownerPublicKey)[:22]
+  ],
+  "issuedAt": "2025-01-01T00:00:00Z",
+  "ttlSeconds": 300,                         // peers evict the descriptor once this expires
+  "signature": "<base64url>"                 // Ed25519 over the RFC 8785 (JCS) canonicalization of all other fields
+}
+```
+
+The descriptor is **self-signed**: the relay declares its own `relayPublicKey` and signs with the
+matching key, so a descriptor relayed through untrusted peers cannot be altered in flight.
+
+### HTTP surface
+
+Mapped only when `Discovery:Enabled`. All three are unauthenticated reads of already-public,
+signed descriptors:
+
+| Endpoint                       | Returns                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `GET /federation/descriptor`   | This relay's own freshly-signed descriptor.                             |
+| `GET /federation/peers`        | Every descriptor this relay knows (its own + gossiped peers), deduped.  |
+| `GET /federation/apps/{appId}` | Descriptors (own + peers) that advertise the given app.                 |
+
+### Gossip (anti-entropy pull)
+
+A discovery-enabled relay runs a background loop (`Discovery:GossipIntervalSeconds`, default 60 s)
+that pulls `/federation/descriptor` and `/federation/peers` from its configured `Discovery:Seeds`
+and from relays it has already learned about, verifies each descriptor's signature, drops expired
+ones, and merges the rest (last-write-wins by `issuedAt`, capped at `Discovery:MaxPeers`). This
+Matrix-style pull mesh converges without any relay being authoritative.
+
+### Trust model — discovered relays are show-only
+
+A signed descriptor proves the relay **authored** it and that it **claims** to host an app — it
+cannot prove the relay actually carries the app's data, and a relay can lie about its `apps`. So
+discovery is deliberately **show-only**:
+
+- The C# client (`FederationClient.DiscoverRelaysForAppAsync` / `ListAllRelaysAsync`) verifies
+  every descriptor signature **and** cross-checks each advertised `ownerClientId` against the app's
+  compiled-in trust anchor (`VestaIdentity.DeriveClientId(VestaAppConfig.OwnerPublicKey)`), dropping
+  relays that advertise the app under a different owner.
+- Surviving relays are returned as **unverified candidates**. They are **never auto-adopted** —
+  owner-signed manifest relays remain the only automatic failover tier. The user adopts a
+  discovered relay manually via the existing `SetUserRelayOverrideAsync` escape hatch.
 
 
 ## See also

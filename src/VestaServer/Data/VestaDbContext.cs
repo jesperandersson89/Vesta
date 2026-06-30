@@ -93,6 +93,8 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.OwnerClientId).HasColumnName("owner_client_id").IsRequired();
             entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
 
+            entity.Property(e => e.Discoverable).HasColumnName("discoverable").HasDefaultValue(false);
+
             // Reserved for TODO #9b — all nullable, server does not enforce yet.
             entity.Property(e => e.MaxChannels).HasColumnName("max_channels");
             entity.Property(e => e.MaxEventsPerChannel).HasColumnName("max_events_per_channel");

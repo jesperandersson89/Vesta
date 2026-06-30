@@ -64,4 +64,44 @@ public class InMemoryAppStoreTests
     InMemoryAppStore store = new();
     Assert.False(await store.SetQuotasAsync("nope", new AppQuotas(MaxPayloadBytes: 1)));
   }
+
+  [Fact]
+  public async Task Register_DefaultsToNotDiscoverable()
+  {
+    InMemoryAppStore store = new();
+    await store.RegisterAsync("myapp", "client-1");
+
+    AppInfo info = (await store.GetAsync("myapp"))!;
+    Assert.False(info.Discoverable);
+  }
+
+  [Fact]
+  public async Task Register_HonoursDiscoverableFlag()
+  {
+    InMemoryAppStore store = new();
+    await store.RegisterAsync("myapp", "client-1", discoverable: true);
+
+    AppInfo info = (await store.GetAsync("myapp"))!;
+    Assert.True(info.Discoverable);
+  }
+
+  [Fact]
+  public async Task SetDiscoverable_RoundTrips()
+  {
+    InMemoryAppStore store = new();
+    await store.RegisterAsync("myapp", "client-1");
+
+    Assert.True(await store.SetDiscoverableAsync("myapp", true));
+    Assert.True((await store.GetAsync("myapp"))!.Discoverable);
+
+    Assert.True(await store.SetDiscoverableAsync("myapp", false));
+    Assert.False((await store.GetAsync("myapp"))!.Discoverable);
+  }
+
+  [Fact]
+  public async Task SetDiscoverable_UnknownApp_ReturnsFalse()
+  {
+    InMemoryAppStore store = new();
+    Assert.False(await store.SetDiscoverableAsync("nope", true));
+  }
 }

@@ -1,6 +1,7 @@
 ﻿using System.Text;
 using System.Text.Json;
 using VestaClient;
+using VestaClient.Federation;
 using VestaClient.Relay;
 using VestaClient.Storage;
 using VestaCore.Events;
@@ -344,6 +345,8 @@ async Task HandleCommandAsync(string input)
                 Console.WriteLine("    /relays                            show the current relay candidate list");
                 Console.WriteLine("    /relay use <ws-url>                set a local relay override and switch to it");
                 Console.WriteLine("    /relay clear                       clear the local override (back to manifest/defaults)");
+                Console.WriteLine("    /discover                          find OTHER relays that host this app (federation)");
+                Console.WriteLine("    /discover all                      browse every relay the current relay knows about");
                 Console.WriteLine("    /publish-manifest <url> [url...]   sign & publish an owner relay manifest");
                 Console.WriteLine("    /help                              show this help");
                 Console.ResetColor();
@@ -407,6 +410,10 @@ async Task HandleCommandAsync(string input)
 
         case "/publish-manifest":
             await PublishManifestAsync(parts);
+            break;
+
+        case "/discover":
+            await DiscoverRelaysAsync(parts);
             break;
 
         default:
@@ -478,6 +485,61 @@ async Task PublishManifestAsync(string[] parts)
     {
         Console.ForegroundColor = ConsoleColor.DarkCyan;
         Console.WriteLine($"  Published owner manifest v{nextVersion} with {endpoints.Count} relay(s).");
+        Console.ResetColor();
+    });
+}
+
+// ─── Federation discovery ────────────────────────────────────────────────────
+// Ask a reachable relay which OTHER relays host this app (or browse them all). This is the
+// recovery path for when your home relay is dying but the owner never published a fresh
+// manifest: relays gossip signed self-descriptors, so any one of them can point you at peers.
+// Discovered relays are SHOW-ONLY — we verify each descriptor's signature and that the
+// advertised owner matches this app's trust anchor, but the user still adopts one manually
+// with `/relay use <ws-url>` (owner-signed manifests stay the only automatic failover tier).
+async Task DiscoverRelaysAsync(string[] parts)
+{
+    bool browseAll = parts.Length >= 2 && parts[1].Equals("all", StringComparison.OrdinalIgnoreCase);
+
+    // Use whichever relay we can currently reach as the federation entry point.
+    Uri? entryRelay = connection.ActiveRelay ?? connection.Relays.FirstOrDefault();
+    if (entryRelay is null || !FederationClient.ToFederationBaseUrl(entryRelay, out Uri? federationBase) || federationBase is null)
+    {
+        PrintAboveInput(() =>
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("  No reachable relay to query for discovery.");
+            Console.ResetColor();
+        });
+        return;
+    }
+
+    FederationClient federation = new(appConfig);
+    IReadOnlyList<DiscoveredRelay> found = browseAll
+        ? await federation.ListAllRelaysAsync(federationBase)
+        : await federation.DiscoverRelaysForAppAsync(federationBase);
+
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
+        if (found.Count == 0)
+        {
+            Console.WriteLine(browseAll
+                ? $"  No relays known to {federationBase.Host} (is discovery enabled there?)."
+                : $"  No other relays found hosting '{appId}'. Try /discover all to browse the mesh.");
+        }
+        else
+        {
+            Console.WriteLine(browseAll
+                ? $"  Relays known to the mesh ({found.Count}) — adopt one with /relay use <ws-url>:"
+                : $"  Relays hosting '{appId}' ({found.Count}) — adopt one with /relay use <ws-url>:");
+            foreach (DiscoveredRelay r in found)
+            {
+                string flag = r.HostsRequestedApp ? "hosts app" : "unknown";
+                string url = r.Urls.Count > 0 ? r.Urls[0].ToString() : "(no url)";
+                Console.WriteLine($"    {url}  [{flag}, key {r.RelayPublicKey[..Math.Min(12, r.RelayPublicKey.Length)]}…]");
+            }
+            Console.WriteLine("  (show-only: signatures verified, but the relay may still not carry the data)");
+        }
         Console.ResetColor();
     });
 }

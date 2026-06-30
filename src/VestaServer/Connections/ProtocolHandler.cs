@@ -653,7 +653,7 @@ public sealed class ProtocolHandler(
 
         try
         {
-            await appStore.RegisterAsync(register.AppId, connection.ClientId, cancellationToken);
+            await appStore.RegisterAsync(register.AppId, connection.ClientId, register.Discoverable, cancellationToken);
         }
         catch (AppAlreadyRegisteredException)
         {

@@ -1,10 +1,13 @@
 using System.Net.WebSockets;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Npgsql;
+using VestaCore.Identity;
 using VestaCore.Storage;
 using VestaServer.Admin;
 using VestaServer.Connections;
 using VestaServer.Data;
+using VestaServer.Federation;
 using VestaServer.Storage;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -78,6 +81,25 @@ builder.Services.AddSingleton<IAdminStore, ConfigAdminStore>();
 builder.Services.Configure<AdminApiOptions>(builder.Configuration.GetSection("AdminApi"));
 builder.Services.AddSingleton<AdminAuthService>();
 
+// Opt-in server-to-server discovery (federation). Default off: no endpoints, no gossip.
+DiscoveryOptions discovery = builder.Configuration.GetSection("Discovery").Get<DiscoveryOptions>() ?? new DiscoveryOptions();
+builder.Services.Configure<DiscoveryOptions>(builder.Configuration.GetSection("Discovery"));
+if (discovery.Enabled)
+{
+    builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<VestaIdentity>(sp =>
+    {
+        ILogger logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("VestaServer.Federation");
+        DiscoveryOptions opts = sp.GetRequiredService<IOptions<DiscoveryOptions>>().Value;
+        return RelayIdentityLoader.LoadOrCreate(opts, builder.Environment.ContentRootPath, logger);
+    });
+    builder.Services.AddSingleton<IServerDirectory>(sp =>
+        new InMemoryServerDirectory(sp.GetRequiredService<TimeProvider>(), discovery.MaxPeers));
+    builder.Services.AddSingleton<LocalDescriptorProvider>();
+    builder.Services.AddHttpClient();
+    builder.Services.AddHostedService<FederationGossipService>();
+}
+
 WebApplication app = builder.Build();
 
 // Apply pending migrations on startup (only when using PostgreSQL)
@@ -93,6 +115,12 @@ app.UseWebSockets();
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapAdminApi();
+
+// Federation surface (server-to-server discovery), only when enabled.
+if (discovery.Enabled)
+{
+    app.MapFederationApi();
+}
 
 // Serve the static admin GUI from /admin (single-page vanilla HTML).
 app.UseDefaultFiles(new Microsoft.AspNetCore.Builder.DefaultFilesOptions

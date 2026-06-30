@@ -120,6 +120,7 @@ public static class AdminEndpoints
         ownerClientId = a.OwnerClientId,
         createdAt = a.CreatedAt,
         quotas = a.Quotas,
+        discoverable = a.Discoverable,
         storageBytes = accountant.Get(a.Id),
       }));
     });
@@ -140,6 +141,7 @@ public static class AdminEndpoints
         ownerClientId = app.OwnerClientId,
         createdAt = app.CreatedAt,
         quotas = app.Quotas,
+        discoverable = app.Discoverable,
         storageBytes = accountant.Get(app.Id),
         channelCount,
       });
@@ -159,6 +161,22 @@ public static class AdminEndpoints
       log.LogInformation("Quotas updated for app '{App}' by admin {PublicKey}",
           id, ctx.Items[AdminContext.PublicKeyHexItem]);
       return Results.Ok(new { id, quotas = req });
+    });
+
+    admin.MapPatch("/apps/{id}/discoverable", async (
+        HttpContext ctx,
+        string id,
+        AppDiscoverableRequest req,
+        IAppStore apps,
+        ILoggerFactory loggers,
+        CancellationToken ct) =>
+    {
+      bool updated = await apps.SetDiscoverableAsync(id, req.Discoverable, ct);
+      if (!updated) return Results.NotFound();
+      ILogger log = loggers.CreateLogger("VestaServer.Admin");
+      log.LogInformation("Discoverable set to {Discoverable} for app '{App}' by admin {PublicKey}",
+          req.Discoverable, id, ctx.Items[AdminContext.PublicKeyHexItem]);
+      return Results.Ok(new { id, discoverable = req.Discoverable });
     });
 
     // ── Metrics ──────────────────────────────────────────────────────────
@@ -204,3 +222,7 @@ public sealed record AdminVerifyRequest(
     [property: JsonPropertyName("publicKey")] string PublicKey,
     [property: JsonPropertyName("nonce")] string Nonce,
     [property: JsonPropertyName("signature")] string Signature);
+
+/// <summary>Request body for <c>PATCH /admin/apps/{id}/discoverable</c>.</summary>
+public sealed record AppDiscoverableRequest(
+    [property: JsonPropertyName("discoverable")] bool Discoverable);

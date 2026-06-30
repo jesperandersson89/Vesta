@@ -54,7 +54,7 @@ A Vesta server can be configured to require every channel namespace to belong to
 
 With `Protocol:RequireAppRegistration = true`, the server rejects `PUBLISH`, `SUBSCRIBE`, `FETCH`, `CREATE_CHANNEL`, and resume-on-`HELLO` operations whose channel namespace is not registered, with an `ERROR { code: "UNKNOWN_APP" }` frame.
 
-A client registers an app with `REGISTER_APP { appId }`. The connecting client becomes the app owner. Re-registering an existing app returns `ERROR { code: "DUPLICATE_APP" }`.
+A client registers an app with `REGISTER_APP { appId }`. The connecting client becomes the app owner. Re-registering an existing app returns `ERROR { code: "DUPLICATE_APP" }`. The owner may also pass `REGISTER_APP { appId, discoverable: true }` to opt the app into [server-to-server discovery](#server-to-server-discovery-federation); this can be toggled later via `PATCH /admin/apps/{id}/discoverable`.
 
 App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also stores nullable per-app quotas (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, `max_payload_bytes`, `total_storage_bytes`). All six are now enforced — see [App quotas & rate limits](#app-quotas--rate-limits).
 
@@ -218,6 +218,60 @@ WHERE id IN (
 ```
 
 Enable the sweep in production deployments where you actually use TTL events (e.g. presence channels). Tune `Interval` and `BatchSize` based on your event volume.
+
+## Server-to-server discovery (federation)
+
+Relays can optionally gossip signed self-descriptions to each other so a client whose relays are
+all failing can discover *other* relays hosting the same app — the recovery path when the owner
+never published a fresh [relay manifest](protocol.md#relay-manifests-server-independence). There is
+**no central hub**: relays pull each other's descriptors by anti-entropy and any one reachable
+relay can answer "who else hosts this app?". See
+[protocol.md](protocol.md#server-to-server-discovery-federation) for the wire shapes and trust model.
+
+Federation is **off by default** and enabled per relay:
+
+```jsonc
+{
+    "Discovery": {
+        "Enabled": false,                    // master switch; maps /federation/* + runs the gossip loop
+        "Seeds": [                           // HTTP(S) base URLs of relays to bootstrap gossip from
+            "https://relay-a.example",
+        ],
+        "PublicUrls": [                      // this relay's own WebSocket URLs to advertise
+            "wss://relay-b.example/ws",
+        ],
+        "SigningKey": null,                  // base64url Ed25519 seed for the relay identity (see below)
+        "GossipIntervalSeconds": 60,         // how often to pull from seeds + known peers (min 5)
+        "DescriptorTtlSeconds": 300,         // how long this relay's descriptor stays valid
+        "MaxPeers": 256,                     // cap on remembered peer descriptors (oldest evicted)
+    },
+}
+```
+
+**Dual opt-in.** A relay advertises an app only when *both* the operator enabled `Discovery` **and**
+the app owner set the per-app `discoverable` flag (at `REGISTER_APP` or via `PATCH
+/admin/apps/{id}/discoverable`). `discoverable` is relay-side metadata — it is never parsed from an
+event payload, so the relay keeps interpreting nothing about app data.
+
+**Relay identity.** Descriptors are self-signed with an Ed25519 relay key. If `SigningKey` is set
+(base64url seed) it is used directly; otherwise the relay loads or generates a key at
+`{ContentRoot}/.vesta/relay-key.json` (a warning is logged when it generates one, since a
+throwaway key changes the relay's advertised identity on each fresh deployment). The relay key is a
+federation identity only — it is unrelated to `Admin:BootstrapPublicKeys` and grants no admin
+rights.
+
+**HTTP surface** (mapped only when `Discovery:Enabled`, all unauthenticated reads):
+
+| Endpoint                       | Returns                                                                |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `GET /federation/descriptor`   | This relay's own freshly-signed descriptor.                            |
+| `GET /federation/peers`        | Every descriptor this relay knows (own + gossiped peers), deduped.     |
+| `GET /federation/apps/{appId}` | Descriptors (own + peers) that advertise the given app.                |
+
+**Trust.** A descriptor proves only that the relay authored it and *claims* to host an app; a relay
+can lie. Clients therefore treat discovered relays as **show-only** — they verify the signature and
+cross-check the advertised owner against the app's trust anchor, then present survivors for the user
+to adopt manually. Owner-signed manifest relays remain the only **automatic** failover tier.
 
 ## EF Core migrations
 
