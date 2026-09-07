@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using VestaCore.Identity;
 using VestaCore.Utilities;
 
@@ -157,6 +158,67 @@ public class AdminApiTests : IClassFixture<AdminApiTests.Fixture>
     Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
     Assert.Equal(JsonValueKind.Array, body.ValueKind);
+  }
+
+  [Fact]
+  public async Task GetUsage_UnknownApp_Returns404()
+  {
+    HttpClient client = await GetAuthenticatedClientAsync();
+    HttpResponseMessage resp = await client.GetAsync("/admin/apps/never-registered/usage");
+    Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+  }
+
+  [Fact]
+  public async Task GetUsage_RegisteredApp_ReturnsRollup()
+  {
+    VestaServer.Storage.IAppStore appStore = _fixture.Factory.Services.GetRequiredService<VestaServer.Storage.IAppStore>();
+    await appStore.RegisterAsync("usageapp", "owner-usage");
+    await appStore.SetQuotasAsync("usageapp", new VestaServer.Storage.AppQuotas(MaxMessagesPerMonth: 100));
+
+    HttpClient client = await GetAuthenticatedClientAsync();
+    HttpResponseMessage resp = await client.GetAsync("/admin/apps/usageapp/usage");
+    Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+    JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+    Assert.Equal("usageapp", body.GetProperty("id").GetString());
+    Assert.True(body.TryGetProperty("periodStart", out _));
+    Assert.True(body.TryGetProperty("messages", out _));
+    Assert.True(body.TryGetProperty("storageBytes", out _));
+    Assert.Equal(0, body.GetProperty("channelCount").GetInt32());
+    Assert.Equal(100, body.GetProperty("quotas").GetProperty("maxMessagesPerMonth").GetInt64());
+  }
+
+  [Fact]
+  public async Task SetOwner_RegisteredApp_RebindsOwner()
+  {
+    VestaServer.Storage.IAppStore appStore = _fixture.Factory.Services.GetRequiredService<VestaServer.Storage.IAppStore>();
+    await appStore.RegisterAsync("ownerapp", "owner-original");
+
+    HttpClient client = await GetAuthenticatedClientAsync();
+    HttpResponseMessage resp = await client.PatchAsJsonAsync("/admin/apps/ownerapp/owner", new { ownerClientId = "owner-rotated" });
+    Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+    VestaServer.Storage.AppInfo? app = await appStore.GetAsync("ownerapp");
+    Assert.Equal("owner-rotated", app?.OwnerClientId);
+  }
+
+  [Fact]
+  public async Task SetOwner_UnknownApp_Returns404()
+  {
+    HttpClient client = await GetAuthenticatedClientAsync();
+    HttpResponseMessage resp = await client.PatchAsJsonAsync("/admin/apps/never-registered/owner", new { ownerClientId = "someone" });
+    Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+  }
+
+  [Fact]
+  public async Task SetOwner_EmptyClientId_Returns400()
+  {
+    VestaServer.Storage.IAppStore appStore = _fixture.Factory.Services.GetRequiredService<VestaServer.Storage.IAppStore>();
+    await appStore.RegisterAsync("emptyownerapp", "owner-original");
+
+    HttpClient client = await GetAuthenticatedClientAsync();
+    HttpResponseMessage resp = await client.PatchAsJsonAsync("/admin/apps/emptyownerapp/owner", new { ownerClientId = "" });
+    Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────

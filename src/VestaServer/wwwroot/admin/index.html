@@ -549,6 +549,7 @@
                 const detail = document.getElementById("appDetail");
                 detail.innerHTML = `<p class="muted">Loading…</p>`;
                 const a = await api("/admin/apps/" + encodeURIComponent(id));
+                const usage = await api("/admin/apps/" + encodeURIComponent(id) + "/usage");
                 const q = a.quotas;
                 detail.innerHTML = `
         <div class="card">
@@ -556,8 +557,8 @@
           <div class="muted">Owner <code>${a.ownerClientId}</code> · created ${new Date(a.createdAt).toLocaleString()}</div>
           <div class="grid grid-3" style="margin-top:12px">
             <div><div class="muted">Storage used</div><div style="font-size:18px">${a.storageBytes.toLocaleString()} B</div></div>
+            <div><div class="muted">Messages this period</div><div style="font-size:18px">${(usage.messages ?? 0).toLocaleString()} <span class="muted" style="font-size:12px">since ${usage.periodStart}</span></div></div>
             <div><div class="muted">Channels</div><div style="font-size:18px">${a.channelCount}</div></div>
-            <div><div class="muted">Owner</div><div style="font-size:18px"><code>${a.ownerClientId.slice(0, 16)}…</code></div></div>
           </div>
           <h3 style="color:var(--muted);font-weight:500;font-size:13px;text-transform:uppercase">Quotas</h3>
           <div class="grid grid-2">
@@ -567,6 +568,7 @@
             <label>Max events / channel <input id="q_ev" type="number" value="${q.maxEventsPerChannel}" /></label>
             <label>Retention days <input id="q_ret" type="number" value="${q.retentionDays}" /></label>
             <label>Total storage bytes <input id="q_sto" type="number" value="${q.totalStorageBytes}" /></label>
+            <label>Max messages / month <input id="q_msg" type="number" value="${q.maxMessagesPerMonth}" /></label>
           </div>
           <div style="margin-top:12px"><button class="primary" id="saveQuotas">Save quotas</button></div>
         </div>
@@ -583,6 +585,8 @@
                         retentionDays: +document.getElementById("q_ret").value,
                         totalStorageBytes:
                             +document.getElementById("q_sto").value,
+                        maxMessagesPerMonth:
+                            +document.getElementById("q_msg").value,
                     };
                     await api(
                         "/admin/apps/" + encodeURIComponent(id) + "/quotas",

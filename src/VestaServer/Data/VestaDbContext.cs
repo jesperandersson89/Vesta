@@ -15,6 +15,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
     public DbSet<ChannelSequenceEntity> ChannelSequences => Set<ChannelSequenceEntity>();
     public DbSet<ChannelAccessEntity> ChannelAccess => Set<ChannelAccessEntity>();
     public DbSet<AppEntity> Apps => Set<AppEntity>();
+    public DbSet<AppUsageEntity> AppUsage => Set<AppUsageEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -102,8 +103,20 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.PublishRatePerMinute).HasColumnName("publish_rate_per_minute");
             entity.Property(e => e.RetentionDays).HasColumnName("retention_days");
             entity.Property(e => e.TotalStorageBytes).HasColumnName("total_storage_bytes");
+            entity.Property(e => e.MaxMessagesPerMonth).HasColumnName("max_messages_per_month");
 
             entity.HasIndex(e => e.OwnerClientId).HasDatabaseName("IX_apps_owner_client_id");
+        });
+
+        // === app_usage ===
+        modelBuilder.Entity<AppUsageEntity>(entity =>
+        {
+            entity.ToTable("app_usage");
+            entity.HasKey(e => new { e.AppId, e.PeriodStart });
+            entity.Property(e => e.AppId).HasColumnName("app_id");
+            entity.Property(e => e.PeriodStart).HasColumnName("period_start").HasColumnType("date");
+            entity.Property(e => e.Messages).HasColumnName("messages").HasDefaultValue(0L);
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
         });
     }
 }

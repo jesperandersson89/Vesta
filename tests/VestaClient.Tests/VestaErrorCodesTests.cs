@@ -20,6 +20,7 @@ public sealed class VestaErrorCodesTests
 
     [Theory]
     [InlineData("QUOTA_EXCEEDED")]
+    [InlineData("MESSAGE_QUOTA_EXCEEDED")]
     [InlineData("UNKNOWN_APP")]
     [InlineData("ACCESS_DENIED")]
     [InlineData("APP_NOT_ALLOWED")]

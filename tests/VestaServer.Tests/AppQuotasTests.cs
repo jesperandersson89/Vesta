@@ -197,6 +197,56 @@ public class AppQuotasTests : IClassFixture<WebApplicationFactory<Program>>
     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
   }
 
+  [Fact]
+  public async Task Publish_OverMaxMessagesPerMonth_RejectedWithMessageQuotaExceeded()
+  {
+    IAppStore store = _factory.Services.GetRequiredService<IAppStore>();
+    IAppUsageAccountant usage = _factory.Services.GetRequiredService<IAppUsageAccountant>();
+
+    await store.RegisterAsync("messageapp", "owner-8");
+    await store.SetQuotasAsync("messageapp", new AppQuotas(MaxMessagesPerMonth: 3));
+
+    // Seed the cached rollup as if a pruner sweep already measured 3 messages this period.
+    usage.SetMessages("messageapp", 3);
+
+    using WebSocket ws = await ConnectAsync();
+    await SendAsync(ws, new HelloMessage("client-message", [], new Dictionary<string, long>()));
+    await ReceiveAsync(ws);
+
+    VestaEvent evt = CreateEvent("messageapp/chat", "client-message");
+    await SendAsync(ws, new PublishMessage("messageapp/chat", evt));
+
+    ErrorMessage error = Assert.IsType<ErrorMessage>(await ReceiveAsync(ws));
+    Assert.Equal("MESSAGE_QUOTA_EXCEEDED", error.Code);
+    Assert.Contains("max_messages_per_month", error.Message);
+
+    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+  }
+
+  [Fact]
+  public async Task Publish_MaxMessagesPerMonth_ColdCacheAllows()
+  {
+    IAppStore store = _factory.Services.GetRequiredService<IAppStore>();
+
+    await store.RegisterAsync("coldmessageapp", "owner-9");
+    await store.SetQuotasAsync("coldmessageapp", new AppQuotas(MaxMessagesPerMonth: 1));
+
+    // Don't seed the accountant — cold cache should allow until the next sweep.
+    using WebSocket ws = await ConnectAsync();
+    await SendAsync(ws, new HelloMessage("client-coldmessage", [], new Dictionary<string, long>()));
+    await ReceiveAsync(ws);
+
+    VestaEvent evt = CreateEvent("coldmessageapp/chat", "client-coldmessage");
+    await SendAsync(ws, new PublishMessage("coldmessageapp/chat", evt));
+    Assert.IsType<AckMessage>(await ReceiveAsync(ws));
+
+    // The successful publish should have incremented the cache.
+    IAppUsageAccountant usage = _factory.Services.GetRequiredService<IAppUsageAccountant>();
+    Assert.Equal(1, usage.GetMessages("coldmessageapp"));
+
+    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+  }
+
   // --- Helpers ---
 
   private async Task<WebSocket> ConnectAsync()

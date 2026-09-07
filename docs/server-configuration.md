@@ -56,7 +56,7 @@ With `Protocol:RequireAppRegistration = true`, the server rejects `PUBLISH`, `SU
 
 A client registers an app with `REGISTER_APP { appId }`. The connecting client becomes the app owner. Re-registering an existing app returns `ERROR { code: "DUPLICATE_APP" }`. The owner may also pass `REGISTER_APP { appId, discoverable: true }` to opt the app into [server-to-server discovery](#server-to-server-discovery-federation); this can be toggled later via `PATCH /admin/apps/{id}/discoverable`.
 
-App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also stores nullable per-app quotas (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, `max_payload_bytes`, `total_storage_bytes`). All six are now enforced — see [App quotas & rate limits](#app-quotas--rate-limits).
+App IDs share the same character set as a channel slug segment (`[a-z0-9][a-z0-9\-]*[a-z0-9]`, max 64 chars, no slashes). The `apps` table also stores nullable per-app quotas (`max_channels`, `max_events_per_channel`, `publish_rate_per_minute`, `retention_days`, `max_payload_bytes`, `total_storage_bytes`, `max_messages_per_month`). All seven are now enforced — see [App quotas & rate limits](#app-quotas--rate-limits).
 
 Leave registration off in development. Turn it on for shared / multi-tenant deployments where you want explicit ownership of namespaces.
 
@@ -76,20 +76,23 @@ With a non-empty `AllowedApps`, only the listed app namespaces may be used or re
 
 ### App quotas & rate limits
 
-All six per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
+All seven per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
 
-| Column                    | Enforced where                      | Error frame on breach              |
-| ------------------------- | ----------------------------------- | ---------------------------------- |
-| `max_payload_bytes`       | `PUBLISH` (payload + metadata)      | `ERROR { code: "QUOTA_EXCEEDED" }` |
-| `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`)     | `ERROR { code: "RATE_LIMITED" }`   |
-| `max_channels`            | `CREATE_CHANNEL`                    | `ERROR { code: "QUOTA_EXCEEDED" }` |
-| `total_storage_bytes`     | `PUBLISH` (cached rollup + add)     | `ERROR { code: "QUOTA_EXCEEDED" }` |
-| `retention_days`          | Background sweep (`AppQuotaPruner`) | n/a — silent deletion              |
-| `max_events_per_channel`  | Background sweep (`AppQuotaPruner`) | n/a — silent deletion              |
+| Column                    | Enforced where                        | Error frame on breach                      |
+| ------------------------- | -------------------------------------- | ------------------------------------------- |
+| `max_payload_bytes`       | `PUBLISH` (payload + metadata)         | `ERROR { code: "QUOTA_EXCEEDED" }`          |
+| `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`)        | `ERROR { code: "RATE_LIMITED" }`            |
+| `max_channels`            | `CREATE_CHANNEL`                       | `ERROR { code: "QUOTA_EXCEEDED" }`          |
+| `total_storage_bytes`     | `PUBLISH` (cached rollup + add)        | `ERROR { code: "QUOTA_EXCEEDED" }`          |
+| `max_messages_per_month`  | `PUBLISH` (cached rollup + increment)  | `ERROR { code: "MESSAGE_QUOTA_EXCEEDED" }`  |
+| `retention_days`          | Background sweep (`AppQuotaPruner`)    | n/a — silent deletion                       |
+| `max_events_per_channel`  | Background sweep (`AppQuotaPruner`)    | n/a — silent deletion                       |
 
 `publish_rate_per_minute` uses an in-memory token bucket per `(appId, clientId)` — good enough for a single-host relay (multi-host needs a shared backend, tracked under TODO #15). The bucket refills continuously at `rate / 60` tokens per second and caps at the configured rate.
 
 `total_storage_bytes` is checked against an in-process cached rollup maintained by `IAppStorageAccountant` (default `InMemoryAppStorageAccountant`). The pruner sweep seeds and refreshes the cache via `SUM(pg_column_size(payload))` per app namespace; successful PUBLISHes increment it in-line. On a cold cache (server restart before the first sweep), PUBLISH is allowed.
+
+`max_messages_per_month` is checked against a durable per-app, per-calendar-month rollup: the `app_usage` table backs an in-process cache (`IAppUsageAccountant`, default `InMemoryAppUsageAccountant`). The cache is seeded synchronously at startup from `app_usage` (so it's never cold on a fresh boot — a brand-new calendar period with no row yet is correctly zero, not unknown), refreshed by the `AppQuotaPruner` sweep (`COUNT(*)` over events received since the period start, upserted back into `app_usage`), and incremented in-line on every successful PUBLISH. The period rolls over automatically at the first UTC calendar-month boundary the server observes. Query the current rollup via `GET /admin/apps/{id}/usage`.
 
 A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
 
@@ -144,7 +147,9 @@ Tokens are kept in-process; a server restart invalidates everything. Multi-host 
 | `DELETE` | `/admin/channels/{id}`    | Soft-delete a channel (same effect as the protocol `DELETE_CHANNEL` message).                   |
 | `GET`    | `/admin/apps`             | List registered apps with quotas and current storage usage.                                     |
 | `GET`    | `/admin/apps/{id}`        | App detail including channel count and storage rollup.                                          |
+| `GET`    | `/admin/apps/{id}/usage`  | Current-period usage rollup: `{ id, periodStart, messages, storageBytes, channelCount, quotas }`. |
 | `PATCH`  | `/admin/apps/{id}/quotas` | Replace the app's `AppQuotas` body.                                                             |
+| `PATCH`  | `/admin/apps/{id}/owner`  | Operator-assisted rebind of the app's recognized owner to a new client id (key rotation / recovery from a lost identity). |
 | `GET`    | `/admin/metrics`          | `{ activeConnections, totalApps, totalChannels }`.                                              |
 
 ### Web GUI
@@ -171,6 +176,7 @@ Each sweep iterates every row in `apps` and, per quota:
 - `retention_days` → `DELETE FROM events WHERE channel_id IN (<app namespace>) AND received_at < now() - make_interval(days => $)`.
 - `max_events_per_channel` → keeps the most recent N events per channel under the app via `ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY sequence DESC)`.
 - `total_storage_bytes` → `SUM(pg_column_size(payload))` written to the in-process accountant.
+- `max_messages_per_month` → `COUNT(*)` over events received since the current calendar-month period start, written to the in-process accountant **and** upserted into `app_usage` for durability across restarts.
 
 ## `ChannelDeletionPruner` (Postgres only)
 

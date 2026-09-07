@@ -41,6 +41,19 @@ public sealed class InMemoryAppStore : IAppStore
     }
   }
 
+  public Task<bool> SetOwnerAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default)
+  {
+    while (true)
+    {
+      if (!_apps.TryGetValue(appId, out AppInfo? existing))
+        return Task.FromResult(false);
+
+      AppInfo updated = existing with { OwnerClientId = ownerClientId };
+      if (_apps.TryUpdate(appId, updated, existing))
+        return Task.FromResult(true);
+    }
+  }
+
   public Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default)
   {
     while (true)

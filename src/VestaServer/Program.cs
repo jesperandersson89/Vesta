@@ -1,5 +1,7 @@
 using System.Net.WebSockets;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using VestaCore.Identity;
@@ -8,6 +10,7 @@ using VestaServer.Admin;
 using VestaServer.Connections;
 using VestaServer.Data;
 using VestaServer.Federation;
+using VestaServer.Health;
 using VestaServer.Storage;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -29,6 +32,9 @@ if (useInMemory)
     builder.Services.AddSingleton<IChannelAccessStore, InMemoryChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, InMemoryAppStore>();
     builder.Services.AddSingleton<IChannelStatsService, InMemoryChannelStatsService>();
+
+    builder.Services.AddHealthChecks()
+        .AddCheck("in-memory-store", () => HealthCheckResult.Healthy("Using in-memory store"), tags: ["ready"]);
 }
 else if (!string.IsNullOrEmpty(connectionString))
 {
@@ -43,6 +49,9 @@ else if (!string.IsNullOrEmpty(connectionString))
     builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, NpgsqlAppStore>();
     builder.Services.AddSingleton<IChannelStatsService, NpgsqlChannelStatsService>();
+
+    builder.Services.AddHealthChecks()
+        .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
 
     // Background sweep for events past their TTL. Opt-in via EventCleanup:Enabled.
     builder.Services.Configure<ExpiredEventCleanupOptions>(builder.Configuration.GetSection("EventCleanup"));
@@ -67,7 +76,9 @@ else
 
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<AppRateLimiter>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IAppStorageAccountant, InMemoryAppStorageAccountant>();
+builder.Services.AddSingleton<IAppUsageAccountant, InMemoryAppUsageAccountant>();
 builder.Services.AddTransient<ProtocolHandler>();
 
 // Protocol options (e.g. require all events to be signed).
@@ -86,7 +97,6 @@ DiscoveryOptions discovery = builder.Configuration.GetSection("Discovery").Get<D
 builder.Services.Configure<DiscoveryOptions>(builder.Configuration.GetSection("Discovery"));
 if (discovery.Enabled)
 {
-    builder.Services.AddSingleton(TimeProvider.System);
     builder.Services.AddSingleton<VestaIdentity>(sp =>
     {
         ILogger logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("VestaServer.Federation");
@@ -108,11 +118,27 @@ if (!useInMemory && !string.IsNullOrEmpty(connectionString))
     using IServiceScope scope = app.Services.CreateScope();
     VestaDbContext dbContext = scope.ServiceProvider.GetRequiredService<VestaDbContext>();
     await dbContext.Database.MigrateAsync();
+
+    // Seed the message-usage cache synchronously so max_messages_per_month is never
+    // cold on a fresh boot (the pruner's first sweep runs on its own background timer).
+    NpgsqlDataSource dataSource = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+    IAppUsageAccountant usageAccountant = scope.ServiceProvider.GetRequiredService<IAppUsageAccountant>();
+    await AppUsageSeeder.SeedAsync(dataSource, usageAccountant);
 }
 
 app.UseWebSockets();
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+// Liveness: process is up, no dependency checks. Readiness: storage is actually reachable.
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = HealthCheckResponseWriter.Write,
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = HealthCheckResponseWriter.Write,
+});
 
 app.MapAdminApi();
 

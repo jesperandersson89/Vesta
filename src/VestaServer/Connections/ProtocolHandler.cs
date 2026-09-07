@@ -57,6 +57,7 @@ public sealed class ProtocolHandler(
     IAppStore? appStore = null,
     AppRateLimiter? rateLimiter = null,
     IAppStorageAccountant? storageAccountant = null,
+    IAppUsageAccountant? usageAccountant = null,
     IOptions<ProtocolOptions>? protocolOptions = null,
     IAdminStore? adminStore = null)
 {
@@ -381,6 +382,15 @@ public sealed class ProtocolHandler(
             string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
             if (appId is not null)
                 storageAccountant.Add(appId, EstimatePayloadBytes(publish.Event));
+        }
+
+        // Update the cached message-count rollup so max_messages_per_month enforcement
+        // stays current between pruner sweeps.
+        if (usageAccountant is not null)
+        {
+            string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
+            if (appId is not null)
+                usageAccountant.IncrementMessages(appId);
         }
 
         // ACK back to the publisher
@@ -853,6 +863,23 @@ public sealed class ProtocolHandler(
                         cancellationToken);
                     return false;
                 }
+            }
+            // Cold cache: allow — the next pruner sweep will populate it.
+        }
+
+        if (quotas.MaxMessagesPerMonth is long maxMessages && usageAccountant is not null)
+        {
+            long? cachedMessages = usageAccountant.GetMessages(appId);
+            if (cachedMessages is long currentMessages && currentMessages + 1 > maxMessages)
+            {
+                await connection.SendAsync(
+                    new ErrorMessage(
+                        "MESSAGE_QUOTA_EXCEEDED",
+                        $"App '{appId}' would exceed max_messages_per_month ({maxMessages}; currently {currentMessages})",
+                        publish.Event.Id,
+                        publish.ChannelId),
+                    cancellationToken);
+                return false;
             }
             // Cold cache: allow — the next pruner sweep will populate it.
         }

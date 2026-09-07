@@ -147,6 +147,28 @@ public static class AdminEndpoints
       });
     });
 
+    admin.MapGet("/apps/{id}/usage", async (
+        string id,
+        IAppStore apps,
+        IAppStorageAccountant storageAccountant,
+        IAppUsageAccountant usageAccountant,
+        IChannelAccessStore access,
+        CancellationToken ct) =>
+    {
+      AppInfo? app = await apps.GetAsync(id, ct);
+      if (app is null) return Results.NotFound();
+      int channelCount = await access.CountChannelsByAppAsync(id, ct);
+      return Results.Ok(new
+      {
+        id = app.Id,
+        periodStart = usageAccountant.CurrentPeriod,
+        messages = usageAccountant.GetMessages(app.Id),
+        storageBytes = storageAccountant.Get(app.Id),
+        channelCount,
+        quotas = app.Quotas,
+      });
+    });
+
     admin.MapPatch("/apps/{id}/quotas", async (
         HttpContext ctx,
         string id,
@@ -177,6 +199,25 @@ public static class AdminEndpoints
       log.LogInformation("Discoverable set to {Discoverable} for app '{App}' by admin {PublicKey}",
           req.Discoverable, id, ctx.Items[AdminContext.PublicKeyHexItem]);
       return Results.Ok(new { id, discoverable = req.Discoverable });
+    });
+
+    admin.MapPatch("/apps/{id}/owner", async (
+        HttpContext ctx,
+        string id,
+        AppOwnerRequest req,
+        IAppStore apps,
+        ILoggerFactory loggers,
+        CancellationToken ct) =>
+    {
+      if (string.IsNullOrWhiteSpace(req.OwnerClientId))
+        return Results.BadRequest(new { error = "ownerClientId is required" });
+
+      bool updated = await apps.SetOwnerAsync(id, req.OwnerClientId, ct);
+      if (!updated) return Results.NotFound();
+      ILogger log = loggers.CreateLogger("VestaServer.Admin");
+      log.LogInformation("Owner rebound for app '{App}' to {ClientId} by admin {PublicKey}",
+          id, req.OwnerClientId, ctx.Items[AdminContext.PublicKeyHexItem]);
+      return Results.Ok(new { id, ownerClientId = req.OwnerClientId });
     });
 
     // ── Metrics ──────────────────────────────────────────────────────────
@@ -226,3 +267,7 @@ public sealed record AdminVerifyRequest(
 /// <summary>Request body for <c>PATCH /admin/apps/{id}/discoverable</c>.</summary>
 public sealed record AppDiscoverableRequest(
     [property: JsonPropertyName("discoverable")] bool Discoverable);
+
+/// <summary>Request body for <c>PATCH /admin/apps/{id}/owner</c>.</summary>
+public sealed record AppOwnerRequest(
+    [property: JsonPropertyName("ownerClientId")] string OwnerClientId);

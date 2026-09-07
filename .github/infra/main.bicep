@@ -122,6 +122,7 @@ module relay 'modules/webapp.bicep' = {
     webAppName: webAppName
     skuName: appServicePlanSku
     clientAffinityEnabled: false
+    healthCheckPath: '/health/ready'
     tags: tags
     appSettings: {
       ASPNETCORE_ENVIRONMENT: 'Production'

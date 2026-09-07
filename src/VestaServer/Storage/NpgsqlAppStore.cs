@@ -12,7 +12,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     const string sql = """
             SELECT id, owner_client_id, created_at,
                    max_payload_bytes, publish_rate_per_minute, max_channels,
-                   max_events_per_channel, retention_days, total_storage_bytes, discoverable
+                   max_events_per_channel, retention_days, total_storage_bytes, discoverable,
+                   max_messages_per_month
             FROM apps WHERE id = $1
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -26,7 +27,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
         MaxChannels: reader.IsDBNull(5) ? null : reader.GetInt32(5),
         MaxEventsPerChannel: reader.IsDBNull(6) ? null : reader.GetInt32(6),
         RetentionDays: reader.IsDBNull(7) ? null : reader.GetInt32(7),
-        TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8));
+        TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8),
+        MaxMessagesPerMonth: reader.IsDBNull(10) ? null : reader.GetInt64(10));
     return new AppInfo(
         reader.GetString(0),
         reader.GetString(1),
@@ -71,6 +73,16 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     return rows > 0;
   }
 
+  public async Task<bool> SetOwnerAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default)
+  {
+    const string sql = "UPDATE apps SET owner_client_id = $2 WHERE id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = ownerClientId });
+    int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
+    return rows > 0;
+  }
+
   public async Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default)
   {
     const string sql = """
@@ -80,7 +92,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
                 max_channels = $4,
                 max_events_per_channel = $5,
                 retention_days = $6,
-                total_storage_bytes = $7
+                total_storage_bytes = $7,
+                max_messages_per_month = $8
             WHERE id = $1
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -91,6 +104,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxEventsPerChannel ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.RetentionDays ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.TotalStorageBytes ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxMessagesPerMonth ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint });
     int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
     return rows > 0;
   }
@@ -100,7 +114,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     const string sql = """
             SELECT id, owner_client_id, created_at,
                    max_payload_bytes, publish_rate_per_minute, max_channels,
-                   max_events_per_channel, retention_days, total_storage_bytes, discoverable
+                   max_events_per_channel, retention_days, total_storage_bytes, discoverable,
+                   max_messages_per_month
             FROM apps
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -114,7 +129,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
           MaxChannels: reader.IsDBNull(5) ? null : reader.GetInt32(5),
           MaxEventsPerChannel: reader.IsDBNull(6) ? null : reader.GetInt32(6),
           RetentionDays: reader.IsDBNull(7) ? null : reader.GetInt32(7),
-          TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8));
+          TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8),
+          MaxMessagesPerMonth: reader.IsDBNull(10) ? null : reader.GetInt64(10));
       apps.Add(new AppInfo(
           reader.GetString(0),
           reader.GetString(1),

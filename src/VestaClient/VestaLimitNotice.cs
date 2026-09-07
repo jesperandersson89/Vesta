@@ -33,6 +33,7 @@ public static class VestaErrorCodes
 {
     public const string RateLimited = "RATE_LIMITED";
     public const string QuotaExceeded = "QUOTA_EXCEEDED";
+    public const string MessageQuotaExceeded = "MESSAGE_QUOTA_EXCEEDED";
     public const string UnknownApp = "UNKNOWN_APP";
     public const string AccessDenied = "ACCESS_DENIED";
     public const string AppNotAllowed = "APP_NOT_ALLOWED";
@@ -55,6 +56,7 @@ public static class VestaErrorCodes
         // Limits the app should hear about.
         RateLimited => new Classification(IsLimit: true, IsTransient: true, IsEventFatal: false),
         QuotaExceeded => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
+        MessageQuotaExceeded => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         UnknownApp => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         AccessDenied => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         AppNotAllowed => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),

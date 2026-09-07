@@ -19,6 +19,9 @@ param appSettings object
 @description('Enable ARR client affinity. Off for the stateless relay.')
 param clientAffinityEnabled bool = false
 
+@description('App Service health check path. Empty disables the platform health check.')
+param healthCheckPath string = ''
+
 @description('Tags applied to all resources.')
 param tags object = {}
 
@@ -53,6 +56,7 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
       http20Enabled: true
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
+      healthCheckPath: empty(healthCheckPath) ? null : healthCheckPath
       appSettings: [
         for setting in items(appSettings): {
           name: setting.key

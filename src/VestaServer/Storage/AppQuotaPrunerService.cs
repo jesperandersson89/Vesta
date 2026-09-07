@@ -33,6 +33,7 @@ public sealed class AppQuotaPrunerService(
     NpgsqlDataSource dataSource,
     IAppStore appStore,
     IAppStorageAccountant accountant,
+    IAppUsageAccountant usageAccountant,
     IOptions<AppQuotaPrunerOptions> options,
     ILogger<AppQuotaPrunerService> logger) : BackgroundService
 {
@@ -99,6 +100,16 @@ public sealed class AppQuotaPrunerService(
         long bytes = await MeasureStorageBytesAsync(app.Id, cancellationToken);
         accountant.Set(app.Id, bytes);
       }
+
+      // Refresh the durable message-count rollup for the current period so
+      // EnforcePublishQuotas can check max_messages_per_month on the hot path.
+      if (app.Quotas.MaxMessagesPerMonth is not null)
+      {
+        DateOnly periodStart = usageAccountant.CurrentPeriod;
+        long messages = await MeasureMessagesThisPeriodAsync(app.Id, periodStart, cancellationToken);
+        usageAccountant.SetMessages(app.Id, messages);
+        await UpsertUsageRowAsync(app.Id, periodStart, messages, cancellationToken);
+      }
     }
   }
 
@@ -160,5 +171,37 @@ public sealed class AppQuotaPrunerService(
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
     cmd.Parameters.Add(new NpgsqlParameter<int> { TypedValue = max });
     return await cmd.ExecuteNonQueryAsync(cancellationToken);
+  }
+
+  /// <summary>Counts events received since <paramref name="periodStart"/> (UTC midnight) across the app namespace.</summary>
+  private async Task<long> MeasureMessagesThisPeriodAsync(string appId, DateOnly periodStart, CancellationToken cancellationToken)
+  {
+    const string sql = """
+            SELECT COUNT(*)::bigint
+            FROM events
+            WHERE (channel_id = $1 OR channel_id LIKE $2)
+              AND received_at >= $3
+            """;
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
+    cmd.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = new DateTimeOffset(periodStart.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero) });
+    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+    return result is long count ? count : 0L;
+  }
+
+  /// <summary>Upserts the durable per-app, per-period message-count row backing a synchronous startup seed.</summary>
+  private async Task UpsertUsageRowAsync(string appId, DateOnly periodStart, long messages, CancellationToken cancellationToken)
+  {
+    const string sql = """
+            INSERT INTO app_usage (app_id, period_start, messages, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (app_id, period_start) DO UPDATE SET messages = $3, updated_at = now()
+            """;
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<DateOnly> { TypedValue = periodStart });
+    cmd.Parameters.Add(new NpgsqlParameter<long> { TypedValue = messages });
+    await cmd.ExecuteNonQueryAsync(cancellationToken);
   }
 }

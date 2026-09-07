@@ -11,13 +11,15 @@ namespace VestaServer.Storage;
 /// <param name="MaxEventsPerChannel">Maximum events to retain per channel under the app — enforced by <see cref="AppQuotaPrunerService"/>.</param>
 /// <param name="RetentionDays">Events older than this (by <c>received_at</c>) are deleted by <see cref="AppQuotaPrunerService"/>.</param>
 /// <param name="TotalStorageBytes">Hard ceiling on summed <c>pg_column_size(payload)</c> across the app namespace. Checked at PUBLISH against an in-process cached rollup maintained by <see cref="IAppStorageAccountant"/>.</param>
+/// <param name="MaxMessagesPerMonth">Hard ceiling on events PUBLISHed to the app namespace within the current calendar-month usage period. Checked at PUBLISH against the durable rollup maintained by <see cref="IAppUsageAccountant"/>.</param>
 public sealed record AppQuotas(
     int? MaxPayloadBytes = null,
     int? PublishRatePerMinute = null,
     int? MaxChannels = null,
     int? MaxEventsPerChannel = null,
     int? RetentionDays = null,
-    long? TotalStorageBytes = null)
+    long? TotalStorageBytes = null,
+    long? MaxMessagesPerMonth = null)
 {
   public static AppQuotas None { get; } = new();
 }
@@ -67,6 +69,15 @@ public interface IAppStore
   /// Returns false if the app does not exist.
   /// </summary>
   Task<bool> SetDiscoverableAsync(string appId, bool discoverable, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Operator-assisted rebind of the app's recognized owner to a new client id (key
+  /// rotation, or recovery from a lost identity). This is a deliberate simplification of
+  /// full multi-owner-key support: the relay recognizes exactly one owner per app at a
+  /// time, and rebinding it is an explicit admin action, not a self-service key exchange.
+  /// Returns false if the app does not exist.
+  /// </summary>
+  Task<bool> SetOwnerAsync(string appId, string ownerClientId, CancellationToken cancellationToken = default);
 
   /// <summary>
   /// Update the quotas attached to an existing app. Any <c>null</c> field clears that limit.

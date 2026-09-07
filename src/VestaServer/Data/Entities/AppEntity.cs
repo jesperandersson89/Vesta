@@ -26,4 +26,7 @@ public sealed class AppEntity
   public int? PublishRatePerMinute { get; set; }
   public int? RetentionDays { get; set; }
   public long? TotalStorageBytes { get; set; }
+
+  /// <summary>Monthly message-count ceiling. Nullable means "no limit". Enforced against the <c>app_usage</c> rollup.</summary>
+  public long? MaxMessagesPerMonth { get; set; }
 }

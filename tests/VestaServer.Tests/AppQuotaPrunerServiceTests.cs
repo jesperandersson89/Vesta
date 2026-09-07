@@ -22,6 +22,7 @@ public sealed class AppQuotaPrunerServiceTests : IAsyncLifetime
   private NpgsqlEventStore _eventStore = null!;
   private NpgsqlAppStore _appStore = null!;
   private InMemoryAppStorageAccountant _accountant = null!;
+  private InMemoryAppUsageAccountant _usageAccountant = null!;
   private AppQuotaPrunerService _pruner = null!;
 
   public async Task InitializeAsync()
@@ -38,10 +39,12 @@ public sealed class AppQuotaPrunerServiceTests : IAsyncLifetime
     _eventStore = new NpgsqlEventStore(_dataSource);
     _appStore = new NpgsqlAppStore(_dataSource);
     _accountant = new InMemoryAppStorageAccountant();
+    _usageAccountant = new InMemoryAppUsageAccountant(TimeProvider.System);
     _pruner = new AppQuotaPrunerService(
         _dataSource,
         _appStore,
         _accountant,
+        _usageAccountant,
         Options.Create(new AppQuotaPrunerOptions { Enabled = true }),
         NullLogger<AppQuotaPrunerService>.Instance);
   }

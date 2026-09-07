@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using VestaServer.Data;
@@ -11,9 +12,11 @@ using VestaServer.Data;
 namespace VestaServer.Data.Migrations
 {
     [DbContext(typeof(VestaDbContext))]
-    partial class VestaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260907204645_AddAppMessageQuota")]
+    partial class AddAppMessageQuota
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -80,33 +83,6 @@ namespace VestaServer.Data.Migrations
                         .HasDatabaseName("IX_apps_owner_client_id");
 
                     b.ToTable("apps", (string)null);
-                });
-
-            modelBuilder.Entity("VestaServer.Data.Entities.AppUsageEntity", b =>
-                {
-                    b.Property<string>("AppId")
-                        .HasColumnType("text")
-                        .HasColumnName("app_id");
-
-                    b.Property<DateOnly>("PeriodStart")
-                        .HasColumnType("date")
-                        .HasColumnName("period_start");
-
-                    b.Property<long>("Messages")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("messages");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
-                        .HasDefaultValueSql("now()");
-
-                    b.HasKey("AppId", "PeriodStart");
-
-                    b.ToTable("app_usage", (string)null);
                 });
 
             modelBuilder.Entity("VestaServer.Data.Entities.ChannelAccessEntity", b =>
