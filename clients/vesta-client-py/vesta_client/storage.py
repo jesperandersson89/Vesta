@@ -31,7 +31,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from vesta_client.types import SequencedEvent, VestaEvent
 
-OutboxStatus = Literal["pending", "sent", "confirmed"]
+OutboxStatus = Literal["pending", "sent", "confirmed", "rejected"]
 
 
 @dataclass
@@ -59,6 +59,7 @@ class ClientEventStore(Protocol):
     async def get_pending_outbox(self) -> list[OutboxEntry]: ...
     async def mark_outbox_sent(self, event_id: str) -> None: ...
     async def mark_outbox_confirmed(self, event_id: str) -> None: ...
+    async def mark_outbox_rejected(self, event_id: str, code: str) -> None: ...
 
 
 # ── In-memory implementation ────────────────────────────────────────────────
@@ -137,6 +138,16 @@ class InMemoryClientEventStore:
     async def mark_outbox_confirmed(self, event_id: str) -> None:
         with self._lock:
             self._outbox.pop(event_id, None)
+
+    async def mark_outbox_rejected(self, event_id: str, code: str) -> None:
+        with self._lock:
+            if event_id in self._outbox:
+                entry, seq = self._outbox[event_id]
+                self._outbox[event_id] = (
+                    OutboxEntry(entry.event, entry.created_at, "rejected"),
+                    seq,
+                )
+        del code  # recorded for parity with C#/TS; not surfaced by this in-memory store
 
 
 # ── SQLite implementation ──────────────────────────────────────────────────
@@ -391,3 +402,14 @@ class SqliteClientEventStore:
                 self._conn.commit()
 
         await asyncio.to_thread(_write)
+
+    async def mark_outbox_rejected(self, event_id: str, code: str) -> None:
+        def _write() -> None:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE outbox SET status = 'rejected' WHERE id = ?", (event_id,)
+                )
+                self._conn.commit()
+
+        await asyncio.to_thread(_write)
+        del code  # recorded for parity with C#/TS; not persisted by this minimal schema

@@ -13,8 +13,12 @@ const int HeartbeatIntervalSeconds = 5;
 const int TtlSeconds = 15; // 3× heartbeat — user considered offline after this
 
 string serverUrl = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
-    ?? (args.Length > 0 ? args[0] : "ws://localhost:5150/ws");
-string appName = args.Length > 1 ? args[1] : "vesta-presence";
+    ?? (args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal)) ?? "ws://localhost:5150/ws");
+string[] positionalArgs = args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
+string appName = positionalArgs.Length > 1 ? positionalArgs[1] : "vesta-presence";
+// --register: register the app namespace once on connect. Opt-in — REGISTER_APP fails with
+// DUPLICATE_APP if already registered, so it must not run unconditionally on every start.
+bool registerOnStart = args.Contains("--register", StringComparer.OrdinalIgnoreCase);
 // App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
 // provisioned in Atrium so the channel is scoped under it. Defaults to "presence".
 string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "presence";
@@ -67,6 +71,7 @@ if (savedSnapshot is not null)
 
 // ─── Display State (declared here so lambdas below can close over them) ──────
 object _displayLock = new();
+string? lastLimitNotice = null;
 
 // ─── Connection ──────────────────────────────────────────────────────────────
 bool isConnected = false;
@@ -104,6 +109,12 @@ connection.OnReconnected += () =>
     RedrawDisplay();
 };
 
+connection.OnLimited += (VestaLimitNotice notice) =>
+{
+    lastLimitNotice = $"{notice.Code}: {notice.Message}";
+    RedrawDisplay();
+};
+
 // ─── Connect ─────────────────────────────────────────────────────────────────
 Console.Clear();
 
@@ -111,6 +122,10 @@ try
 {
     await connection.ConnectAsync(channels: [channel]);
     isConnected = true;
+    if (registerOnStart)
+    {
+        await connection.RegisterAppAsync(appId);
+    }
 }
 catch (Exception ex)
 {
@@ -301,5 +316,12 @@ void RedrawDisplay()
         Console.ForegroundColor = ConsoleColor.DarkGray;
         Console.WriteLine($"\n  Heartbeat every {HeartbeatIntervalSeconds}s · TTL {TtlSeconds}s · Press Ctrl+C to quit");
         Console.ResetColor();
+
+        if (lastLimitNotice is not null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"  [LIMITED] {lastLimitNotice}");
+            Console.ResetColor();
+        }
     }
 }

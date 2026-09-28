@@ -13,7 +13,7 @@
 
 import type { SequencedEvent, VestaEvent } from "./types.js";
 
-export type OutboxStatus = "pending" | "sent" | "confirmed";
+export type OutboxStatus = "pending" | "sent" | "confirmed" | "rejected";
 
 /** An entry in the client outbox — an event created offline pending sync. */
 export interface OutboxEntry {
@@ -72,6 +72,14 @@ export interface ClientEventStore {
      * Removes it from the outbox.
      */
     markOutboxConfirmed(eventId: string): Promise<void>;
+
+    /**
+     * Mark an outbox entry as permanently rejected by the server (dead-letter).
+     * The entry is retained for inspection but excluded from {@link getPendingOutbox}
+     * so it is never retried. Used when the relay refuses an event for a reason a
+     * retry cannot fix (e.g. `QUOTA_EXCEEDED`, `ACCESS_DENIED`, `UNKNOWN_APP`).
+     */
+    markOutboxRejected(eventId: string, code: string): Promise<void>;
 }
 
 // ── InMemoryClientEventStore ─────────────────────────────────────────────────
@@ -81,6 +89,7 @@ interface StoredOutboxEntry {
     createdAt: string;
     status: OutboxStatus;
     seq: number; // insertion order tiebreaker
+    rejectionCode?: string;
 }
 
 /**
@@ -162,5 +171,13 @@ export class InMemoryClientEventStore implements ClientEventStore {
 
     async markOutboxConfirmed(eventId: string): Promise<void> {
         this.outbox.delete(eventId);
+    }
+
+    async markOutboxRejected(eventId: string, code: string): Promise<void> {
+        const entry = this.outbox.get(eventId);
+        if (entry) {
+            entry.status = "rejected";
+            entry.rejectionCode = code;
+        }
     }
 }

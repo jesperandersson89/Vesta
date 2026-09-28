@@ -33,8 +33,25 @@ export {
     LwwMap,
     LwwMapUpdate,
     LwwRegister,
+    SnapshotNotSupportedError,
 } from "./projections/index.js";
-export type { ProjectionCheckpoint } from "./projections/index.js";
+export type { ProjectionCheckpoint, ProjectionSnapshot } from "./projections/index.js";
+export {
+    InMemoryProjectionStore,
+    LocalStorageProjectionStore,
+    restoreProjection,
+    saveProjection,
+} from "./projection-store.js";
+export type { ProjectionStore } from "./projection-store.js";
+export { classifyErrorCode, VestaErrorCodes } from "./limits.js";
+export type { ErrorClassification, VestaLimitNotice } from "./limits.js";
+export {
+    buildDescriptorSigningInput,
+    FederationClient,
+    isDescriptorExpired,
+    verifyDescriptor,
+} from "./federation.js";
+export type { DiscoverableApp, DiscoveredRelay, ServerDescriptor } from "./federation.js";
 export { InMemoryClientEventStore } from "./storage.js";
 export type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 export {

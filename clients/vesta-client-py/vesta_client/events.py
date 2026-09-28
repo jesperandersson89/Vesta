@@ -24,6 +24,7 @@ def create_event(
     replace: bool = False,
     parent_id: str | None = None,
     metadata: dict | None = None,
+    volatile: bool | None = None,
     identity: VestaIdentity | None = None,
 ) -> VestaEvent:
     """
@@ -42,6 +43,7 @@ def create_event(
         replace=replace,
         parent_id=parent_id,
         metadata=metadata,
+        volatile=volatile,
     )
     if identity is not None:
         # Imported lazily to avoid a hard dependency cycle if signing module

@@ -31,6 +31,7 @@ export function createEvent(
         replace?: boolean;
         parentId?: string;
         metadata?: Record<string, unknown>;
+        volatile?: boolean;
         identity?: VestaIdentity;
     },
 ): VestaEvent {
@@ -51,6 +52,7 @@ export function createEvent(
         replace: options?.replace,
         parentId: options?.parentId,
         metadata: options?.metadata,
+        volatile: options?.volatile,
     };
 
     if (identity) {

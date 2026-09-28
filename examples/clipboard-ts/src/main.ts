@@ -14,21 +14,35 @@
  */
 
 import { createInterface } from "node:readline";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import clipboardy from "clipboardy";
 import WebSocket from "ws";
 import {
+    classifyErrorCode,
     LwwMap,
     LwwMapUpdate,
+    RelayDirectory,
     VestaConnection,
     VestaIdentity,
     createEvent,
     loadOrCreateIdentity,
+    restoreProjection,
+    saveProjection,
+    type VestaAppConfig,
+    type VestaEvent,
+    type VestaLimitNotice,
     type EventMessage,
     type EventsBatchMessage,
-    type SequencedEvent,
-    type VestaEvent,
     type VestaSocket,
 } from "vesta-client";
+import {
+    FileClientEventStore,
+    FileManifestStore,
+    FileProjectionStore,
+    FileRelayOverrideStore,
+    defaultRelayStorePaths,
+} from "vesta-client/node";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const DEFAULT_SERVER = "ws://localhost:5150/ws";
@@ -89,6 +103,7 @@ const DIM = "\x1b[2m";
 const CYAN = "\x1b[36m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
+const RED = "\x1b[31m";
 
 function clearScreen(): void {
     process.stdout.write("\x1b[2J\x1b[H");
@@ -101,6 +116,7 @@ function renderUI(
     serverUrl: string,
     channel: string,
     localClipboard: string,
+    limitNotice: string | null,
 ): void {
     clearScreen();
 
@@ -141,10 +157,11 @@ function renderUI(
     }
 
     console.log(`${DIM}${"─".repeat(60)}${RESET}`);
-    console.log(
-        `${DIM}  Local clipboard: ${localClipboard.length > 40 ? localClipboard.slice(0, 40) + "…" : localClipboard}${RESET}`,
-    );
+    console.log(`${DIM}  Local clipboard: ${localClipboard.length > 40 ? localClipboard.slice(0, 40) + "…" : localClipboard}${RESET}`);
     console.log(`${DIM}  Watching for changes… (Ctrl+C to exit)${RESET}`);
+    if (limitNotice) {
+        console.log(`${RED}  [LIMITED] ${limitNotice}${RESET}`);
+    }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -164,7 +181,10 @@ async function resolveIdentity(prefix: string): Promise<VestaIdentity> {
 
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
-    const serverUrl = process.env.VESTA_RELAY_URL ?? args[0] ?? DEFAULT_SERVER;
+    const relayUrls = (process.env.VESTA_RELAY_URL ?? args[0] ?? DEFAULT_SERVER)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     const room = args[1] ?? DEFAULT_ROOM;
     const appId = process.env.VESTA_APP_ID ?? DEFAULT_APP_ID;
     const channel = `${appId}/${room}`;
@@ -180,17 +200,38 @@ async function main(): Promise<void> {
     // (the app-owner key) instead of a per-room/user key generated locally.
     const identity = await resolveIdentity(`clipboard-${room}-${username}`);
     const clientId = identity.clientId;
-    const state = new LwwMap<string, ClipboardEntry>(clipboardProjector);
-    let lastClipboard = "";
 
+    // Relay independence: the app's trust anchor + Node file-backed override/manifest
+    // stores (~/.vesta/relays/), matching the C# examples' RelayDirectory.CreateDefault.
+    // VESTA_APP_OWNER_KEY overrides the anchor; with no env set this client's own key
+    // is the anchor, so the demo is self-signing.
+    const ownerPublicKey = process.env.VESTA_APP_OWNER_KEY ?? identity.publicKeyB64;
+    const appConfig: VestaAppConfig = { appId, ownerPublicKey, defaultRelays: relayUrls };
+    const { overridePath, manifestPath } = defaultRelayStorePaths(appId);
+    const relayDirectory = new RelayDirectory(
+        appConfig,
+        new FileRelayOverrideStore(overridePath),
+        new FileManifestStore(manifestPath),
+    );
+
+    // Local event cache + offline outbox, and a projection snapshot for fast cold start.
+    const vestaDir = join(homedir(), ".vesta");
+    const localStore = new FileClientEventStore(join(vestaDir, `clipboard-${room}-${username}-cache.json`));
+    const projectionStore = new FileProjectionStore(join(vestaDir, `clipboard-${room}-${username}-snapshots.json`));
+
+    const state = new LwwMap<string, ClipboardEntry>(clipboardProjector);
+    await restoreProjection(projectionStore, channel, "clipboard", state);
+
+    let lastClipboard = "";
     try {
         lastClipboard = await clipboardy.read();
     } catch {
         // Clipboard might be empty or inaccessible
     }
 
-    // Seed the projection with our own initial clipboard so the UI shows us
-    // immediately, without waiting for the server echo.
+    // Seed the projection with our own current clipboard so the UI shows us
+    // immediately, without waiting for the server echo. Its "now" timestamp wins
+    // over anything restored from the snapshot, per LWW semantics.
     const initialSelf = createEvent(
         channel,
         identity,
@@ -200,24 +241,29 @@ async function main(): Promise<void> {
     );
     state.applyLocal(initialSelf);
 
+    let lastLimitNotice: string | null = null;
+
     function redraw(): void {
         renderUI(
             state.state,
             clientId,
             connection.isConnected,
-            serverUrl,
+            connection.activeRelay,
             channel,
             lastClipboard,
+            lastLimitNotice,
         );
     }
 
     // ── Vesta connection ─────────────────────────────────────────────────────
     const connection = new VestaConnection({
-        serverUrl,
+        relays: relayDirectory.resolveCandidates(),
         clientId,
         publicKey: identity.publicKeyB64,
         channels: [channel],
         createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
+        localStore,
+        relayDirectory,
     });
 
     connection.on("connected", () => {
@@ -236,6 +282,11 @@ async function main(): Promise<void> {
     });
 
     connection.on("disconnected", () => redraw());
+
+    connection.on("limited", (notice: VestaLimitNotice) => {
+        lastLimitNotice = `${notice.code}: ${notice.message}`;
+        redraw();
+    });
 
     connection.on("event", (msg: EventMessage) => {
         if (msg.event.clientId === clientId) return;
@@ -286,9 +337,7 @@ async function main(): Promise<void> {
                     { replace: true },
                 );
                 state.applyLocal(selfEvent);
-                if (connection.isConnected) {
-                    connection.publish(selfEvent);
-                }
+                connection.publish(selfEvent);
                 redraw();
             }
         } catch {
@@ -296,8 +345,9 @@ async function main(): Promise<void> {
         }
     }, POLL_INTERVAL_MS);
 
-    process.on("SIGINT", () => {
+    process.on("SIGINT", async () => {
         console.log("\n  Goodbye!");
+        await saveProjection(projectionStore, channel, "clipboard", state);
         connection.dispose();
         process.exit(0);
     });

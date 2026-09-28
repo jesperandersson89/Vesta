@@ -15,6 +15,9 @@ Event schema
 
 Run:  python main.py [ws://host:port/ws] [room-name]
 Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
+
+Local cache: ~/.vesta/colorwheel-{room}-{username}-cache.db (offline outbox + event cache)
+Snapshot:    ~/.vesta/colorwheel-{room}-{username}-snapshots.db (LwwMap projection snapshot)
 """
 
 import asyncio
@@ -23,13 +26,26 @@ import math
 import queue
 import threading
 import tkinter as tk
-from datetime import datetime, timezone
+from pathlib import Path
 
-from vesta_client import VestaConnection, VestaIdentity, create_event, load_or_create_identity
+from vesta_client import (
+    LwwMap,
+    LwwMapUpdate,
+    SequencedEvent,
+    VestaConnection,
+    VestaEvent,
+    VestaIdentity,
+    VestaLimitNotice,
+    create_event,
+    load_or_create_identity,
+)
+from vesta_client.projection_store import SqliteProjectionStore, restore_projection, save_projection
+from vesta_client.storage import SqliteClientEventStore
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
 DEFAULT_ROOM   = "main"
+VESTA_DIR = Path.home() / ".vesta"
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 BG       = "#1e1e1e"
@@ -44,38 +60,21 @@ WHEEL_R    = WHEEL_SIZE // 2 - 6
 
 
 # ── State (LWW projection) ────────────────────────────────────────────────────
-class ColorWheelState:
-    """Thread-safe last-writer-wins projection of user colors."""
+def colorwheel_projector(event: VestaEvent) -> LwwMapUpdate[str, dict] | None:
+    """Each ``app.colorwheel.update`` event sets that author's current color/username."""
+    if event.event_type != "app.colorwheel.update":
+        return None
+    client_id = event.client_id
+    payload = event.payload or {}
+    return LwwMapUpdate.set(client_id, {
+        "clientId": client_id,
+        "username": payload.get("username", client_id[:8]),
+        "color": payload.get("color", "#ffffff"),
+    })
 
-    def __init__(self):
-        self._users: dict[str, dict] = {}  # clientId → {clientId, username, color, timestamp}
-        self._lock = threading.Lock()
 
-    def apply(self, event: dict) -> bool:
-        """Apply an event. Returns True if state changed."""
-        if event.get("eventType") != "app.colorwheel.update":
-            return False
-        client_id = event.get("clientId", "")
-        ts        = event.get("timestamp", "")
-        payload   = event.get("payload", {})
-        color     = payload.get("color", "#ffffff")
-        username  = payload.get("username", client_id[:8])
-
-        with self._lock:
-            existing = self._users.get(client_id)
-            if existing and existing["timestamp"] >= ts:
-                return False  # Older than what we have — ignore
-            self._users[client_id] = {
-                "clientId": client_id,
-                "username": username,
-                "color": color,
-                "timestamp": ts,
-            }
-        return True
-
-    def users(self) -> list[dict]:
-        with self._lock:
-            return sorted(self._users.values(), key=lambda u: u["username"].lower())
+def sorted_users(state: "LwwMap[str, dict]") -> list[dict]:
+    return sorted(state.state.values(), key=lambda u: u["username"].lower())
 
 
 # ── Color wheel math ──────────────────────────────────────────────────────────
@@ -115,7 +114,15 @@ def render_wheel(size: int, radius: int, bg: str) -> tk.PhotoImage:
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 class App:
-    def __init__(self, root: tk.Tk, username: str, identity: VestaIdentity, server_url: str, channel: str):
+    def __init__(
+        self,
+        root: tk.Tk,
+        username: str,
+        identity: VestaIdentity,
+        server_url: str,
+        channel: str,
+        state: "LwwMap[str, dict]",
+    ):
         self.root       = root
         self.username   = username
         self.identity   = identity
@@ -124,7 +131,7 @@ class App:
         self.channel    = channel
 
         self.current_color = "#ff4444"
-        self.state         = ColorWheelState()
+        self.state         = state
         self.incoming: queue.Queue = queue.Queue()
         self.publish_cb    = None   # set by the WS thread once connected
         self._connected    = False
@@ -170,6 +177,10 @@ class App:
         tk.Label(left, textvariable=self.status_var, bg=BG, fg=FG_DIM,
                  font=("Segoe UI", 8)).pack(pady=(6, 0), anchor="w")
 
+        self.limit_var = tk.StringVar(value="")
+        tk.Label(left, textvariable=self.limit_var, bg=BG, fg="#e66",
+                 font=("Segoe UI", 8)).pack(pady=(2, 0), anchor="w")
+
         # ── Right: user list ──────────────────────────────────────────────────
         right = tk.Frame(outer, bg=BG_CARD, width=230)
         right.pack(side="left", fill="y")
@@ -213,14 +224,16 @@ class App:
 
     def _apply_local(self, color: str):
         """Optimistically apply our own color update to local state."""
-        fake_event = {
-            "clientId": self.client_id,
-            "eventType": "app.colorwheel.update",
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "payload": {"color": color, "username": self.username},
-        }
-        if self.state.apply(fake_event):
-            self._redraw_users()
+        evt = create_event(
+            self.channel,
+            self.client_id,
+            "app.colorwheel.update",
+            {"color": color, "username": self.username},
+            replace=True,
+            volatile=True,
+        )
+        self.state.apply_local(evt)
+        self._redraw_users()
 
     # ── Message queue polling ─────────────────────────────────────────────────
     def _poll_queue(self):
@@ -229,9 +242,8 @@ class App:
                 item = self.incoming.get_nowait()
                 kind = item["kind"]
 
-                if kind == "event":
-                    if self.state.apply(item["event"]):
-                        self._redraw_users()
+                if kind == "redraw":
+                    self._redraw_users()
 
                 elif kind == "connected":
                     self._connected = True
@@ -242,6 +254,11 @@ class App:
                     self.publish_cb = None
                     self.status_var.set("○  Disconnected — retrying…")
 
+                elif kind == "limited":
+                    notice: VestaLimitNotice = item["notice"]
+                    kind_label = "transient" if notice.is_transient else "permanent"
+                    self.limit_var.set(f"[LIMITED] {notice.code}: {notice.message} ({kind_label})")
+
         except queue.Empty:
             pass
 
@@ -249,7 +266,7 @@ class App:
 
     # ── User list display ─────────────────────────────────────────────────────
     def _redraw_users(self):
-        users = self.state.users()
+        users = sorted_users(self.state)
         current_ids = {u["clientId"] for u in users}
 
         # Remove widgets for users no longer present
@@ -287,12 +304,13 @@ class App:
 
 
 # ── WebSocket background task ─────────────────────────────────────────────────
-async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
+async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop, local_store: SqliteClientEventStore):
     conn = VestaConnection(
         server_url=app.server_url,
         client_id=app.client_id,
         channels=[app.channel],
         public_key=app.identity.public_key_b64,
+        local_store=local_store,
     )
 
     def on_connected(welcome):
@@ -306,6 +324,7 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
                 event_type="app.colorwheel.update",
                 payload={"color": color, "username": app.username},
                 replace=True,
+                volatile=True,
                 identity=app.identity,
             )
             await conn.publish(event)
@@ -319,44 +338,41 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
 
     def on_event(msg):
         if msg.event.client_id != app.client_id:
-            evt = {
-                "clientId": msg.event.client_id,
-                "eventType": msg.event.event_type,
-                "timestamp": msg.event.timestamp,
-                "payload": msg.event.payload,
-            }
-            app.incoming.put({"kind": "event", "event": evt})
+            app.state.apply(SequencedEvent(event=msg.event, sequence=msg.sequence, received_at=msg.received_at))
+            app.incoming.put({"kind": "redraw"})
 
     def on_events_batch(msg):
+        changed = False
         for se in msg.events:
             if se.event.client_id != app.client_id:
-                evt = {
-                    "clientId": se.event.client_id,
-                    "eventType": se.event.event_type,
-                    "timestamp": se.event.timestamp,
-                    "payload": se.event.payload,
-                }
-                app.incoming.put({"kind": "event", "event": evt})
+                app.state.apply(se)
+                changed = True
+        if changed:
+            app.incoming.put({"kind": "redraw"})
 
     def on_disconnected(reason):
         app.incoming.put({"kind": "disconnected"})
         app.publish_cb = None
 
+    def on_limited(notice: VestaLimitNotice):
+        app.incoming.put({"kind": "limited", "notice": notice})
+
     conn.on_connected(on_connected)
     conn.on_event(on_event)
     conn.on_events_batch(on_events_batch)
     conn.on_disconnected(on_disconnected)
+    conn.on_limited(on_limited)
 
     await conn.connect()
     # Keep the loop running
     await asyncio.Event().wait()
 
 
-def start_ws_thread(app: App):
+def start_ws_thread(app: App, local_store: SqliteClientEventStore):
     def run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(vesta_loop(app, loop))
+        loop.run_until_complete(vesta_loop(app, loop, local_store))
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -418,6 +434,7 @@ def resolve_identity(prefix: str) -> VestaIdentity:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import asyncio as _asyncio
     import os
     import sys
 
@@ -437,7 +454,21 @@ if __name__ == "__main__":
 
     identity = resolve_identity(f"colorwheel-{room}-{username}")
 
+    VESTA_DIR.mkdir(parents=True, exist_ok=True)
+    prefix = f"colorwheel-{room}-{username}"
+    local_store = SqliteClientEventStore(str(VESTA_DIR / f"{prefix}-cache.db"))
+    projection_store = SqliteProjectionStore(str(VESTA_DIR / f"{prefix}-snapshots.db"))
+
+    state = LwwMap(colorwheel_projector)
+    _asyncio.run(restore_projection(projection_store, channel, "colorwheel", state))
+
     root = tk.Tk()
-    app  = App(root, username, identity, server_url, channel)
-    start_ws_thread(app)
+    app  = App(root, username, identity, server_url, channel, state)
+
+    def on_close():
+        _asyncio.run(save_projection(projection_store, channel, "colorwheel", state))
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    start_ws_thread(app, local_store)
     root.mainloop()

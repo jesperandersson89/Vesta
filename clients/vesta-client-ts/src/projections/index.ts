@@ -7,7 +7,11 @@
 export { AppendOnlyLog } from "./append-only-log.js";
 export { LwwMap, LwwMapUpdate } from "./lww-map.js";
 export { LwwRegister } from "./lww-register.js";
-export { EventReducer } from "./reducer.js";
+export {
+    EventReducer,
+    SnapshotNotSupportedError,
+    type ProjectionSnapshot,
+} from "./reducer.js";
 
 /** Lightweight pair to persist alongside projection snapshots for resumable replay. */
 export interface ProjectionCheckpoint {

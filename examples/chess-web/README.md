@@ -31,6 +31,33 @@ npm run dev
 
 Open the printed Vite URL (default `http://localhost:5173`) in **two** browser windows (or two browsers) to play against yourself, or share it on your network for a real match.
 
+## Relay independence, limits & federation
+
+The footer's relay panel (visible once connected) demonstrates the SDK's relay-independence
+story:
+
+- **Failover**: paste a comma-separated relay list into the connect field; the client walks it
+  automatically if the active relay drops.
+- **Owner-signed manifests**: set `VITE_VESTA_OWNER_PUBLIC_KEY` (see below) to enable manifest
+  verification — an accepted manifest republishes the candidate list and shows a banner.
+- **User override**: "My relay override" persists a personal relay choice in `localStorage`,
+  taking precedence over the manifest and defaults.
+- **Federation discovery**: "Discover relays" / "Browse all relays" query the active relay's
+  `/federation/*` HTTP surface for other relays hosting this app (or the whole mesh). Every
+  result is signature-verified and owner-matched before being shown; adopting one is still a
+  manual "Use" click — discovery never auto-fails-over.
+- **Limit notices**: a `QUOTA_EXCEEDED` / `RATE_LIMITED` / etc. response from the relay surfaces
+  as a red `[LIMITED]` line in the panel via `connection.on("limited", ...)`.
+
+Set these before `npm run build` / `npm run dev` (e.g. in a `.env` file) to exercise manifests
+and federation:
+
+```
+VITE_VESTA_APP_ID=chess
+VITE_VESTA_RELAY_URL=wss://relay.example/ws
+VITE_VESTA_OWNER_PUBLIC_KEY=<base64url Ed25519 public key>
+```
+
 ## Notes
 
 - Promotions auto-queen for simplicity.

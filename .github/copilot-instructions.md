@@ -104,28 +104,27 @@ Vesta/
 
 ## Keeping Clients and Examples in Sync
 
-> **⚠️ TS & Python clients are SHELVED (temporary).** While the protocol and C# SDK are still in
-> flux, do **not** port new behavior to the TypeScript or Python clients — it triples the work on
-> a moving target. Treat **C# (`src/VestaClient/`) as the reference implementation** and let the
-> other two drift. Exception: tiny, zero-risk wire-type mirrors (e.g. adding an optional field to
-> a DTO) are fine to keep parsing from breaking, but skip behavior ports (outbox logic, classifiers,
-> reconnect, etc.). When the design settles we'll do a single catch-up sweep. If a change makes the
-> TS/Py clients meaningfully stale, just note it in the response — don't fix it.
+> **Un-shelved (2026-09-28).** TS and Python were previously allowed to drift while the C# SDK
+> churned; that churn (relay independence, federation) has settled, and a catch-up sweep brought
+> all three SDKs to parity. Treat **all three clients as reference implementations** — port new
+> client-visible behavior (outbox/dead-letter logic, limit classification, snapshotting, relay
+> resolution, etc.) to all three unless there's a specific reason not to. If a change is
+> genuinely C#-only for now, say so explicitly in the response instead of silently skipping TS/Py.
 
-When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` shape, signing rules, metadata semantics, channel ACL, etc.) or in `src/VestaClient/`, sweep the examples before declaring the task done (the TS/Py client sweep is paused per the note above):
+When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` shape, signing rules, metadata semantics, channel ACL, etc.) or in `src/VestaClient/`, sweep the examples before declaring the task done:
 
-- **TypeScript client** — `clients/vesta-client-ts/src/` — SHELVED; wire-type mirror only, no behavior ports.
-- **Python client** — `clients/vesta-client-py/vesta_client/` — SHELVED; wire-type mirror only, no behavior ports.
+- **TypeScript client** — `clients/vesta-client-ts/src/` — port the behavior; run `npm test`.
+- **Python client** — `clients/vesta-client-py/vesta_client/` — port the behavior; run the unittest suite.
 - **C# examples** — every `examples/*.CLI/` project that uses the changed surface. Build each affected project.
-- **TS/JS examples** — `examples/chess-web/`, `examples/clipboard-ts/` — SHELVED with the TS client.
-- **Python examples** — `examples/colorwheel-py/`, `examples/collab-edit-py/` — SHELVED with the Python client.
+- **TS/JS examples** — `examples/chess-web/`, `examples/clipboard-ts/`.
+- **Python examples** — `examples/colorwheel-py/`, `examples/collab-edit-py/`.
 
 Rules of thumb:
 
-- If you added a wire-level field (e.g. `metadata` on `VestaEvent`), the C# client must serialize / deserialize it round-trip and exclude it from signing input where applicable. (TS/Py: optional wire-type mirror only — see the shelving note above.)
-- If you added an SDK primitive (e.g. `VestaCore.Projections.*`), pick at least one example to refactor onto it as a smoke test — don't leave the primitive unused.
+- If you added a wire-level field (e.g. `metadata` on `VestaEvent`), all three clients must serialize / deserialize it round-trip and exclude it from signing input where applicable.
+- If you added an SDK primitive (e.g. `VestaCore.Projections.*`), pick at least one example per language to refactor onto it as a smoke test — don't leave the primitive unused.
 - If an example would need a large rewrite, note that explicitly in the response instead of silently leaving it stale.
-- After edits, run `dotnet build Vesta.sln` and, for touched non-C# clients, the relevant `npm run build` / `python -m compileall` (or import-check) to confirm nothing rotted. (TS/Py are shelved — only run their builds if you made a wire-type mirror edit.)
+- After edits, run `dotnet build Vesta.sln`, `npm test` / `npm run build` in the touched TS packages, and `python -m unittest discover -s clients/vesta-client-py/tests` (or `python -m compileall` for examples) to confirm nothing rotted.
 
 ## Documentation
 

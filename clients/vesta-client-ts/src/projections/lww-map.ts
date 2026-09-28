@@ -1,5 +1,5 @@
 import type { VestaEvent } from "../types.js";
-import { EventReducer } from "./reducer.js";
+import { EventReducer, type ProjectionSnapshot } from "./reducer.js";
 
 /** A single update to an {@link LwwMap}: either set a key, or remove (tombstone) it. */
 export type LwwMapUpdate<K, V> =
@@ -81,6 +81,29 @@ export class LwwMap<K, V> extends EventReducer<ReadonlyMap<K, V>> {
             });
         }
     }
+
+    override snapshot(): ProjectionSnapshot {
+        const entries: SnapshotEntry<K, V>[] = [];
+        for (const [key, entry] of this._entries) {
+            entries.push({ key, value: entry.value, timestamp: entry.timestamp, tombstoned: entry.tombstoned });
+        }
+        return { lastSequence: this.lastSequence, stateJson: JSON.stringify(entries) };
+    }
+
+    protected override restoreState(stateJson: string): void {
+        const entries = JSON.parse(stateJson) as SnapshotEntry<K, V>[];
+        this._entries.clear();
+        for (const e of entries) {
+            this._entries.set(e.key, { value: e.value, timestamp: e.timestamp, tombstoned: e.tombstoned });
+        }
+    }
+}
+
+interface SnapshotEntry<K, V> {
+    readonly key: K;
+    readonly value: V | undefined;
+    readonly timestamp: string;
+    readonly tombstoned: boolean;
 }
 
 interface Entry<V> {

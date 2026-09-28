@@ -310,6 +310,29 @@ button.hidden {
     color: #c9a;
     font-size: 0.8rem;
 }
+.relay-discover-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    flex-basis: 100%;
+}
+.relay-discovered-list {
+    flex-basis: 100%;
+    margin: 0;
+    padding-left: 1.2rem;
+    font-size: 0.8rem;
+    color: #9cc;
+}
+.relay-limited {
+    flex-basis: 100%;
+    margin: 0;
+    color: #e66;
+    font-size: 0.8rem;
+}
+.relay-limited.hidden {
+    display: none;
+}
 footer label {
     font-size: 0.85rem;
     display: flex;

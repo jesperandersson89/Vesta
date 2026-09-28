@@ -1,5 +1,5 @@
 import type { VestaEvent } from "../types.js";
-import { EventReducer } from "./reducer.js";
+import { EventReducer, type ProjectionSnapshot } from "./reducer.js";
 
 /**
  * Single-value last-writer-wins register.
@@ -42,5 +42,16 @@ export class LwwRegister<T> extends EventReducer<T | null> {
             this._value = projected;
             this._valueTimestamp = event.timestamp;
         }
+    }
+
+    override snapshot(): ProjectionSnapshot {
+        const payload = { value: this._value, valueTimestamp: this._valueTimestamp };
+        return { lastSequence: this.lastSequence, stateJson: JSON.stringify(payload) };
+    }
+
+    protected override restoreState(stateJson: string): void {
+        const payload = JSON.parse(stateJson) as { value: T | null; valueTimestamp: string };
+        this._value = payload.value;
+        this._valueTimestamp = payload.valueTimestamp;
     }
 }

@@ -16,6 +16,8 @@ export interface VestaEvent {
     payload: unknown;
     parentId?: string | null;
     signature?: string | null;
+    /** Transport hint: don't store in the DB, just relay to current subscribers. */
+    volatile?: boolean | null;
     replace?: boolean;
     metadata?: Record<string, unknown> | null;
 }

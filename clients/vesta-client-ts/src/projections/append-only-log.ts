@@ -1,5 +1,10 @@
 import type { VestaEvent } from "../types.js";
-import { EventReducer } from "./reducer.js";
+import { EventReducer, type ProjectionSnapshot } from "./reducer.js";
+
+interface SnapshotPayload<T> {
+    items: T[];
+    seenIds: string[];
+}
 
 /**
  * Append-only ordered list reducer.
@@ -39,5 +44,21 @@ export class AppendOnlyLog<T> extends EventReducer<readonly T[]> {
 
         this._seenIds.add(event.id);
         this._items.push(projected);
+    }
+
+    override snapshot(): ProjectionSnapshot {
+        const payload: SnapshotPayload<T> = {
+            items: this._items.slice(),
+            seenIds: [...this._seenIds],
+        };
+        return { lastSequence: this.lastSequence, stateJson: JSON.stringify(payload) };
+    }
+
+    protected override restoreState(stateJson: string): void {
+        const payload = JSON.parse(stateJson) as SnapshotPayload<T>;
+        this._items.length = 0;
+        this._items.push(...payload.items);
+        this._seenIds.clear();
+        for (const id of payload.seenIds) this._seenIds.add(id);
     }
 }

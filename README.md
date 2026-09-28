@@ -84,7 +84,7 @@ The server starts on `ws://localhost:5150/ws`. Without a PostgreSQL connection s
 cd examples/ChatRoom.CLI
 dotnet run
 
-# Python color wheel (requires: pip install websockets)
+# Python color wheel (requires: pip install -r requirements.txt)
 cd examples/colorwheel-py
 python main.py
 

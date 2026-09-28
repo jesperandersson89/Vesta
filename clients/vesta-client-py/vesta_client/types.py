@@ -18,6 +18,7 @@ class VestaEvent:
     signature: str | None = None
     replace: bool = False
     metadata: dict[str, Any] | None = None
+    volatile: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -36,6 +37,8 @@ class VestaEvent:
             d["replace"] = True
         if self.metadata is not None:
             d["metadata"] = self.metadata
+        if self.volatile is not None:
+            d["volatile"] = self.volatile
         return d
 
     @staticmethod
@@ -51,6 +54,7 @@ class VestaEvent:
             signature=data.get("signature"),
             replace=data.get("replace", False),
             metadata=data.get("metadata"),
+            volatile=data.get("volatile"),
         )
 
 

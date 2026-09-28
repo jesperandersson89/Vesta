@@ -10,6 +10,7 @@ All primitives are thread-safe via an internal lock.
 
 from __future__ import annotations
 
+import json
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -21,6 +22,29 @@ TState = TypeVar("TState")
 T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
+
+
+@dataclass(frozen=True)
+class ProjectionSnapshot:
+    """A captured snapshot of a projection's state at a specific server-assigned sequence.
+
+    Matches the C# ``VestaCore.Projections.ProjectionSnapshot`` record shape so persisted
+    snapshots are interchangeable across SDKs where the projected state is JSON-compatible.
+    """
+
+    last_sequence: int
+    state_json: str
+
+
+class SnapshotNotSupportedError(NotImplementedError):
+    """Raised by the default :meth:`EventReducer.snapshot` / :meth:`EventReducer.restore`
+    when a subclass hasn't opted in."""
+
+    def __init__(self, reducer_type_name: str) -> None:
+        super().__init__(
+            f"Reducer {reducer_type_name} does not support snapshotting. "
+            "Override snapshot() and _restore_state() to opt in."
+        )
 
 
 class EventReducer(ABC, Generic[TState]):
@@ -69,6 +93,23 @@ class EventReducer(ABC, Generic[TState]):
     def _reduce(self, event: VestaEvent) -> None:
         """Implementations mutate their internal state in response to the event."""
 
+    def snapshot(self) -> ProjectionSnapshot:
+        """Capture the current state as a :class:`ProjectionSnapshot`. Override in subclasses
+        that want snapshot support; the default raises :class:`SnapshotNotSupportedError`."""
+        raise SnapshotNotSupportedError(type(self).__name__)
+
+    def restore(self, snapshot: ProjectionSnapshot) -> None:
+        """Restore the reducer from a previously captured snapshot. Replaces all internal
+        state and sets :attr:`last_sequence` to ``snapshot.last_sequence``."""
+        with self._lock:
+            self._restore_state(snapshot.state_json)
+            self._last_sequence = snapshot.last_sequence
+
+    def _restore_state(self, state_json: str) -> None:
+        """Hook for :meth:`restore` — implementations replace internal state from the JSON
+        produced by their own :meth:`snapshot`. Called under the reducer's lock."""
+        raise SnapshotNotSupportedError(type(self).__name__)
+
 
 class AppendOnlyLog(EventReducer[list[T]], Generic[T]):
     """Append-only ordered list reducer.
@@ -104,6 +145,16 @@ class AppendOnlyLog(EventReducer[list[T]], Generic[T]):
         self._seen_ids.add(event.id)
         self._items.append(projected)
 
+    def snapshot(self) -> ProjectionSnapshot:
+        with self._lock:
+            payload = {"items": self._items, "seenIds": list(self._seen_ids)}
+            return ProjectionSnapshot(self._last_sequence, json.dumps(payload))
+
+    def _restore_state(self, state_json: str) -> None:
+        payload = json.loads(state_json)
+        self._items = list(payload["items"])
+        self._seen_ids = set(payload["seenIds"])
+
 
 class LwwRegister(EventReducer["T | None"], Generic[T]):
     """Single-value last-writer-wins register.
@@ -136,6 +187,16 @@ class LwwRegister(EventReducer["T | None"], Generic[T]):
         if event.timestamp > self._value_timestamp:
             self._value = projected
             self._value_timestamp = event.timestamp
+
+    def snapshot(self) -> ProjectionSnapshot:
+        with self._lock:
+            payload = {"value": self._value, "valueTimestamp": self._value_timestamp}
+            return ProjectionSnapshot(self._last_sequence, json.dumps(payload))
+
+    def _restore_state(self, state_json: str) -> None:
+        payload = json.loads(state_json)
+        self._value = payload["value"]
+        self._value_timestamp = payload["valueTimestamp"]
 
 
 @dataclass(frozen=True)
@@ -205,6 +266,21 @@ class LwwMap(EventReducer["dict[K, V]"], Generic[K, V]):
         else:
             self._entries[update.key] = _Entry(value=update.value, timestamp=event.timestamp, tombstoned=False)
 
+    def snapshot(self) -> ProjectionSnapshot:
+        with self._lock:
+            entries = [
+                {"key": k, "value": e.value, "timestamp": e.timestamp, "tombstoned": e.tombstoned}
+                for k, e in self._entries.items()
+            ]
+            return ProjectionSnapshot(self._last_sequence, json.dumps(entries))
+
+    def _restore_state(self, state_json: str) -> None:
+        entries = json.loads(state_json)
+        self._entries = {
+            e["key"]: _Entry(value=e["value"], timestamp=e["timestamp"], tombstoned=e["tombstoned"])
+            for e in entries
+        }
+
 
 @dataclass(frozen=True)
 class ProjectionCheckpoint:
@@ -221,4 +297,6 @@ __all__ = [
     "LwwMapUpdate",
     "LwwRegister",
     "ProjectionCheckpoint",
+    "ProjectionSnapshot",
+    "SnapshotNotSupportedError",
 ]

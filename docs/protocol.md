@@ -54,12 +54,12 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 
 ### Limits and the client's reaction
 
-When the relay limits an app (managed quotas on Atrium, or `AppQuotas` on a self-hosted server), the publish is rejected with an `ERROR` frame carrying the offending `eventId` / `channelId`. The C# client interprets these codes (see `VestaErrorCodes.Classify`) and:
+When the relay limits an app (managed quotas on Atrium, or `AppQuotas` on a self-hosted server), the publish is rejected with an `ERROR` frame carrying the offending `eventId` / `channelId`. All three SDKs interpret these codes (`VestaErrorCodes.Classify` in C#, `classifyErrorCode` in TS, `classify_error_code` in Python) and:
 
-- raises a typed `OnLimited(VestaLimitNotice)` event (distinct from the raw `OnError`) so apps can back off, surface UI, or prompt an upgrade without string-matching codes;
-- **dead-letters** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`) are left in the outbox to retry later.
+- raise a typed limit signal — `OnLimited(VestaLimitNotice)` in C#, the `limited` event in TS, `on_limited(VestaLimitNotice)` in Python — distinct from the raw error callback, so apps can back off, surface UI, or prompt an upgrade without string-matching codes;
+- **dead-letter** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`) are left in the outbox to retry later.
 
-The TypeScript and Python `ErrorMessage` types carry the same optional `eventId` / `channelId` fields; the typed limit/dead-letter behavior is currently C#-only.
+The TypeScript and Python `ErrorMessage` types carry the same optional `eventId` / `channelId` fields, and both clients now ship the same classification + dead-letter behavior as C#.
 
 ## Wire format
 
@@ -213,13 +213,17 @@ A signed descriptor proves the relay **authored** it and that it **claims** to h
 cannot prove the relay actually carries the app's data, and a relay can lie about its `apps`. So
 discovery is deliberately **show-only**:
 
-- The C# client (`FederationClient.DiscoverRelaysForAppAsync` / `ListAllRelaysAsync`) verifies
-  every descriptor signature **and** cross-checks each advertised `ownerClientId` against the app's
-  compiled-in trust anchor (`VestaIdentity.DeriveClientId(VestaAppConfig.OwnerPublicKey)`), dropping
-  relays that advertise the app under a different owner.
+- The client (`FederationClient.DiscoverRelaysForAppAsync` / `ListAllRelaysAsync` in C#;
+  `discoverRelaysForApp` / `listAllRelays` in TS; `discover_relays_for_app` / `list_all_relays` in
+  Python — all three SDKs ship a `FederationClient`) verifies every descriptor signature **and**
+  cross-checks each advertised `ownerClientId` against the app's compiled-in trust anchor
+  (`deriveClientId(VestaAppConfig.ownerPublicKey)`), dropping relays that advertise the app under
+  a different owner.
 - Surviving relays are returned as **unverified candidates**. They are **never auto-adopted** —
   owner-signed manifest relays remain the only automatic failover tier. The user adopts a
-  discovered relay manually via the existing `SetUserRelayOverrideAsync` escape hatch.
+  discovered relay manually via the existing relay-override escape hatch
+  (`SetUserRelayOverrideAsync` in C#, `setUserRelayOverride` in TS, `set_user_relay_override` in
+  Python).
 
 
 ## See also

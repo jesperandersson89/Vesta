@@ -11,9 +11,10 @@ using TodoList.CLI;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-// Flags: [--user <username>] [--password <password>] [serverUrl]
+// Flags: [--user <username>] [--password <password>] [--register] [serverUrl]
 string? username = null;
 string? password = null;
+bool registerOnStart = false;
 List<string> positional = [];
 
 for (int i = 0; i < args.Length; i++)
@@ -22,6 +23,8 @@ for (int i = 0; i < args.Length; i++)
         username = args[++i];
     else if (args[i] == "--password" && i + 1 < args.Length)
         password = args[++i];
+    else if (args[i] == "--register")
+        registerOnStart = true;
     else
         positional.Add(args[i]);
 }
@@ -90,6 +93,7 @@ Directory.CreateDirectory(vestaDir);
 string identityPath = Environment.GetEnvironmentVariable("VESTA_IDENTITY_FILE")
     ?? Path.Combine(vestaDir, "todo-identity.json");
 string dbPath = Path.Combine(vestaDir, $"todo-{channelSuffix}.db");
+string groupFilePath = Path.Combine(vestaDir, $"todo-{channelSuffix}-group.json");
 
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
@@ -180,11 +184,27 @@ connection.OnReconnected += () =>
     PrintPrompt();
 };
 
+connection.OnLimited += (VestaLimitNotice notice) =>
+{
+    Console.ForegroundColor = ConsoleColor.Red;
+    string kind = notice.IsTransient ? "transient — will retry" : "permanent — not retried";
+    Console.WriteLine($"\n  [LIMITED] {notice.Code}: {notice.Message} ({kind})");
+    Console.ResetColor();
+    PrintPrompt();
+};
+
 // ─── Connect ─────────────────────────────────────────────────────────────────
 try
 {
     await connection.ConnectAsync(channels: [channel]);
     isConnected = true;
+    if (registerOnStart)
+    {
+        await connection.RegisterAppAsync(appId);
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
+        Console.WriteLine($"  Requested registration of app '{appId}' — watch for ACK/ERROR above.");
+        Console.ResetColor();
+    }
 }
 catch (Exception ex)
 {
@@ -246,6 +266,22 @@ while (true)
 
         case "help" or "?":
             PrintHelp();
+            break;
+
+        case "/pair":
+            await PairAsync();
+            break;
+
+        case "/join" when parts.Length > 1:
+            await JoinAsync(parts[1]);
+            break;
+
+        case "/link" when parts.Length > 1:
+            await LinkAsync(parts[1]);
+            break;
+
+        case "/devices":
+            await ShowDevicesAsync();
             break;
 
         case "quit" or "exit" or "q":
@@ -411,6 +447,117 @@ async Task RemoveItemAsync(int index)
     Console.ResetColor();
 }
 
+// ─── Device pairing (cross-device identity) ─────────────────────────────────
+// This is a SEPARATE mechanism from the username/password channel derivation above: the
+// todo list itself already syncs across devices that share credentials. Device-group pairing
+// instead proves that two distinct Ed25519 identities (two different local keypairs, e.g. one
+// per device) belong to the same person via signed link events on a dedicated identity channel
+// (`vesta/identity/{groupId}`) — see PLANNING.md "Cross-Device Identity (Device Groups)".
+
+string? LoadGroupId()
+    => File.Exists(groupFilePath)
+        ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(groupFilePath)).GetProperty("groupId").GetString()
+        : null;
+
+void SaveGroupId(string groupId)
+    => File.WriteAllText(groupFilePath, JsonSerializer.Serialize(new { groupId }));
+
+async Task PairAsync()
+{
+    string? groupId = LoadGroupId();
+    if (groupId is null)
+    {
+        groupId = await connection.CreateDeviceGroupAsync(deviceName: Environment.MachineName);
+        SaveGroupId(groupId);
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"  Created device group '{groupId}' — this device is the founder.");
+        Console.ResetColor();
+    }
+
+    PairingPayload payload = new(groupId, VestaCore.Utilities.Base64Url.Encode(identity.PublicKey), serverUrl);
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine("  Pairing code (paste into /join on the OTHER device):");
+    Console.WriteLine($"    {payload.ToBase64()}");
+    Console.ResetColor();
+}
+
+async Task JoinAsync(string pairingCode)
+{
+    PairingPayload payload;
+    try
+    {
+        payload = PairingPayload.FromBase64(pairingCode);
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"  Invalid pairing code: {ex.Message}");
+        Console.ResetColor();
+        return;
+    }
+
+    SaveGroupId(payload.GroupId);
+    await connection.JoinDeviceGroupAsync(payload.GroupId, deviceName: Environment.MachineName);
+
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine($"  Announced this device to group '{payload.GroupId}'. Not yet trusted.");
+    Console.WriteLine("  On an ALREADY-PAIRED device, run:");
+    Console.WriteLine($"    /link {VestaCore.Utilities.Base64Url.Encode(identity.PublicKey)}");
+    Console.ResetColor();
+}
+
+async Task LinkAsync(string targetPublicKeyBase64Url)
+{
+    string? groupId = LoadGroupId();
+    if (groupId is null)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("  This device isn't in a device group yet. Run /pair first.");
+        Console.ResetColor();
+        return;
+    }
+
+    byte[] targetPublicKey;
+    try
+    {
+        targetPublicKey = VestaCore.Utilities.Base64Url.Decode(targetPublicKeyBase64Url);
+    }
+    catch (FormatException)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine("  Invalid public key — expected the base64url string printed by /join.");
+        Console.ResetColor();
+        return;
+    }
+
+    await connection.LinkDeviceAsync(groupId, targetPublicKey, reason: "device-pairing");
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine("  Vouched for the new device. It is now a trusted member of the group.");
+    Console.ResetColor();
+}
+
+async Task ShowDevicesAsync()
+{
+    string? groupId = LoadGroupId();
+    if (groupId is null)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("  This device isn't in a device group yet. Run /pair first.");
+        Console.ResetColor();
+        return;
+    }
+
+    DeviceGroup group = await connection.GetDeviceGroupMembersAsync(groupId);
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine($"  Device group '{groupId}' — {group.Count} trusted member(s):");
+    foreach ((string memberClientId, string memberPublicKey) in group.Members)
+    {
+        string marker = memberClientId == clientId ? " (this device)" : "";
+        Console.WriteLine($"    {memberClientId}{marker}");
+    }
+    Console.ResetColor();
+}
+
 // ─── Credential & Display Helpers ────────────────────────────────────────────
 
 /// <summary>
@@ -493,6 +640,10 @@ void PrintHelp()
     Console.WriteLine("    rename <index> <t>   Rename an item");
     Console.WriteLine("    remove <index>       Remove an item");
     Console.WriteLine("    list                 Show all items");
+    Console.WriteLine("    /pair                Create/show a device-group pairing code for THIS account");
+    Console.WriteLine("    /join <code>         Join a device group using a pairing code from another device");
+    Console.WriteLine("    /link <public-key>   Vouch for a device that ran /join (run on an already-paired device)");
+    Console.WriteLine("    /devices             List devices trusted as members of this account's device group");
     Console.WriteLine("    help                 Show this help");
     Console.WriteLine("    quit                 Exit");
     Console.ResetColor();

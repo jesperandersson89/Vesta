@@ -17,15 +17,18 @@
 import { Chess, type Square } from "chess.js";
 import {
     createEvent,
+    FederationClient,
     LocalStorageManifestStore,
     LocalStorageRelayOverrideStore,
     RelayDirectory,
     VestaConnection,
+    type DiscoveredRelay,
     type EventMessage,
     type EventsBatchMessage,
     type RelayManifest,
     type SequencedEvent,
     type VestaAppConfig,
+    type VestaLimitNotice,
     type VestaSocket,
     type WelcomeMessage,
 } from "vesta-client";
@@ -90,6 +93,10 @@ const relayOverrideInput = $<HTMLInputElement>("relay-override");
 const relayOverrideBtn = $<HTMLButtonElement>("relay-override-btn");
 const relayOverrideClearBtn = $<HTMLButtonElement>("relay-override-clear");
 const relayManifestEl = $("relay-manifest");
+const relayDiscoverBtn = $<HTMLButtonElement>("relay-discover-btn");
+const relayDiscoverAllBtn = $<HTMLButtonElement>("relay-discover-all-btn");
+const relayDiscoveredListEl = $<HTMLUListElement>("relay-discovered-list");
+const relayLimitedEl = $("relay-limited");
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -134,6 +141,7 @@ const declinedInvites = new Set<string>();
 let currentMatchId: string | null = null;
 let connection: VestaConnection | null = null;
 let relayDirectory: RelayDirectory | null = null;
+let appConfig: VestaAppConfig | null = null;
 let username: string = usernameInput.value;
 let presenceTimer: number | null = null;
 let pruneTimer: number | null = null;
@@ -276,17 +284,17 @@ function publishLobby(
     opts?: { volatile?: boolean; ttlSeconds?: number },
 ): void {
     if (!connection?.isConnected) return;
-    const options: { metadata?: Record<string, unknown> } & Record<
-        string,
-        unknown
-    > = {};
+    const options: {
+        metadata?: Record<string, unknown>;
+        volatile?: boolean;
+    } = {};
     if (opts?.volatile || opts?.ttlSeconds) {
         options.metadata = { ttlSeconds: opts.ttlSeconds ?? PRESENCE_TTL_SEC };
     }
-    const event = createEvent(LOBBY, identity, type, payload, options);
     if (opts?.volatile) {
-        (event as { volatile?: boolean }).volatile = true;
+        options.volatile = true;
     }
+    const event = createEvent(LOBBY, identity, type, payload, options);
     connection.publish(event);
 }
 
@@ -814,12 +822,14 @@ async function connect(): Promise<void> {
             ownerPublicKey: OWNER_PUBLIC_KEY,
             defaultRelays: relays,
         };
+        appConfig = config;
         relayDirectory = new RelayDirectory(
             config,
             new LocalStorageRelayOverrideStore("vesta-chess-relay-override"),
             new LocalStorageManifestStore("vesta-chess-relay-manifest"),
         );
     } else {
+        appConfig = null;
         relayDirectory = null;
     }
 
@@ -843,6 +853,12 @@ async function connect(): Promise<void> {
             `Adopted owner-signed manifest v${manifest.version} ` +
             `(${manifest.relays.length} relay(s), issued ${manifest.issuedAt}).`;
         updateRelayPanel();
+    });
+
+    connection.on("limited", (notice: VestaLimitNotice) => {
+        const kind = notice.isTransient ? "transient — will retry" : "permanent — not retried";
+        relayLimitedEl.textContent = `[LIMITED] ${notice.code}: ${notice.message} (${kind})`;
+        relayLimitedEl.classList.remove("hidden");
     });
 
     connection.on("connected", (welcome: WelcomeMessage) => {
@@ -945,6 +961,59 @@ relayOverrideClearBtn.addEventListener("click", () => {
         connection.updateRelayCandidates(relayDirectory.resolveCandidates());
         updateRelayPanel();
     }
+});
+
+// Federation discovery: ask the active relay which other relays host this app (or browse
+// the whole mesh). Discovered relays are SHOW-ONLY — the user adopts one manually via the
+// override input above; owner-signed manifest relays remain the only automatic failover tier.
+function renderDiscoveredRelays(relays: DiscoveredRelay[]): void {
+    relayDiscoveredListEl.innerHTML = "";
+    if (relays.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "No relays found.";
+        relayDiscoveredListEl.appendChild(li);
+        return;
+    }
+    for (const relay of relays) {
+        const li = document.createElement("li");
+        const url = relay.urls[0] ?? "(no url)";
+        const flag = relay.hostsRequestedApp ? "hosts app" : "unknown";
+        const useBtn = document.createElement("button");
+        useBtn.textContent = "Use";
+        useBtn.addEventListener("click", () => {
+            relayOverrideInput.value = url;
+            relayOverrideBtn.click();
+        });
+        li.textContent = `${url} [${flag}] `;
+        li.appendChild(useBtn);
+        relayDiscoveredListEl.appendChild(li);
+    }
+}
+
+async function discoverRelays(browseAll: boolean): Promise<void> {
+    if (!appConfig || !connection) {
+        relayManifestEl.textContent =
+            "Discovery needs an app-owner key (VITE_VESTA_OWNER_PUBLIC_KEY) configured.";
+        return;
+    }
+    const federationBase = FederationClient.toFederationBaseUrl(connection.activeRelay);
+    if (!federationBase) {
+        relayManifestEl.textContent = "No reachable relay to query for discovery.";
+        return;
+    }
+    const federation = new FederationClient(appConfig);
+    const found = browseAll
+        ? await federation.listAllRelays(federationBase)
+        : await federation.discoverRelaysForApp(federationBase);
+    renderDiscoveredRelays(found);
+}
+
+relayDiscoverBtn.addEventListener("click", () => {
+    discoverRelays(false).catch((err) => console.error(err));
+});
+
+relayDiscoverAllBtn.addEventListener("click", () => {
+    discoverRelays(true).catch((err) => console.error(err));
 });
 
 logoutBtn.addEventListener("click", () => {

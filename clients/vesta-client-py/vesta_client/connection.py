@@ -13,6 +13,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from vesta_client.identity import VestaIdentity
+from vesta_client.limits import VestaLimitNotice, classify_error_code
 from vesta_client.relay import (
     RELAY_MANIFEST_EVENT_TYPE,
     RelayDirectory,
@@ -82,13 +83,16 @@ class VestaConnection:
         self._disposed = False
         self._is_connected = False
         self._server_id: str | None = None
+        self._has_reached_welcome_once = False
 
         # Callbacks
         self._on_event: Callable[[EventMessage], None] | None = None
         self._on_events_batch: Callable[[EventsBatchMessage], None] | None = None
         self._on_ack: Callable[[AckMessage], None] | None = None
         self._on_error: Callable[[ErrorMessage], None] | None = None
+        self._on_limited: Callable[[VestaLimitNotice], None] | None = None
         self._on_connected: Callable[[WelcomeMessage], None] | None = None
+        self._on_reconnected: Callable[[WelcomeMessage], None] | None = None
         self._on_disconnected: Callable[[str], None] | None = None
         self._on_relay_switched: Callable[[str], None] | None = None
         self._on_manifest_applied: Callable[[RelayManifest], None] | None = None
@@ -129,8 +133,18 @@ class VestaConnection:
     def on_error(self, callback: Callable[[ErrorMessage], None]) -> None:
         self._on_error = callback
 
+    def on_limited(self, callback: Callable[[VestaLimitNotice], None]) -> None:
+        """Register a callback for the semantic "your app is being limited" signal —
+        see :func:`vesta_client.limits.classify_error_code`."""
+        self._on_limited = callback
+
     def on_connected(self, callback: Callable[[WelcomeMessage], None]) -> None:
         self._on_connected = callback
+
+    def on_reconnected(self, callback: Callable[[WelcomeMessage], None]) -> None:
+        """Register a callback fired after WELCOME when this is a subsequent connect
+        (i.e. the connection had already reached WELCOME once before)."""
+        self._on_reconnected = callback
 
     def on_disconnected(self, callback: Callable[[str], None]) -> None:
         self._on_disconnected = callback
@@ -173,6 +187,21 @@ class VestaConnection:
         self._active_relay_index = self._relay_candidates.index(url)
         await self.disconnect()
         await self.connect()
+
+    def set_user_relay_override(self, url: str) -> None:
+        """Persist a user-chosen relay override (the local escape hatch) and refresh the
+        candidate list to prefer it. Requires a :class:`RelayDirectory` to have been attached."""
+        if self._relay_directory is None:
+            raise RuntimeError("No relay_directory attached — cannot set a relay override.")
+        self._relay_directory.set_user_override(url)
+        self.update_relay_candidates(self._relay_directory.resolve_candidates())
+
+    def clear_user_relay_override(self) -> None:
+        """Clear the user relay override and fall back to manifest / default relays."""
+        if self._relay_directory is None:
+            raise RuntimeError("No relay_directory attached — cannot clear a relay override.")
+        self._relay_directory.clear_user_override()
+        self.update_relay_candidates(self._relay_directory.resolve_candidates())
 
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
@@ -229,9 +258,13 @@ class VestaConnection:
         self._server_id = msg.server_id
         self._channels = list(msg.channels)
         self._reconnect_attempt = 0
+        was_reconnect = self._has_reached_welcome_once
+        self._has_reached_welcome_once = True
 
         if self._on_connected:
             self._on_connected(msg)
+        if was_reconnect and self._on_reconnected:
+            self._on_reconnected(msg)
 
         # Start receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
@@ -598,6 +631,23 @@ class VestaConnection:
             case ErrorMessage() as m:
                 if self._on_error:
                     self._on_error(m)
+                self._handle_possible_limit(m)
+
+    def _handle_possible_limit(self, msg: ErrorMessage) -> None:
+        classification = classify_error_code(msg.code)
+        if classification.is_limit and self._on_limited:
+            self._on_limited(
+                VestaLimitNotice(
+                    code=msg.code,
+                    message=msg.message,
+                    channel_id=msg.channel_id,
+                    event_id=msg.event_id,
+                    is_transient=classification.is_transient,
+                )
+            )
+        if classification.is_event_fatal and msg.event_id and self._local_store is not None:
+            self._pending_publishes.pop(msg.event_id, None)
+            asyncio.create_task(self._local_store.mark_outbox_rejected(msg.event_id, msg.code))
 
     def _maybe_apply_manifest_event(self, channel_id: str, event: VestaEvent) -> None:
         directory = self._relay_directory

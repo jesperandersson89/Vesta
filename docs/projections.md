@@ -103,9 +103,9 @@ public sealed class CounterState : EventReducer<int>
 
 ## Snapshotting
 
-Replaying the full event log on every cold start gets expensive fast. The C# SDK persists projection state via `IProjectionStore` (default impl: `SqliteProjectionStore`) so a client can boot, restore, and only fetch events newer than the saved sequence.
+Replaying the full event log on every cold start gets expensive fast. All three SDKs persist projection state via a `ProjectionStore` interface (`IProjectionStore` in C#) so a client can boot, restore, and only fetch events newer than the saved sequence — C# ships `SqliteProjectionStore` by default, TypeScript ships `InMemoryProjectionStore` / `LocalStorageProjectionStore` (browser) / `FileProjectionStore` (Node, via the `vesta-client/node` subpath), and Python ships `InMemoryProjectionStore` / `SqliteProjectionStore`.
 
-The three built-in reducers (`AppendOnlyLog<T>`, `LwwRegister<T>`, `LwwMap<TKey,TValue>`) implement `Snapshot()` / `Restore(ProjectionSnapshot)` out of the box. User-defined reducers can opt in by overriding both methods (default throws `SnapshotNotSupportedException`).
+The three built-in reducers (`AppendOnlyLog`, `LwwRegister`, `LwwMap`) implement `snapshot()` / `restore(snapshot)` out of the box in all three SDKs. User-defined reducers can opt in by overriding both methods (default throws `SnapshotNotSupportedException` / `SnapshotNotSupportedError`).
 
 ```csharp
 using SqliteProjectionStore store = new("Data Source=projections.db");
@@ -133,14 +133,12 @@ The store keys snapshots by `(channelId, projectionId)` — a single channel may
 | --------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
 | .NET desktop / CLI / server | `SqliteProjectionStore` (default)                                   | Embedded, transactional, single file — already there            |
 | .NET AOT / Blazor-WASM      | Custom impl over LiteDB or files                                    | Avoids the native SQLite dependency                             |
-| Browser (TS)                | IndexedDB (planned)                                                 | Async, persistent, no extra deps, no native SQLite-WASM bundle  |
-| Node (TS)                   | `better-sqlite3` or flat JSON dir                                   | Snapshots are small — a directory of JSON files is often enough |
-| Python                      | stdlib `sqlite3`                                                    | Snapshots are small and SQLite is in the stdlib                 |
-| Tests / ephemeral           | In-memory SQLite (`CreateInMemory()`) or a `Dictionary`-backed impl | Zero setup                                                      |
+| Browser (TS)                | `LocalStorageProjectionStore`                                       | Ships in the package root; async, persistent, no native deps    |
+| Node (TS)                   | `FileProjectionStore` (`vesta-client/node`)                          | Single JSON file per store; demo-scale, not high-throughput     |
+| Python                      | `SqliteProjectionStore`                                              | Snapshots are small and SQLite is in the stdlib                 |
+| Tests / ephemeral           | `InMemoryProjectionStore` (all three SDKs)                          | Zero setup                                                      |
 
-Anything that can durably store `(channelId, projectionId) → (lastSequence, opaqueJson)` works. Redis, a remote API, or a flat file directory are all valid — implement `IProjectionStore` and pass it where the default would go.
-
-> **TS / Python:** Snapshot APIs are not yet ported. The TS port will use **IndexedDB** in the browser (not SQLite-WASM — smaller bundle, no native deps). Tracked as a follow-up to TODO #10 in [PLANNING.md](../PLANNING.md).
+Anything that can durably store `(channelId, projectionId) → (lastSequence, opaqueJson)` works. Redis, a remote API, or a flat file directory are all valid — implement the store interface and pass it where the default would go.
 
 ## Thread safety
 
@@ -150,9 +148,9 @@ The C# and Python implementations are thread-safe via an internal lock (`EventRe
 
 The three implementations share identical semantics: `applyLocal` never advances `lastSequence`; `apply` advances only on strict-greater sequence; ties on timestamp preserve the existing value; `LwwMap` tombstones survive stale `set`s. The same channel projected by a C#, TS, and Python client converges to the same state. Worked examples:
 
-- C# — [examples/Presence.CLI/PresenceState.cs](../examples/Presence.CLI/PresenceState.cs) uses `LwwMap<string, Heartbeat>` for presence.
-- TypeScript — [examples/clipboard-ts/src/main.ts](../examples/clipboard-ts/src/main.ts) uses `LwwMap<string, ClipboardEntry>` for per-author latest paste.
-- Python — see [clients/vesta-client-py/tests/test_projections.py](../clients/vesta-client-py/tests/test_projections.py) for the full primitive surface in use.
+- C# — [examples/Presence.CLI/PresenceState.cs](../examples/Presence.CLI/PresenceState.cs) uses `LwwMap<string, Heartbeat>` for presence, with snapshotting.
+- TypeScript — [examples/clipboard-ts/src/main.ts](../examples/clipboard-ts/src/main.ts) uses `LwwMap<string, ClipboardEntry>` for per-author latest paste, with snapshotting via `FileProjectionStore`.
+- Python — [examples/colorwheel-py/main.py](../examples/colorwheel-py/main.py) uses `LwwMap[str, dict]` for per-user color; [examples/collab-edit-py/main.py](../examples/collab-edit-py/main.py) uses `LwwRegister[dict]` for the single shared document. Both snapshot via `SqliteProjectionStore`. See also [clients/vesta-client-py/tests/test_projections.py](../clients/vesta-client-py/tests/test_projections.py) for the full primitive surface in use.
 
 ## See also
 

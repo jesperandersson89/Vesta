@@ -30,6 +30,12 @@ string serverUrl = relays[0].ToString();
 string appId = Environment.GetEnvironmentVariable("VESTA_APP_ID") ?? "chat";
 string channel = args.Length > 1 ? args[1] : $"{appId}/general";
 
+// --register: call RegisterAppAsync(appId) once after connecting and report the outcome.
+// Opt-in because REGISTER_APP fails with DUPLICATE_APP if the app is already registered —
+// it must not run unconditionally on every start. Needed when the relay runs with
+// Protocol:RequireAppRegistration=true or restricts registration via Protocol:AllowedApps.
+bool registerOnStart = args.Contains("--register", StringComparer.OrdinalIgnoreCase);
+
 // ─── Username Prompt ─────────────────────────────────────────────────────────
 Console.Write("Enter your username: ");
 string? username = Console.ReadLine()?.Trim();
@@ -237,6 +243,17 @@ connection.OnError += (ErrorMessage error) =>
     });
 };
 
+connection.OnLimited += (VestaLimitNotice notice) =>
+{
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        string kind = notice.IsTransient ? "transient — will retry" : "permanent — not retried";
+        Console.WriteLine($"  [LIMITED] {notice.Code}: {notice.Message} ({kind})");
+        Console.ResetColor();
+    });
+};
+
 connection.OnDisconnected += (string reason) =>
 {
     isConnected = false;
@@ -298,6 +315,17 @@ async Task PublishJoinAsync()
     await connection.PublishAsync(joinEvt);
 }
 
+async Task RegisterAppAsync()
+{
+    await connection.RegisterAppAsync(appId);
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
+        Console.WriteLine($"  Requested registration of app '{appId}' \u2014 watch for ACK/ERROR above.");
+        Console.ResetColor();
+    });
+}
+
 try
 {
     await connection.ConnectAsync(
@@ -305,6 +333,10 @@ try
 
     isConnected = true;
     await PublishJoinAsync();
+    if (registerOnStart)
+    {
+        await RegisterAppAsync();
+    }
 
     Console.ForegroundColor = ConsoleColor.Green;
     Console.WriteLine($"Connected to server: {connection.ServerId} via {connection.ActiveRelay}");
@@ -348,6 +380,7 @@ async Task HandleCommandAsync(string input)
                 Console.WriteLine("    /discover                          find OTHER relays that host this app (federation)");
                 Console.WriteLine("    /discover all                      browse every relay the current relay knows about");
                 Console.WriteLine("    /publish-manifest <url> [url...]   sign & publish an owner relay manifest");
+                Console.WriteLine("    /register                          register this app id (needed on closed relays)");
                 Console.WriteLine("    /help                              show this help");
                 Console.ResetColor();
             });
@@ -414,6 +447,10 @@ async Task HandleCommandAsync(string input)
 
         case "/discover":
             await DiscoverRelaysAsync(parts);
+            break;
+
+        case "/register":
+            await RegisterAppAsync();
             break;
 
         default:

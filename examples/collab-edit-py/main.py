@@ -20,6 +20,9 @@ Conflict model:
 
 Run:  python main.py [ws://host:port/ws] [room-name]
 Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
+
+Local cache: ~/.vesta/collab-edit-{room}-{username}-cache.db (offline outbox + event cache)
+Snapshot:    ~/.vesta/collab-edit-{room}-{username}-snapshots.db (LwwRegister projection snapshot)
 """
 
 import asyncio
@@ -28,13 +31,26 @@ import sys
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import scrolledtext
 
-from vesta_client import VestaConnection, VestaIdentity, create_event, load_or_create_identity
+from vesta_client import (
+    LwwRegister,
+    SequencedEvent,
+    VestaConnection,
+    VestaEvent,
+    VestaIdentity,
+    VestaLimitNotice,
+    create_event,
+    load_or_create_identity,
+)
+from vesta_client.projection_store import SqliteProjectionStore, restore_projection, save_projection
+from vesta_client.storage import SqliteClientEventStore
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Configuration ────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
 DEFAULT_ROOM = "main"
+VESTA_DIR = Path.home() / ".vesta"
 
 DEBOUNCE_MS = 150          # Publish after 150ms of no typing
 DEFER_REMOTE_MS = 300      # Ignore remote updates while actively typing
@@ -49,54 +65,30 @@ ACCENT = "#0e639c"
 CURSOR_COLOR = "#aeafad"
 
 
-
-
 # ── Document State ────────────────────────────────────────────────────────────
-class DocumentState:
-    """Thread-safe LWW projection of the shared document."""
-
-    def __init__(self):
-        self._text = ""
-        self._timestamp = ""
-        self._last_author = ""
-        self._lock = threading.Lock()
-
-    @property
-    def text(self) -> str:
-        with self._lock:
-            return self._text
-
-    @property
-    def timestamp(self) -> str:
-        with self._lock:
-            return self._timestamp
-
-    @property
-    def last_author(self) -> str:
-        with self._lock:
-            return self._last_author
-
-    def apply(self, event: dict) -> bool:
-        """Apply an event. Returns True if document changed."""
-        if event.get("eventType") != "app.collab.document-update":
-            return False
-        ts = event.get("timestamp", "")
-        payload = event.get("payload", {})
-        text = payload.get("text", "")
-        username = payload.get("username", "")
-
-        with self._lock:
-            if self._timestamp and self._timestamp >= ts:
-                return False
-            self._text = text
-            self._timestamp = ts
-            self._last_author = username
-        return True
+def document_projector(event: VestaEvent) -> dict | None:
+    """Single shared document: last-writer-wins on the full text (see LwwRegister)."""
+    if event.event_type != "app.collab.document-update":
+        return None
+    payload = event.payload or {}
+    return {
+        "text": payload.get("text", ""),
+        "username": payload.get("username", ""),
+        "cursorPos": payload.get("cursorPos", 0),
+    }
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 class App:
-    def __init__(self, root: tk.Tk, username: str, identity: VestaIdentity, server_url: str, channel: str):
+    def __init__(
+        self,
+        root: tk.Tk,
+        username: str,
+        identity: VestaIdentity,
+        server_url: str,
+        channel: str,
+        state: "LwwRegister[dict]",
+    ):
         self.root = root
         self.username = username
         self.identity = identity
@@ -104,7 +96,7 @@ class App:
         self.server_url = server_url
         self.channel = channel
 
-        self.state = DocumentState()
+        self.state = state
         self.incoming: queue.Queue = queue.Queue()
         self.publish_cb = None
         self._connected = False
@@ -118,6 +110,12 @@ class App:
         root.minsize(500, 300)
 
         self._build_ui()
+        restored = self.state.state
+        if restored and restored.get("text"):
+            self.editor.insert("1.0", restored["text"])
+            self.editor.edit_modified(False)
+            self.chars_var.set(f"{len(restored['text'])} chars")
+            self.author_var.set(f"Last edit: {restored.get('username', '?')}")
         self._poll_queue()
 
     def _build_ui(self):
@@ -143,6 +141,10 @@ class App:
         self.chars_var = tk.StringVar(value="0 chars")
         tk.Label(info_bar, textvariable=self.chars_var, bg=BG, fg=FG_DIM,
                  font=("Segoe UI", 8)).pack(side="right")
+
+        self.limit_var = tk.StringVar(value="")
+        tk.Label(info_bar, textvariable=self.limit_var, bg=BG, fg="#e66",
+                 font=("Segoe UI", 8)).pack(side="right", padx=(0, 10))
 
         # ── Editor ────────────────────────────────────────────────────────────
         editor_frame = tk.Frame(self.root, bg="#333333", bd=0)
@@ -197,13 +199,14 @@ class App:
         text = self.editor.get("1.0", "end-1c")
 
         # Update local state so we don't accept older remote versions
-        now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        self.state.apply({
-            "clientId": self.client_id,
-            "eventType": "app.collab.document-update",
-            "timestamp": now_ts,
-            "payload": {"text": text, "username": self.username, "cursorPos": 0},
-        })
+        evt = create_event(
+            self.channel,
+            self.client_id,
+            "app.collab.document-update",
+            {"text": text, "username": self.username, "cursorPos": 0},
+            replace=True,
+        )
+        self.state.apply_local(evt)
         self.author_var.set(f"Last edit: {self.username} (you)")
 
         if self.publish_cb:
@@ -219,21 +222,24 @@ class App:
         return len(text_before)
 
     # ── Remote update application ─────────────────────────────────────────────
-    def _apply_remote_update(self, event: dict):
+    def _apply_remote_update(self, sequenced: SequencedEvent):
         """Apply a remote document update, preserving cursor position."""
         # Don't apply while user is actively typing
         elapsed = self._now_ms() - self._last_local_edit_ms
         if elapsed < DEFER_REMOTE_MS:
             # Re-check shortly
             self.root.after(DEFER_REMOTE_MS - elapsed + 10,
-                            lambda: self._apply_remote_update(event))
+                            lambda: self._apply_remote_update(sequenced))
             return
 
-        if not self.state.apply(event):
-            return
+        before = self.state.state
+        self.state.apply(sequenced)
+        after = self.state.state
+        if after is before:
+            return  # stale update, ignored by LwwRegister
 
-        new_text = self.state.text
-        author = event.get("payload", {}).get("username", "?")
+        new_text = after["text"] if after else ""
+        author = after["username"] if after else "?"
         self.author_var.set(f"Last edit: {author}")
 
         # Save cursor position
@@ -267,9 +273,9 @@ class App:
                 kind = item["kind"]
 
                 if kind == "event":
-                    evt = item["event"]
-                    if evt.get("clientId") != self.client_id:
-                        self._apply_remote_update(evt)
+                    sequenced: SequencedEvent = item["event"]
+                    if sequenced.event.client_id != self.client_id:
+                        self._apply_remote_update(sequenced)
 
                 elif kind == "connected":
                     self._connected = True
@@ -279,6 +285,11 @@ class App:
                     self._connected = False
                     self.publish_cb = None
                     self.status_var.set("○  Disconnected — retrying…")
+
+                elif kind == "limited":
+                    notice: VestaLimitNotice = item["notice"]
+                    kind_label = "transient" if notice.is_transient else "permanent"
+                    self.limit_var.set(f"[LIMITED] {notice.code}: {notice.message} ({kind_label})")
 
         except queue.Empty:
             pass
@@ -291,12 +302,13 @@ class App:
 
 
 # ── WebSocket background task ─────────────────────────────────────────────────
-async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
+async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop, local_store: SqliteClientEventStore):
     conn = VestaConnection(
         server_url=app.server_url,
         client_id=app.client_id,
         channels=[app.channel],
         public_key=app.identity.public_key_b64,
+        local_store=local_store,
     )
 
     def on_connected(welcome):
@@ -324,43 +336,38 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop):
             asyncio.run_coroutine_threadsafe(_publish(current_text, 0), loop)
 
     def on_event(msg):
-        evt = {
-            "clientId": msg.event.client_id,
-            "eventType": msg.event.event_type,
-            "timestamp": msg.event.timestamp,
-            "payload": msg.event.payload,
-        }
-        app.incoming.put({"kind": "event", "event": evt})
+        app.incoming.put({
+            "kind": "event",
+            "event": SequencedEvent(event=msg.event, sequence=msg.sequence, received_at=msg.received_at),
+        })
 
     def on_events_batch(msg):
         for se in msg.events:
-            evt = {
-                "clientId": se.event.client_id,
-                "eventType": se.event.event_type,
-                "timestamp": se.event.timestamp,
-                "payload": se.event.payload,
-            }
-            app.incoming.put({"kind": "event", "event": evt})
+            app.incoming.put({"kind": "event", "event": se})
 
     def on_disconnected(reason):
         app.incoming.put({"kind": "disconnected"})
         app.publish_cb = None
 
+    def on_limited(notice: VestaLimitNotice):
+        app.incoming.put({"kind": "limited", "notice": notice})
+
     conn.on_connected(on_connected)
     conn.on_event(on_event)
     conn.on_events_batch(on_events_batch)
     conn.on_disconnected(on_disconnected)
+    conn.on_limited(on_limited)
 
     await conn.connect()
     # Keep the loop running
     await asyncio.Event().wait()
 
 
-def start_ws_thread(app: App):
+def start_ws_thread(app: App, local_store: SqliteClientEventStore):
     def run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(vesta_loop(app, loop))
+        loop.run_until_complete(vesta_loop(app, loop, local_store))
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -440,7 +447,21 @@ if __name__ == "__main__":
 
     identity = resolve_identity(f"collab-edit-{room}-{username}")
 
+    VESTA_DIR.mkdir(parents=True, exist_ok=True)
+    prefix = f"collab-edit-{room}-{username}"
+    local_store = SqliteClientEventStore(str(VESTA_DIR / f"{prefix}-cache.db"))
+    projection_store = SqliteProjectionStore(str(VESTA_DIR / f"{prefix}-snapshots.db"))
+
+    state = LwwRegister(document_projector)
+    asyncio.run(restore_projection(projection_store, channel, "document", state))
+
     root = tk.Tk()
-    app = App(root, username, identity, server_url, channel)
-    start_ws_thread(app)
+    app = App(root, username, identity, server_url, channel, state)
+
+    def on_close():
+        asyncio.run(save_projection(projection_store, channel, "document", state))
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    start_ws_thread(app, local_store)
     root.mainloop()

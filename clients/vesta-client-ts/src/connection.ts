@@ -19,6 +19,8 @@ import {
     generateGroupId,
 } from "./device-groups.js";
 import type { DeviceGroup } from "./device-groups.js";
+import { classifyErrorCode } from "./limits.js";
+import type { VestaLimitNotice } from "./limits.js";
 import { RELAY_MANIFEST_EVENT_TYPE } from "./relay.js";
 import type { RelayDirectory, RelayManifest } from "./relay.js";
 
@@ -124,7 +126,11 @@ export interface VestaConnectionEvents {
     eventsBatch: (msg: EventsBatchMessage) => void;
     ack: (msg: AckMessage) => void;
     error: (msg: ErrorMessage) => void;
+    /** A semantic "your app is being limited" signal — see {@link classifyErrorCode}. */
+    limited: (notice: VestaLimitNotice) => void;
     connected: (msg: WelcomeMessage) => void;
+    /** Fires after WELCOME when this connection had previously reached WELCOME at least once. */
+    reconnected: (msg: WelcomeMessage) => void;
     disconnected: (reason: string) => void;
     reconnecting: (attempt: number) => void;
     relaySwitched: (url: string) => void;
@@ -143,6 +149,7 @@ export class VestaConnection {
     private disposed = false;
     private _isConnected = false;
     private _serverId: string | null = null;
+    private hasReachedWelcomeOnce = false;
     private _channels: string[];
     private relayCandidates: string[];
     private activeRelayIndex = 0;
@@ -259,6 +266,27 @@ export class VestaConnection {
         }
         this._isConnected = false;
         this.connect();
+    }
+
+    /**
+     * Persist a user-chosen relay override (the local escape hatch) and refresh the candidate
+     * list to prefer it. Requires a {@link RelayDirectory} to have been attached.
+     */
+    setUserRelayOverride(url: string): void {
+        if (!this.relayDirectory) {
+            throw new Error("No relayDirectory attached — cannot set a relay override.");
+        }
+        this.relayDirectory.setUserOverride(url);
+        this.updateRelayCandidates(this.relayDirectory.resolveCandidates());
+    }
+
+    /** Clear the user relay override and fall back to manifest / default relays. */
+    clearUserRelayOverride(): void {
+        if (!this.relayDirectory) {
+            throw new Error("No relayDirectory attached — cannot clear a relay override.");
+        }
+        this.relayDirectory.clearUserOverride();
+        this.updateRelayCandidates(this.relayDirectory.resolveCandidates());
     }
 
     // ── Connection lifecycle ─────────────────────────────────────────────────
@@ -607,17 +635,22 @@ export class VestaConnection {
 
     private handleMessage(msg: ServerMessage): void {
         switch (msg.type) {
-            case "WELCOME":
+            case "WELCOME": {
+                const wasReconnect = this.hasReachedWelcomeOnce;
                 this._isConnected = true;
                 this._serverId = msg.serverId;
                 this._channels = [...msg.channels];
                 this.reconnectAttempt = 0;
                 this.attemptReachedWelcome = true;
+                this.hasReachedWelcomeOnce = true;
                 if (this.activeRelayIndex !== this.notifiedRelayIndex) {
                     this.notifiedRelayIndex = this.activeRelayIndex;
                     this.emit("relaySwitched", this.activeRelay);
                 }
                 this.emit("connected", msg);
+                if (wasReconnect) {
+                    this.emit("reconnected", msg);
+                }
                 if (
                     this.relayDirectory &&
                     !this._channels.includes(this.relayDirectory.manifestChannel)
@@ -628,6 +661,7 @@ export class VestaConnection {
                     void this.flushOutbox();
                 }
                 break;
+            }
 
             case "EVENT":
                 this.updateSequence(msg.channelId, msg.sequence);
@@ -668,6 +702,7 @@ export class VestaConnection {
 
             case "ERROR":
                 this.emit("error", msg);
+                this.handlePossibleLimit(msg);
                 break;
         }
     }
@@ -696,6 +731,23 @@ export class VestaConnection {
             });
         }
         await this.localStore.markOutboxConfirmed(ack.eventId);
+    }
+
+    private handlePossibleLimit(msg: ErrorMessage): void {
+        const classification = classifyErrorCode(msg.code);
+        if (classification.isLimit) {
+            this.emit("limited", {
+                code: msg.code,
+                message: msg.message,
+                channelId: msg.channelId,
+                eventId: msg.eventId,
+                isTransient: classification.isTransient,
+            });
+        }
+        if (classification.isEventFatal && msg.eventId && this.localStore) {
+            this.pendingPublishes.delete(msg.eventId);
+            void this.localStore.markOutboxRejected(msg.eventId, msg.code);
+        }
     }
 
     private async flushOutbox(): Promise<void> {
