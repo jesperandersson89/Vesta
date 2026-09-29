@@ -20,7 +20,7 @@
     "dev": "tsc --watch",
     "clean": "rimraf dist",
     "prepack": "npm run clean && npm run build",
-    "test": "tsc && node --test tests/"
+    "test": "tsc && node --test"
   },
   "files": [
     "dist",
