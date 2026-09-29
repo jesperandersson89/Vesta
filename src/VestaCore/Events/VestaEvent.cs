@@ -7,7 +7,7 @@ namespace VestaCore.Events;
 /// This is what the client creates and signs before publishing.
 ///
 /// <para>
-/// <b>Signed fields</b> (included in <see cref="EventSigner"/> input): Id, ChannelId,
+/// <b>Signed fields</b> (included in <see cref="VestaCore.Identity.EventSigner"/> input): Id, ChannelId,
 /// Timestamp, ClientId, EventType, Payload, ParentId.
 /// </para>
 /// <para>

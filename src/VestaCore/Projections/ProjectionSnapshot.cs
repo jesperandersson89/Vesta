@@ -8,5 +8,5 @@ namespace VestaCore.Projections;
 /// replaying the entire channel log.
 /// </summary>
 /// <param name="LastSequence">The highest server-assigned sequence the snapshot reflects.</param>
-/// <param name="StateJson">Reducer-defined serialized state. Opaque to <see cref="IProjectionStore"/> implementations.</param>
+/// <param name="StateJson">Reducer-defined serialized state. Opaque to <c>IProjectionStore</c> implementations.</param>
 public sealed record ProjectionSnapshot(long LastSequence, string StateJson);

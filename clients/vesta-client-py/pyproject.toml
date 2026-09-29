@@ -2,16 +2,42 @@
 name = "vesta-client"
 version = "0.1.0"
 description = "Python client library for the Vesta protocol"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "websockets>=13.0",
     "cryptography>=42.0",
 ]
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Jesper Andersson" },
+]
+keywords = ["vesta", "protocol", "websocket", "event-sourcing"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/jesperandersson89/Vesta"
+Repository = "https://github.com/jesperandersson89/Vesta.git"
+Issues = "https://github.com/jesperandersson89/Vesta/issues"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["vesta_client"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "vesta_client",
+    "tests",
+    "README.md",
+    "LICENSE",
+]

@@ -1,0 +1,187 @@
+name: Release SDK packages
+
+# Publishes Vesta.Core + Vesta.Client (NuGet), vesta-client (npm), and vesta-client (PyPI)
+# from a single shared version, tagged as vX.Y.Z. All three registries authenticate via
+# OIDC trusted publishing — see the "Releasing" section in PLANNING.md for one-time
+# registry setup (nuget.org policy, npm trusted publisher, PyPI pending publisher).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check manifest versions agree with the tag
+        shell: pwsh
+        run: ./.github/scripts/check-version.ps1 -Tag "${{ github.ref_name }}"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+
+      - name: dotnet test
+        run: dotnet test Vesta.sln --configuration Release
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: npm ci && npm test
+        working-directory: clients/vesta-client-ts
+        run: |
+          npm ci
+          npm test
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install and test Python client
+        working-directory: clients/vesta-client-py
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          python -m unittest discover -s tests
+
+  nuget:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # required for OIDC -> nuget.org trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+
+      - name: dotnet pack
+        run: |
+          dotnet pack src/VestaCore/VestaCore.csproj -c Release -o artifacts/nuget -p:ContinuousIntegrationBuild=true
+          dotnet pack src/VestaClient/VestaClient.csproj -c Release -o artifacts/nuget -p:ContinuousIntegrationBuild=true
+
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: dotnet nuget push
+        run: >
+          dotnet nuget push "artifacts/nuget/*.nupkg"
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: nuget-packages
+          path: artifacts/nuget/*.nupkg
+          if-no-files-found: error
+
+  npm:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # required for OIDC -> npm trusted publishing
+      contents: read
+    defaults:
+      run:
+        working-directory: clients/vesta-client-ts
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: npm ci && build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish (skip if this version is already on the registry)
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "vesta-client@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "vesta-client@$PKG_VERSION already published, skipping."
+          else
+            npm publish
+          fi
+
+      - name: npm pack (for GitHub release assets)
+        run: npm pack
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: npm-package
+          path: clients/vesta-client-ts/*.tgz
+          if-no-files-found: error
+
+  pypi:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # required for OIDC -> PyPI trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Build sdist + wheel
+        working-directory: clients/vesta-client-py
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: clients/vesta-client-py/dist
+          skip-existing: true
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pypi-packages
+          path: clients/vesta-client-py/dist/*
+          if-no-files-found: error
+
+  github-release:
+    needs: [nuget, npm, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required for gh release create
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" artifacts/* --generate-notes

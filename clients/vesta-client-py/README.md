@@ -5,7 +5,7 @@ Python client library for the [Vesta protocol](../../PLANNING.md).
 ## Installation
 
 ```bash
-pip install -e clients/vesta-client-py
+pip install vesta-client
 ```
 
 ## Usage

@@ -20,14 +20,13 @@ namespace VestaCore.Identity;
 /// vouching for the new device.
 /// </para>
 /// </summary>
+/// <param name="GroupId">The device group ID being joined.</param>
+/// <param name="PublicKey">Base64url-encoded 32-byte Ed25519 public key of the inviting device.</param>
+/// <param name="ServerUrl">Optional Vesta server URL the new device should connect to.</param>
 public sealed record PairingPayload(
     string GroupId,
-
-    /// <summary>Base64url-encoded 32-byte Ed25519 public key of the inviting device.</summary>
     [property: JsonPropertyName("publicKey")]
     string PublicKey,
-
-    /// <summary>Optional Vesta server URL the new device should connect to.</summary>
     string? ServerUrl = null
 )
 {

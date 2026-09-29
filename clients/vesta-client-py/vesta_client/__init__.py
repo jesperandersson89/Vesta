@@ -1,5 +1,7 @@
 """Vesta protocol client library for Python."""
 
+__version__ = "0.1.0"
+
 from vesta_client.connection import VestaConnection
 from vesta_client.events import create_event
 from vesta_client.federation import (
@@ -93,6 +95,7 @@ from vesta_client.types import (
 )
 
 __all__ = [
+    "__version__",
     "AckMessage",
     "ANNOUNCE_EVENT_TYPE",
     "AppendOnlyLog",

@@ -126,6 +126,27 @@ Rules of thumb:
 - If an example would need a large rewrite, note that explicitly in the response instead of silently leaving it stale.
 - After edits, run `dotnet build Vesta.sln`, `npm test` / `npm run build` in the touched TS packages, and `python -m unittest discover -s clients/vesta-client-py/tests` (or `python -m compileall` for examples) to confirm nothing rotted.
 
+## Publishing (NuGet / npm / PyPI)
+
+`Vesta.Core` + `Vesta.Client` (NuGet), `vesta-client` (npm), `vesta-client` (PyPI) are real
+published packages under one shared version (see TODO #22 and the `## Releasing` runbook in
+`PLANNING.md`). Practical implications:
+
+- **Version is committed, not derived.** It lives in three places that must agree:
+  `Directory.Build.props` (`VersionPrefix`), `clients/vesta-client-ts/package.json` (`version`),
+  `clients/vesta-client-py/vesta_client/__init__.py` (`__version__`). Run
+  `pwsh .github/scripts/check-version.ps1` after bumping any of them.
+- **Only `VestaCore`/`VestaClient` pack.** `Directory.Build.props` defaults `IsPackable=false`;
+  don't flip it on for `VestaServer` or the test/example projects.
+- **Examples and Atrium intentionally lag a release.** Don't switch `examples/*` or
+  `vesta_atrium` onto the published packages in the same change that bumps the SDK — that only
+  happens in a follow-up commit once the new version is confirmed live on all three registries
+  (a version bump alone doesn't publish anything; a `v*` tag push does, via `release.yml`).
+- **`vesta_atrium` is planned to depend on `Vesta.Core`** from NuGet once `v0.1.0` ships (TODO
+  #19/#22) — until that migration lands it still reimplements a few primitives locally. Either
+  way, changing `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or
+  `VestaCore.Channels.AppId` is a cross-repo breaking change, not just an internal refactor.
+
 ## Documentation
 
 User-facing documentation lives in `docs/` (entry point: [docs/README.md](../docs/README.md)). Architectural rationale lives in [PLANNING.md](../PLANNING.md). User-facing setup lives in [README.md](../README.md). Keep all three in sync when behaviour changes.

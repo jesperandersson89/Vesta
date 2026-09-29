@@ -9,7 +9,7 @@ on:
       - main
     paths:
       - 'src/**'
-      - '.github/workflows/**'
+      - '.github/workflows/main_vestaserver.yml'
   workflow_dispatch:
     inputs:
       deployInfrastructure:

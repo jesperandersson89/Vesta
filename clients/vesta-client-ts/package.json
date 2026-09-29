@@ -19,11 +19,14 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rimraf dist",
+    "prepack": "npm run clean && npm run build",
     "test": "tsc && node --test tests/"
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "README.md",
+    "LICENSE"
   ],
   "keywords": [
     "vesta",
@@ -32,16 +35,33 @@
     "event-sourcing"
   ],
   "license": "MIT",
+  "author": "Jesper Andersson",
+  "homepage": "https://github.com/jesperandersson89/Vesta#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jesperandersson89/Vesta.git",
+    "directory": "clients/vesta-client-ts"
+  },
+  "bugs": {
+    "url": "https://github.com/jesperandersson89/Vesta/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@noble/ed25519": "^2.3.0",
-    "@noble/hashes": "^1.8.0",
-    "ws": "^8.0.0"
+    "@noble/hashes": "^1.8.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
     "rimraf": "^6.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "ws": "^8.0.0"
   },
   "peerDependencies": {
     "ws": "^8.0.0"

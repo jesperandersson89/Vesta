@@ -17,7 +17,9 @@ project.lock.json
 
 ## NuGet
 *.nupkg
+*.snupkg
 **/[Pp]ackages/*
+artifacts/
 !**/[Pp]ackages/build/
 
 ## IDE
