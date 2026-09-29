@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "clipboardy": "^4.0.0",
-    "vesta-client": "file:../../clients/vesta-client-ts",
+    "vesta-client": "^0.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

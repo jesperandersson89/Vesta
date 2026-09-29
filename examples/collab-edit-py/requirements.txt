@@ -1,1 +1,1 @@
-vesta-client @ file:../../clients/vesta-client-py
+vesta-client>=0.1.0

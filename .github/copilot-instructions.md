@@ -138,14 +138,17 @@ published packages under one shared version (see TODO #22 and the `## Releasing`
   `pwsh .github/scripts/check-version.ps1` after bumping any of them.
 - **Only `VestaCore`/`VestaClient` pack.** `Directory.Build.props` defaults `IsPackable=false`;
   don't flip it on for `VestaServer` or the test/example projects.
-- **Examples and Atrium intentionally lag a release.** Don't switch `examples/*` or
-  `vesta_atrium` onto the published packages in the same change that bumps the SDK — that only
-  happens in a follow-up commit once the new version is confirmed live on all three registries
-  (a version bump alone doesn't publish anything; a `v*` tag push does, via `release.yml`).
-- **`vesta_atrium` is planned to depend on `Vesta.Core`** from NuGet once `v0.1.0` ships (TODO
-  #19/#22) — until that migration lands it still reimplements a few primitives locally. Either
-  way, changing `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or
-  `VestaCore.Channels.AppId` is a cross-repo breaking change, not just an internal refactor.
+- **Examples now consume the published packages** (`PackageReference Vesta.Client` in the C#
+  CLIs, `"vesta-client": "^0.1.0"` in the TS examples, `vesta-client>=0.1.0` in the Python
+  examples). When you bump the SDK version, examples lag by one commit — don't switch them
+  onto a new version in the same change that bumps the SDK; that's a follow-up commit once the
+  new version is confirmed live on all three registries (a version bump alone doesn't publish
+  anything; a `v*` tag push does, via `release.yml`).
+- **`vesta_atrium` depends on `Vesta.Core`** from NuGet (`PackageReference` in
+  `Atrium.Web.csproj`, TODO #19/#22) — it no longer reimplements any primitives locally. Bumping
+  `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or `VestaCore.Channels.AppId`
+  is a cross-repo breaking change: Atrium's `Vesta.Core` package reference needs a matching bump
+  after the next Vesta release, not just an internal refactor.
 
 ## Documentation
 
