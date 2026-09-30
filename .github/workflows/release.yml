@@ -84,12 +84,22 @@ jobs:
         with:
           user: ${{ vars.NUGET_USER }}
 
-      - name: dotnet nuget push
-        run: >
-          dotnet nuget push "artifacts/nuget/*.nupkg"
-          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
-          --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
+      # No --skip-duplicate: nuget.org also returns 409 for ID/namespace rejections, which it would hide.
+      - name: dotnet nuget push (skip if this version is already on nuget.org)
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for id in Vesta.Core Vesta.Client; do
+            lower=$(echo "$id" | tr '[:upper:]' '[:lower:]')
+            if curl -fsS "https://api.nuget.org/v3-flatcontainer/$lower/index.json" 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "$id $VERSION already published, skipping."
+            else
+              dotnet nuget push "artifacts/nuget/$id.$VERSION.nupkg" \
+                --api-key "$NUGET_API_KEY" \
+                --source https://api.nuget.org/v3/index.json
+            fi
+          done
 
       - uses: actions/upload-artifact@v6
         with:
