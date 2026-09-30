@@ -25,7 +25,8 @@ permissions:
   contents: read
 
 env:
-  SDK_VERSION: ${{ github.event_name == 'workflow_run' && 'latest' || inputs.sdk_version }}
+  # After a release, pin to the tag (vX.Y.Z) rather than "latest": registries lag behind the publish.
+  SDK_VERSION: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || inputs.sdk_version }}
 
 jobs:
   csharp:
@@ -46,10 +47,15 @@ jobs:
       - name: Override SDK version
         if: ${{ env.SDK_VERSION != '' }}
         run: |
+          SDK_VERSION="${SDK_VERSION#v}"
           if [ "$SDK_VERSION" = "latest" ]; then
             dotnet add examples/${{ matrix.example }} package VestaProtocol.Client
           else
-            dotnet add examples/${{ matrix.example }} package VestaProtocol.Client --version "$SDK_VERSION"
+            for i in $(seq 1 10); do
+              dotnet add examples/${{ matrix.example }} package VestaProtocol.Client --version "$SDK_VERSION" && exit 0
+              sleep 30
+            done
+            exit 1
           fi
 
       - name: Build
@@ -78,7 +84,13 @@ jobs:
 
       - name: Override SDK version
         if: ${{ env.SDK_VERSION != '' }}
-        run: npm install --no-save "vesta-client@$SDK_VERSION"
+        run: |
+          SDK_VERSION="${SDK_VERSION#v}"
+          for i in $(seq 1 10); do
+            npm install --no-save "vesta-client@$SDK_VERSION" && exit 0
+            sleep 30
+          done
+          exit 1
 
       - name: Build
         run: npm run build
@@ -107,10 +119,15 @@ jobs:
       - name: Override SDK version
         if: ${{ env.SDK_VERSION != '' }}
         run: |
+          SDK_VERSION="${SDK_VERSION#v}"
           if [ "$SDK_VERSION" = "latest" ]; then
             pip install --upgrade vesta-client
           else
-            pip install "vesta-client==$SDK_VERSION"
+            for i in $(seq 1 10); do
+              pip install "vesta-client==$SDK_VERSION" && exit 0
+              sleep 30
+            done
+            exit 1
           fi
 
       - name: Byte-compile
