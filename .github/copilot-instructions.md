@@ -128,7 +128,7 @@ Rules of thumb:
 
 ## Publishing (NuGet / npm / PyPI)
 
-`Vesta.Core` + `Vesta.Client` (NuGet), `vesta-client` (npm), `vesta-client` (PyPI) are real
+`VestaProtocol.Core` + `VestaProtocol.Client` (NuGet), `vesta-client` (npm), `vesta-client` (PyPI) are real
 published packages under one shared version (see TODO #22 and the `## Releasing` runbook in
 `PLANNING.md`). Practical implications:
 
@@ -138,16 +138,16 @@ published packages under one shared version (see TODO #22 and the `## Releasing`
   `pwsh .github/scripts/check-version.ps1` after bumping any of them.
 - **Only `VestaCore`/`VestaClient` pack.** `Directory.Build.props` defaults `IsPackable=false`;
   don't flip it on for `VestaServer` or the test/example projects.
-- **Examples now consume the published packages** (`PackageReference Vesta.Client` in the C#
+- **Examples now consume the published packages** (`PackageReference VestaProtocol.Client` in the C#
   CLIs, `"vesta-client": "^0.1.0"` in the TS examples, `vesta-client>=0.1.0` in the Python
   examples). When you bump the SDK version, examples lag by one commit — don't switch them
   onto a new version in the same change that bumps the SDK; that's a follow-up commit once the
   new version is confirmed live on all three registries (a version bump alone doesn't publish
   anything; a `v*` tag push does, via `release.yml`).
-- **`vesta_atrium` depends on `Vesta.Core`** from NuGet (`PackageReference` in
+- **`vesta_atrium` depends on `VestaProtocol.Core`** from NuGet (`PackageReference` in
   `Atrium.Web.csproj`, TODO #19/#22) — it no longer reimplements any primitives locally. Bumping
   `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or `VestaCore.Channels.AppId`
-  is a cross-repo breaking change: Atrium's `Vesta.Core` package reference needs a matching bump
+  is a cross-repo breaking change: Atrium's `VestaProtocol.Core` package reference needs a matching bump
   after the next Vesta release, not just an internal refactor.
 
 ## Documentation

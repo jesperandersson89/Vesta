@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Verifies the three published Vesta SDKs (Vesta.Core/Vesta.Client, vesta-client-ts,
+  Verifies the three published Vesta SDKs (VestaProtocol.Core/VestaProtocol.Client, vesta-client-ts,
   vesta-client-py) all declare the same version, and optionally match a release tag.
 .DESCRIPTION
   The three SDKs are released together under one version, committed in each

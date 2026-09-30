@@ -1,6 +1,6 @@
 name: Release SDK packages
 
-# Publishes Vesta.Core + Vesta.Client (NuGet), vesta-client (npm), and vesta-client (PyPI)
+# Publishes VestaProtocol.Core + VestaProtocol.Client (NuGet), vesta-client (npm), and vesta-client (PyPI)
 # from a single shared version, tagged as vX.Y.Z. All three registries authenticate via
 # OIDC trusted publishing — see the "Releasing" section in PLANNING.md for one-time
 # registry setup (nuget.org policy, npm trusted publisher, PyPI pending publisher).
@@ -90,7 +90,7 @@ jobs:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          for id in Vesta.Core Vesta.Client; do
+          for id in VestaProtocol.Core VestaProtocol.Client; do
             lower=$(echo "$id" | tr '[:upper:]' '[:lower:]')
             if curl -fsS "https://api.nuget.org/v3-flatcontainer/$lower/index.json" 2>/dev/null | grep -q "\"$VERSION\""; then
               echo "$id $VERSION already published, skipping."
@@ -125,6 +125,9 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: npm ci && build
         run: |

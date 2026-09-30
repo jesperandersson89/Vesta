@@ -71,12 +71,12 @@ tests/
 ### Install a client library
 
 ```bash
-dotnet add package Vesta.Client
+dotnet add package VestaProtocol.Client
 npm install vesta-client
 pip install vesta-client
 ```
 
-`Vesta.Client` depends on `Vesta.Core` (protocol types); npm and PyPI ship a single
+`VestaProtocol.Client` depends on `VestaProtocol.Core` (protocol types); npm and PyPI ship a single
 `vesta-client` package per language. See the `## Releasing` runbook in
 [PLANNING.md](PLANNING.md) for how these are published.
 

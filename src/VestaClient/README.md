@@ -1,4 +1,4 @@
-# Vesta.Client
+# VestaProtocol.Client
 
 .NET client library for [Vesta](https://github.com/jesperandersson89/Vesta) — a protocol and
 runtime for building networked applications without surrendering ownership to a central service.

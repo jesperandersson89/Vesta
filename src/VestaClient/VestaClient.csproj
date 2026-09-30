@@ -1,8 +1,8 @@
-﻿<Project Sdk="Microsoft.NET.Sdk"><!-- Properties inherited from Directory.Build.props -->
+<Project Sdk="Microsoft.NET.Sdk"><!-- Properties inherited from Directory.Build.props -->
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <PackageId>Vesta.Client</PackageId>
+    <PackageId>VestaProtocol.Client</PackageId>
     <Description>.NET client library for the Vesta protocol: WebSocket connection, Ed25519 identity, offline outbox and local SQLite cache.</Description>
     <PackageTags>vesta;protocol;websocket;event-sourcing;offline-first</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

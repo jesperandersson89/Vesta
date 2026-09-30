@@ -5,7 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Vesta.Client" Version="0.1.0" />
+    <PackageReference Include="VestaProtocol.Client" Version="0.1.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
   </ItemGroup>
 
