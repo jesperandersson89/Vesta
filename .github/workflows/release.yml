@@ -28,8 +28,12 @@ jobs:
         with:
           dotnet-version: '10.x'
 
+      # Test projects only: examples consume the published packages this workflow is about to publish.
       - name: dotnet test
-        run: dotnet test Vesta.sln --configuration Release
+        run: |
+          dotnet test tests/VestaCore.Tests/VestaCore.Tests.csproj --configuration Release
+          dotnet test tests/VestaClient.Tests/VestaClient.Tests.csproj --configuration Release
+          dotnet test tests/VestaServer.Tests/VestaServer.Tests.csproj --configuration Release
 
       - name: Set up Node
         uses: actions/setup-node@v6

@@ -62,8 +62,12 @@ jobs:
       - name: Build with dotnet
         run: dotnet build src/VestaServer/VestaServer.csproj --configuration Release
 
+      # Test projects only: examples consume published packages, which may lag the SDK version.
       - name: Run tests
-        run: dotnet test Vesta.sln --configuration Release
+        run: |
+          dotnet test tests/VestaCore.Tests/VestaCore.Tests.csproj --configuration Release
+          dotnet test tests/VestaClient.Tests/VestaClient.Tests.csproj --configuration Release
+          dotnet test tests/VestaServer.Tests/VestaServer.Tests.csproj --configuration Release
 
       - name: dotnet publish
         run: dotnet publish src/VestaServer/VestaServer.csproj -c Release -o ${{env.DOTNET_ROOT}}/myapp
