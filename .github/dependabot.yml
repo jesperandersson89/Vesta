@@ -1,0 +1,42 @@
+version: 2
+
+# Keeps each example's plain SDK reference on the newest published version.
+updates:
+  - package-ecosystem: nuget
+    directories:
+      - /examples/ChatRoom.CLI
+      - /examples/TodoList.CLI
+      - /examples/Presence.CLI
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: VestaProtocol.Client
+    groups:
+      vesta-sdk:
+        patterns: ['VestaProtocol.*']
+
+  - package-ecosystem: npm
+    directories:
+      - /examples/chess-web
+      - /examples/clipboard-ts
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: vesta-client
+    versioning-strategy: increase
+    groups:
+      vesta-sdk:
+        patterns: ['vesta-client']
+
+  - package-ecosystem: pip
+    directories:
+      - /examples/colorwheel-py
+      - /examples/collab-edit-py
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: vesta-client
+    versioning-strategy: increase
+    groups:
+      vesta-sdk:
+        patterns: ['vesta-client']

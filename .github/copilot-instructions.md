@@ -142,10 +142,13 @@ published packages under one shared version (see TODO #22 and the `## Releasing`
   don't flip it on for `VestaServer` or the test/example projects.
 - **Examples now consume the published packages** (`PackageReference VestaProtocol.Client` in the C#
   CLIs, `"vesta-client": "^0.1.0"` in the TS examples, `vesta-client>=0.1.0` in the Python
-  examples). When you bump the SDK version, examples lag by one commit — don't switch them
-  onto a new version in the same change that bumps the SDK; that's a follow-up commit once the
-  new version is confirmed live on all three registries (a version bump alone doesn't publish
-  anything; a `v*` tag push does, via `release.yml`).
+  examples), each a plain pinned reference so a copied line looks like any external library.
+  Don't bump them in the SDK-bump change: Dependabot (`.github/dependabot.yml`) opens a PR
+  per registry once the new version is live (a `v*` tag push publishes, via `release.yml`).
+- **Examples have their own pipeline** (`.github/workflows/examples.yml`): builds every example
+  against the published packages, runs after each release, on `examples/**` PRs, and can be
+  re-run manually with an optional `sdk_version` (`latest` or `X.Y.Z`) without committing anything.
+  Keep each example self-contained (no `ProjectReference`, `file:` or `-e ../..`).
 - **`vesta_atrium` depends on `VestaProtocol.Core`** from NuGet (`PackageReference` in
   `Atrium.Web.csproj`, TODO #19/#22) — it no longer reimplements any primitives locally. Bumping
   `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or `VestaCore.Channels.AppId`

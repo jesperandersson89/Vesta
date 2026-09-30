@@ -28,7 +28,7 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      # Test projects only: examples consume the published packages this workflow is about to publish.
+      # Test projects only: examples.yml builds the examples against the packages once published.
       - name: dotnet test
         run: |
           dotnet test tests/VestaCore.Tests/VestaCore.Tests.csproj --configuration Release

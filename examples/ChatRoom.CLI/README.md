@@ -53,6 +53,7 @@ Type a message and press Enter to send it. Slash commands:
 | --- | --- |
 | `/help` | List commands |
 | `/relays` | Show the current relay candidate list and adopted manifest |
+| `/relay` | Open the relay picker (retry, discover other relays, enter a URL). Also opens automatically when no relay is reachable at startup |
 | `/relay use <ws-url>` | Set a local relay override and switch to it |
 | `/relay clear` | Clear the local override |
 | `/discover` | Find other relays hosting this app (federation) |

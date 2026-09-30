@@ -22,6 +22,13 @@ manifest relays, compiled-in defaults). A **pass** is one walk over all candidat
 Background reconnect keeps running while the prompt is open. If a relay comes back, the session
 returns to `Healthy` and the view goes away.
 
+A failed **first** connect has no outage to witness: C# `ConnectAsync` throws
+`RelaysExhaustedException` and Python `connect()` raises `RelaysExhaustedError`, both carrying the
+same info as `.Info` / `.info`. Hand it to `session.ReportExhausted(ex.Info)` /
+`session.report_exhausted(err.info)` to open the prompt. TypeScript `connect()` is not async and
+has no error class: with `autoReconnect` on, the failure arrives as the `relaysExhausted` event,
+which a session created before `connect()` picks up automatically.
+
 ## Session API
 
 | Concept  | C# (`VestaClient.Relay`)                   | TypeScript                        | Python                               |

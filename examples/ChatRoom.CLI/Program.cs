@@ -299,6 +299,19 @@ connection.OnReconnected += () =>
     _ = PublishJoinAsync();
 };
 
+// Headless recovery state machine; ConsoleRelayPicker is one view over it.
+using RelayRecoverySession recovery = new(connection);
+
+connection.OnRelaysExhausted += (RelaysExhaustedInfo info) =>
+{
+    PrintAboveInput(() =>
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"  [NO RELAY] Can't reach any relay after {info.Passes} passes. Type /relay to pick another one.");
+        Console.ResetColor();
+    });
+};
+
 async Task PublishJoinAsync()
 {
     JsonElement joinPayload = JsonDocument.Parse(
@@ -352,6 +365,25 @@ try
     Console.ResetColor();
     Console.WriteLine("Type a message and press Enter. Press Ctrl+C to quit.\n");
 }
+catch (RelaysExhaustedException ex)
+{
+    // Nothing reachable on the first try: offer the relay picker instead of silently going offline.
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.WriteLine("Failed to connect to any relay.");
+    Console.ResetColor();
+    recovery.ReportExhausted(ex.Info);
+    isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
+    if (isConnected)
+    {
+        await PublishJoinAsync();
+    }
+    else
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("Running in offline mode — will try to reconnect on next message.\n");
+        Console.ResetColor();
+    }
+}
 catch (Exception ex)
 {
     Console.ForegroundColor = ConsoleColor.Red;
@@ -375,6 +407,7 @@ async Task HandleCommandAsync(string input)
                 Console.ForegroundColor = ConsoleColor.DarkCyan;
                 Console.WriteLine("  Commands:");
                 Console.WriteLine("    /relays                            show the current relay candidate list");
+                Console.WriteLine("    /relay                             open the relay picker (retry, discover, enter a URL)");
                 Console.WriteLine("    /relay use <ws-url>                set a local relay override and switch to it");
                 Console.WriteLine("    /relay clear                       clear the local override (back to manifest/defaults)");
                 Console.WriteLine("    /discover                          find OTHER relays that host this app (federation)");
@@ -430,12 +463,16 @@ async Task HandleCommandAsync(string input)
                     Console.ResetColor();
                 });
             }
+            else if (parts.Length == 1)
+            {
+                isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
+            }
             else
             {
                 PrintAboveInput(() =>
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("  Usage: /relay use <ws-url> | /relay clear");
+                    Console.WriteLine("  Usage: /relay | /relay use <ws-url> | /relay clear");
                     Console.ResetColor();
                 });
             }

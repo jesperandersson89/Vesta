@@ -24,7 +24,7 @@ jobs:
       - name: Build
         run: dotnet build src/VestaServer/VestaServer.csproj --configuration Release
 
-      # Test projects only: examples consume published packages, which may lag the SDK version.
+      # Test projects only: examples are built by examples.yml against the published packages.
       - name: Run tests
         run: |
           dotnet test tests/VestaCore.Tests/VestaCore.Tests.csproj --configuration Release
