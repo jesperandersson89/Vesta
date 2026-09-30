@@ -15,12 +15,14 @@ Read `PLANNING.md` at the repo root for full architecture decisions.
 - **Serialization**: System.Text.Json
 - **Identity**: Ed25519 keypairs (self-sovereign)
 - **Transport**: WebSocket (primary), HTTP fallback
+- **Packaging**: Docker image of the relay (`src/VestaServer/Dockerfile`) published to GHCR
 
 ## Solution Structure
 
 ```
 Vesta/
-├── .github/infra/              # Bicep IaC for the relay (App Service + Postgres + Key Vault)
+├── .github/workflows/          # build, SDK release (v*), relay image release (server-v*)
+├── docker-compose.yml          # local dev relay (Postgres + relay, open mode)
 ├── src/                        # Core infrastructure (the "product")
 │   ├── VestaCore/              # Shared types, protocol, serialization
 │   ├── VestaServer/            # ASP.NET Core host (relay + persistence)
@@ -179,26 +181,28 @@ Rules of thumb:
 - Do not substitute a different tool or approach just because the expected one isn't available — ask the user to fix the environment first
 - If a test or command fails due to external dependencies being unavailable, report the issue clearly and wait for confirmation before proceeding
 
-## Infrastructure (IaC)
+## Relay Image & Deployment Boundary
 
-- The relay's Azure footprint is defined as **Bicep** under `.github/infra/` (`main.bicep` +
-  `modules/`), deployed subscription-scoped. It provisions a resource group, Burstable
-  PostgreSQL Flexible Server, Log Analytics + Application Insights, Key Vault, and the relay
-  Web App (Linux, .NET 10, WebSockets + Always On, managed identity → Key Vault Secrets User).
-- **Keep it Atrium-agnostic.** This stack only knows the relay's own config surface
-  (`ConnectionStrings:Vesta`, `Admin:BootstrapPublicKeys`, `AdminApi`, `Protocol`, pruners).
-  The managed portal has its **own separate** Bicep in the `vesta_atrium` repo — never
-  reference it here.
-- Secrets (DB password, operator public key) come from env vars at deploy time via
-  `.github/infra/params/dev.bicepparam` — never commit them. App settings read secrets through
-  `@Microsoft.KeyVault(...)` references.
-- Cost controls: `.github/infra/scripts/dev-stop.ps1` / `dev-start.ps1` (stop/start compute) and
-  `dev-teardown.ps1` (`az group delete`). Dev sizing is Burstable `Standard_B1ms` + B1 plan.
-- Azure PostgreSQL Flexible Server tops out at major **16**; `postgresVersion` defaults to `16`.
-- CI: `main_vestaserver.yml` has an opt-in `infrastructure` job (`workflow_dispatch`).
-- The **how-to-deploy** companion is the `## Deployment & Operations (relay stack)` runbook in
-  `PLANNING.md` (bootstrap secrets, deploy command/order, cost scripts, gotchas). Keep it in
-  sync whenever `.github/infra/`, the deploy workflow, or the required deploy secrets change.
+This repo is public and **ships artifacts; it does not operate anything.** It contains no cloud
+infrastructure (no Bicep/Terraform, no deploy workflows, no cloud credentials) and must never
+reference Atrium.
+
+- **Relays are for operators only.** App developers connect to a relay; they never deploy one.
+  Keep that framing first in any relay-related doc ([docs/operating-a-relay.md](../docs/operating-a-relay.md)).
+- The relay is published as a container image: `ghcr.io/jesperandersson89/vesta-server`, built by
+  `.github/workflows/release-server.yml` on **`server-vX.Y.Z`** tags (separate from the SDK `v*`
+  tags): `:X.Y.Z` plus `:latest` for non-prereleases. `main` pushes get `:sha-<short>`, never
+  `:latest`. `build.yml` builds the image on every PR.
+- The image listens on **8080** as a non-root user and needs `ConnectionStrings__Vesta` (or
+  `UseInMemoryStore=true` for dev). Health: `/health`, `/health/ready`. Keep the Dockerfile,
+  `docker-compose.yml` and `docs/operating-a-relay.md` in sync when the server config surface
+  changes.
+- `docker-compose.yml` is **dev only** (open mode). Never present it as a production setup.
+- Atrium (proprietary `vesta_atrium` repo) runs this image in its own Bicep stack. Changing the
+  image contract (port, env var names, health paths, non-root user) is a cross-repo breaking
+  change: call it out and bump the pinned tag in Atrium deliberately.
+- Azure PostgreSQL Flexible Server tops out at major **16**; the relay needs PostgreSQL
+  `LISTEN`/`NOTIFY`.
 
 ## EF Core Migrations
 

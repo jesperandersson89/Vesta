@@ -80,14 +80,28 @@ pip install vesta-client
 `vesta-client` package per language. See the `## Releasing` runbook in
 [PLANNING.md](PLANNING.md) for how these are published.
 
-### Run the server
+### Get a relay to connect to
+
+Vesta apps connect to a **relay** (the server). **You do not deploy a relay to build an app** — relays are run by *operators*, and your app just needs a relay URL plus your identity:
+
+- **Production:** use a relay someone operates, e.g. an [Atrium](PLANNING.md#managed-vs-self-hosted-connection-parity) managed endpoint.
+- **Development:** run a throwaway local relay (needs Docker):
+
+  ```bash
+  docker compose up --build   # ws://localhost:5150/ws — open mode, dev only
+  ```
+
+> **Relay operators:** if you run a relay *for other people's apps to connect to*, read [docs/operating-a-relay.md](docs/operating-a-relay.md). Most developers never need to.
+
+<details>
+<summary>Hacking on the server itself (contributors)</summary>
 
 ```bash
 cd src/VestaServer
-dotnet run
+dotnet run -- --UseInMemoryStore=true   # ws://localhost:5150/ws, in-memory store
 ```
 
-The server starts on `ws://localhost:5150/ws`. Without a PostgreSQL connection string configured, it uses an in-memory event store (good for development).
+</details>
 
 ### Run an example
 

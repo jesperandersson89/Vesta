@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/.vs/
+**/.vesta/
+**/__pycache__/
+.git/
+.github/
+clients/
+examples/
+docs/
+tests/
+*.md

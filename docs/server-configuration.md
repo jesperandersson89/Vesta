@@ -1,5 +1,7 @@
 # Server configuration
 
+> **Relay operators only.** App developers connect to a relay someone else operates and never need this page. See [operating-a-relay.md](operating-a-relay.md).
+
 The Vesta server is a stock ASP.NET Core app — configuration follows the standard precedence: `appsettings.json` → `appsettings.{Environment}.json` → environment variables → command-line args. This page documents Vesta-specific keys; for ASP.NET Core hosting (URLs, Kestrel, logging), refer to Microsoft's docs.
 
 ## Storage backends
