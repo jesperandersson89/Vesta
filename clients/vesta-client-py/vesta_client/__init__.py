@@ -1,6 +1,6 @@
 """Vesta protocol client library for Python."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from vesta_client.connection import VestaConnection
 from vesta_client.events import create_event

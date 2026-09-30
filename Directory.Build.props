@@ -15,7 +15,7 @@
        (VestaCore, VestaClient) actually produce a .nupkg from this. -->
   <PropertyGroup>
     <IsPackable>false</IsPackable>
-    <VersionPrefix>0.1.3</VersionPrefix>
+    <VersionPrefix>0.1.4</VersionPrefix>
     <Authors>Jesper Andersson</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/jesperandersson89/Vesta</PackageProjectUrl>
