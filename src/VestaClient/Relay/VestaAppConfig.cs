@@ -12,7 +12,12 @@ namespace VestaClient.Relay;
 /// The compiled-in default relays, in preference order. Used to bootstrap the very first
 /// connection and as the last-resort fallback if no manifest or override is available.
 /// </param>
+/// <param name="DiscoverySeeds">
+/// Optional relays used only to ask federation who else hosts this app during recovery, when every
+/// relay in the candidate list is down. Never connected to automatically.
+/// </param>
 public sealed record VestaAppConfig(
     string AppId,
     byte[] OwnerPublicKey,
-    IReadOnlyList<Uri> DefaultRelays);
+    IReadOnlyList<Uri> DefaultRelays,
+    IReadOnlyList<Uri>? DiscoverySeeds = null);

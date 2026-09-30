@@ -14,6 +14,7 @@ import {
     normalizeTimestampForSigning,
 } from "./signing.js";
 import type { VestaIdentity } from "./identity.js";
+import type { DiscoveredRelay } from "./federation.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,8 @@ export interface VestaAppConfig {
     ownerPublicKey: string;
     /** Compiled-in default relays, in preference order. */
     defaultRelays: string[];
+    /** Extra relays to ask about federation peers when recovering from total relay loss. */
+    discoverySeeds?: string[];
 }
 
 // ─── Manifest signing / verification ─────────────────────────────────────────
@@ -184,6 +187,53 @@ export interface ManifestStore {
     save(manifest: RelayManifest): void;
 }
 
+/** A failed connection attempt against one relay candidate. */
+export interface RelayAttempt {
+    relay: string;
+    /** Short, human-readable failure reason. */
+    reason: string;
+}
+
+/** A relay outage the client cannot heal on its own: every candidate failed `passes` full passes. */
+export interface RelaysExhaustedInfo {
+    attempts: RelayAttempt[];
+    passes: number;
+}
+
+/** Remembers verified federation peers so recovery has hints if every known relay dies. */
+export interface PeerCacheStore {
+    load(): DiscoveredRelay[];
+    save(peers: DiscoveredRelay[]): void;
+}
+
+export class InMemoryPeerCacheStore implements PeerCacheStore {
+    private peers: DiscoveredRelay[] = [];
+    load(): DiscoveredRelay[] {
+        return [...this.peers];
+    }
+    save(peers: DiscoveredRelay[]): void {
+        this.peers = [...peers];
+    }
+}
+
+/** A `localStorage`-backed peer cache for browser apps. */
+export class LocalStoragePeerCacheStore implements PeerCacheStore {
+    constructor(private readonly key: string) {}
+    load(): DiscoveredRelay[] {
+        const raw = globalThis.localStorage?.getItem(this.key);
+        if (!raw) return [];
+        try {
+            const parsed: unknown = JSON.parse(raw);
+            return Array.isArray(parsed) ? (parsed as DiscoveredRelay[]) : [];
+        } catch {
+            return [];
+        }
+    }
+    save(peers: DiscoveredRelay[]): void {
+        globalThis.localStorage?.setItem(this.key, JSON.stringify(peers.slice(0, 64)));
+    }
+}
+
 export class InMemoryRelayOverrideStore implements RelayOverrideStore {
     private override: string | null = null;
     getOverride(): string | null {
@@ -248,10 +298,12 @@ export class RelayDirectory {
     private current: RelayManifest | null = null;
 
     constructor(
-        private readonly config: VestaAppConfig,
+        private readonly appConfig: VestaAppConfig,
         private readonly overrideStore?: RelayOverrideStore,
         private readonly manifestStore?: ManifestStore,
+        private readonly peerCacheStore?: PeerCacheStore,
     ) {
+        const config = appConfig;
         const cached = manifestStore?.getCached() ?? null;
         if (
             cached &&
@@ -260,6 +312,18 @@ export class RelayDirectory {
         ) {
             this.current = cached;
         }
+    }
+
+    get config(): VestaAppConfig {
+        return this.appConfig;
+    }
+
+    get peerCache(): PeerCacheStore | undefined {
+        return this.peerCacheStore;
+    }
+
+    get activeOverride(): string | null {
+        return this.overrideStore?.getOverride() ?? null;
     }
 
     get manifestChannel(): string {

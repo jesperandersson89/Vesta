@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using VestaClient.Federation;
 using VestaClient.Relay;
 using VestaClient.Storage;
 using VestaCore.Events;
@@ -19,8 +20,9 @@ namespace VestaClient;
 /// after a disconnect, or enable AutoReconnect for automatic reconnection with
 /// exponential backoff.
 /// </summary>
-public sealed class VestaConnection : IAsyncDisposable
+public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 {
+    private readonly SemaphoreSlim _reconnectGate = new(1, 1);
     private ClientWebSocket? _socket;
     private readonly JsonSerializerOptions _jsonOptions = VestaJsonOptions.Default;
     private readonly string _clientId;
@@ -35,6 +37,8 @@ public sealed class VestaConnection : IAsyncDisposable
     private int _activeRelayIndex;
     private RelayDirectory? _relayDirectory;
     private IReadOnlyList<string>? _channels;
+    private IReadOnlyList<RelayAttempt> _lastAttempts = [];
+    private FederationClient? _federation;
 
     /// <summary>
     /// When true, the connection will automatically attempt to reconnect with
@@ -52,6 +56,12 @@ public sealed class VestaConnection : IAsyncDisposable
     /// Each subsequent attempt doubles the delay up to MaxReconnectDelay.
     /// </summary>
     public TimeSpan InitialReconnectDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How many full, failed passes over the candidate list count as "exhausted" under
+    /// <see cref="AutoReconnect"/>, firing <see cref="OnRelaysExhausted"/>. Default: 3.
+    /// </summary>
+    public int RelayExhaustionPasses { get; set; } = 3;
 
     /// <summary>
     /// Fired when a real-time event is received from the server.
@@ -107,6 +117,13 @@ public sealed class VestaConnection : IAsyncDisposable
     public event Action<Uri>? OnRelaySwitched;
 
     /// <summary>
+    /// Fired once per outage when every candidate relay has failed <see cref="RelayExhaustionPasses"/>
+    /// full passes. Auto-reconnect keeps retrying in the background; the app should surface a recovery
+    /// prompt (see <see cref="RelayRecoverySession"/>). Re-arms after the next successful connection.
+    /// </summary>
+    public event Action<RelaysExhaustedInfo>? OnRelaysExhausted;
+
+    /// <summary>
     /// The server ID returned in the WELCOME message.
     /// </summary>
     public string? ServerId { get; private set; }
@@ -128,6 +145,9 @@ public sealed class VestaConnection : IAsyncDisposable
     /// this list starting from the active relay.
     /// </summary>
     public IReadOnlyList<Uri> Relays => _relayCandidates;
+
+    /// <summary>Per-relay failures from the most recent pass over the candidate list.</summary>
+    public IReadOnlyList<RelayAttempt> LastAttempts => _lastAttempts;
 
     /// <summary>
     /// The app configuration (relay-independence trust anchor + default relays) this
@@ -233,8 +253,7 @@ public sealed class VestaConnection : IAsyncDisposable
 
         if (!await TryConnectCandidatesAsync(lastSequences, cancellationToken))
         {
-            throw new InvalidOperationException(
-                $"Could not connect to any of the {relays.Count} configured relay(s).");
+            throw new RelaysExhaustedException(new RelaysExhaustedInfo(_lastAttempts, Passes: 1));
         }
     }
 
@@ -251,15 +270,23 @@ public sealed class VestaConnection : IAsyncDisposable
             throw new InvalidOperationException("Cannot reconnect — ConnectAsync has not been called yet.");
         }
 
-        // Clean up old socket and receive loop
-        await CleanupAsync();
-
-        bool success = await TryConnectCandidatesAsync(lastSequences: null, cancellationToken);
-        if (success)
+        // Serialized so the auto-reconnect loop and a user-triggered retry can't fight over the socket.
+        await _reconnectGate.WaitAsync(cancellationToken);
+        try
         {
-            OnReconnected?.Invoke();
+            await CleanupAsync();
+
+            bool success = await TryConnectCandidatesAsync(lastSequences: null, cancellationToken);
+            if (success)
+            {
+                OnReconnected?.Invoke();
+            }
+            return success;
         }
-        return success;
+        finally
+        {
+            _reconnectGate.Release();
+        }
     }
 
     /// <summary>
@@ -425,6 +452,8 @@ public sealed class VestaConnection : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         int count = _relayCandidates.Count;
+        List<RelayAttempt> failures = [];
+        _lastAttempts = failures;
         for (int offset = 0; offset < count; offset++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -439,9 +468,10 @@ public sealed class VestaConnection : IAsyncDisposable
             {
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
-                // This candidate is unreachable — clean up and try the next one.
+                // This candidate is unreachable — record why, clean up and try the next one.
+                failures.Add(new RelayAttempt(candidate, DescribeFailure(ex)));
                 await CleanupAsync();
                 continue;
             }
@@ -453,10 +483,38 @@ public sealed class VestaConnection : IAsyncDisposable
             {
                 OnRelaySwitched?.Invoke(candidate);
             }
+            _ = RefreshPeerCacheAsync(candidate);
             return true;
         }
 
         return false;
+    }
+
+    private static string DescribeFailure(Exception ex)
+        => ex is WebSocketException { InnerException: not null } wse ? wse.InnerException!.Message : ex.Message;
+
+    // Best-effort: remember verified federation peers so recovery has hints if every known relay dies.
+    private async Task RefreshPeerCacheAsync(Uri relay)
+    {
+        IPeerCacheStore? cache = _relayDirectory?.PeerCache;
+        if (cache is null || !FederationClient.ToFederationBaseUrl(relay, out Uri? baseUrl))
+        {
+            return;
+        }
+
+        try
+        {
+            _federation ??= new FederationClient(_appConfig);
+            IReadOnlyList<DiscoveredRelay> peers = await _federation.ListAllRelaysAsync(baseUrl!);
+            if (peers.Count > 0)
+            {
+                cache.Save(peers);
+            }
+        }
+        catch
+        {
+            // Cache refresh must never disturb a healthy connection.
+        }
     }
 
     private async Task ConnectInternalAsync(
@@ -926,6 +984,8 @@ public sealed class VestaConnection : IAsyncDisposable
     private async Task AutoReconnectLoopAsync()
     {
         TimeSpan delay = InitialReconnectDelay;
+        int failedPasses = 0;
+        bool exhaustionRaised = false;
 
         while (AutoReconnect)
         {
@@ -935,6 +995,13 @@ public sealed class VestaConnection : IAsyncDisposable
             if (success)
             {
                 return;
+            }
+
+            failedPasses++;
+            if (!exhaustionRaised && failedPasses >= RelayExhaustionPasses)
+            {
+                exhaustionRaised = true;
+                OnRelaysExhausted?.Invoke(new RelaysExhaustedInfo(_lastAttempts, failedPasses));
             }
 
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxReconnectDelay.Ticks));

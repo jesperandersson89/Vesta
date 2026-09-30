@@ -57,8 +57,10 @@ export type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 export {
     buildManifestSigningInput,
     InMemoryManifestStore,
+    InMemoryPeerCacheStore,
     InMemoryRelayOverrideStore,
     LocalStorageManifestStore,
+    LocalStoragePeerCacheStore,
     LocalStorageRelayOverrideStore,
     manifestChannelFor,
     RELAY_MANIFEST_EVENT_TYPE,
@@ -70,11 +72,28 @@ export {
 export type {
     EscapeFallback,
     ManifestStore,
+    PeerCacheStore,
+    RelayAttempt,
     RelayEndpoint,
     RelayManifest,
     RelayOverrideStore,
+    RelaysExhaustedInfo,
     VestaAppConfig,
 } from "./relay.js";
+export { RelayRecoverySession } from "./relay-recovery.js";
+export type {
+    RelayChoice,
+    RelayRecoveryHost,
+    RelayRecoveryPhase,
+    RelayRecoverySnapshot,
+} from "./relay-recovery.js";
+export {
+    defineRelayPicker,
+    runConsoleRelayPicker,
+    UNVERIFIED_RELAY_WARNING,
+    VestaRelayPickerElement,
+} from "./relay-picker.js";
+export type { ConsoleRelayPickerIO } from "./relay-picker.js";
 export {
     base64UrlToBytes,
     bytesToBase64Url,

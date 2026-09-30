@@ -15,7 +15,8 @@ import type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 import type { SequencedEvent, VestaEvent } from "./types.js";
 import type { ProjectionSnapshot } from "./projections/index.js";
 import type { ProjectionStore } from "./projection-store.js";
-import type { ManifestStore, RelayManifest, RelayOverrideStore } from "./relay.js";
+import type { ManifestStore, PeerCacheStore, RelayManifest, RelayOverrideStore } from "./relay.js";
+import type { DiscoveredRelay } from "./federation.js";
 
 function ensureDirFor(path: string): void {
     mkdirSync(dirname(path), { recursive: true });
@@ -72,18 +73,33 @@ export class FileManifestStore implements ManifestStore {
     }
 }
 
+/** A JSON-file-backed peer cache — the Node.js counterpart to `LocalStoragePeerCacheStore`. */
+export class FilePeerCacheStore implements PeerCacheStore {
+    constructor(private readonly path: string) {}
+
+    load(): DiscoveredRelay[] {
+        const parsed: unknown = readJson<unknown>(this.path);
+        return Array.isArray(parsed) ? (parsed as DiscoveredRelay[]) : [];
+    }
+
+    save(peers: DiscoveredRelay[]): void {
+        writeJson(this.path, peers.slice(0, 64));
+    }
+}
+
 /** Sanitize an app id for use as a filename segment. */
 function sanitizeForFileName(id: string): string {
     return id.replace(/[<>:"/\\|?*]/g, "_");
 }
 
 /** Build the default `FileRelayOverrideStore` + `FileManifestStore` pair for an app, under `~/.vesta/relays/`. */
-export function defaultRelayStorePaths(appId: string): { overridePath: string; manifestPath: string } {
+export function defaultRelayStorePaths(appId: string): { overridePath: string; manifestPath: string; peersPath: string } {
     const dir = join(defaultVestaDir(), "relays");
     const safeAppId = sanitizeForFileName(appId);
     return {
         overridePath: join(dir, `${safeAppId}.override.json`),
         manifestPath: join(dir, `${safeAppId}.manifest.json`),
+        peersPath: join(dir, `${safeAppId}.peers.json`),
     };
 }
 

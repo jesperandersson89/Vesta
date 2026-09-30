@@ -13,13 +13,16 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from vesta_client.identity import VestaIdentity, b64url_decode, b64url_encode
 from vesta_client.signing import _canonicalize, normalize_timestamp_for_signing
+
+if TYPE_CHECKING:
+    from vesta_client.federation import DiscoveredRelay
 
 RELAY_MANIFEST_EVENT_TYPE = "vesta.relay-manifest"
 
@@ -97,6 +100,32 @@ class VestaAppConfig:
     app_id: str
     owner_public_key: str  # base64url — the manifest trust anchor
     default_relays: list[str]
+    # Extra relay URLs to ask for peers when recovery runs; never adopted directly.
+    discovery_seeds: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RelayAttempt:
+    """One failed connection attempt to a relay and why it failed."""
+
+    relay: str
+    reason: str
+
+
+@dataclass
+class RelaysExhaustedInfo:
+    """Raised once per outage when every candidate has failed several full passes."""
+
+    attempts: list[RelayAttempt]
+    passes: int
+
+
+class RelaysExhaustedError(RuntimeError):
+    """Raised by ``connect()`` when no relay candidate could be reached."""
+
+    def __init__(self, info: RelaysExhaustedInfo) -> None:
+        super().__init__(f"Could not connect to any of the {len(info.attempts)} configured relay(s).")
+        self.info: RelaysExhaustedInfo = info
 
 
 # ── Manifest signing / verification ─────────────────────────────────────────────
@@ -282,6 +311,61 @@ class FileManifestStore:
         self._path.write_text(json.dumps(manifest.to_dict(), indent=2), encoding="utf-8")
 
 
+class PeerCacheStore(Protocol):
+    """Remembers verified federation peers so recovery has hints when every known relay is down."""
+
+    def load(self) -> "list[DiscoveredRelay]": ...
+    def save(self, peers: "list[DiscoveredRelay]") -> None: ...
+
+
+class InMemoryPeerCacheStore:
+    def __init__(self) -> None:
+        self._peers: list[DiscoveredRelay] = []
+
+    def load(self) -> "list[DiscoveredRelay]":
+        return list(self._peers)
+
+    def save(self, peers: "list[DiscoveredRelay]") -> None:
+        self._peers = list(peers)
+
+
+class FilePeerCacheStore:
+    """A JSON-file-backed peer cache (e.g. ``~/.vesta/relays/{appId}.peers.json``)."""
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+
+    def load(self) -> "list[DiscoveredRelay]":
+        from vesta_client.federation import DiscoveredRelay
+
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            return [
+                DiscoveredRelay(
+                    relay_public_key=d["relayPublicKey"],
+                    urls=list(d["urls"]),
+                    hosts_requested_app=bool(d["hostsRequestedApp"]),
+                    issued_at=d["issuedAt"],
+                )
+                for d in data
+            ]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
+
+    def save(self, peers: "list[DiscoveredRelay]") -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = [
+            {
+                "relayPublicKey": p.relay_public_key,
+                "urls": p.urls,
+                "hostsRequestedApp": p.hosts_requested_app,
+                "issuedAt": p.issued_at,
+            }
+            for p in peers[:64]
+        ]
+        self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 # ── RelayDirectory ───────────────────────────────────────────────────────────────
 
 
@@ -296,10 +380,12 @@ class RelayDirectory:
         config: VestaAppConfig,
         override_store: RelayOverrideStore | None = None,
         manifest_store: ManifestStore | None = None,
+        peer_cache_store: PeerCacheStore | None = None,
     ) -> None:
         self._config = config
         self._override_store = override_store
         self._manifest_store = manifest_store
+        self._peer_cache_store = peer_cache_store
         self._current: RelayManifest | None = None
 
         cached = manifest_store.get_cached() if manifest_store else None
@@ -309,6 +395,19 @@ class RelayDirectory:
             and verify_manifest(cached, config.owner_public_key)
         ):
             self._current = cached
+
+    @property
+    def config(self) -> VestaAppConfig:
+        return self._config
+
+    @property
+    def peer_cache(self) -> PeerCacheStore | None:
+        return self._peer_cache_store
+
+    @property
+    def active_override(self) -> str | None:
+        """The user's saved relay override, if any."""
+        return self._override_store.get_override() if self._override_store else None
 
     @property
     def manifest_channel(self) -> str:

@@ -21,8 +21,14 @@ import {
 import type { DeviceGroup } from "./device-groups.js";
 import { classifyErrorCode } from "./limits.js";
 import type { VestaLimitNotice } from "./limits.js";
+import { FederationClient } from "./federation.js";
 import { RELAY_MANIFEST_EVENT_TYPE } from "./relay.js";
-import type { RelayDirectory, RelayManifest } from "./relay.js";
+import type {
+    RelayAttempt,
+    RelayDirectory,
+    RelayManifest,
+    RelaysExhaustedInfo,
+} from "./relay.js";
 
 // ── WebSocket abstraction ────────────────────────────────────────────────────
 // We support both the `ws` package (Node.js) and the browser WebSocket API.
@@ -78,6 +84,12 @@ export interface VestaConnectionOptions {
 
     /** Enable automatic reconnection on disconnect. Default: true. */
     autoReconnect?: boolean;
+
+    /**
+     * How many full, failed passes over the relay candidate list count as "exhausted" under
+     * `autoReconnect`, firing `relaysExhausted`. Default: 3.
+     */
+    relayExhaustionPasses?: number;
 
     /** Initial reconnect delay in ms. Default: 1000. */
     initialReconnectDelay?: number;
@@ -135,6 +147,14 @@ export interface VestaConnectionEvents {
     reconnecting: (attempt: number) => void;
     relaySwitched: (url: string) => void;
     manifestApplied: (manifest: RelayManifest) => void;
+    /** One connection attempt against one relay candidate failed before WELCOME. */
+    relayAttemptFailed: (attempt: RelayAttempt) => void;
+    /**
+     * Fires once per outage when every candidate has failed `relayExhaustionPasses` full passes.
+     * Auto-reconnect keeps retrying in the background; surface a recovery prompt
+     * (see `RelayRecoverySession`).
+     */
+    relaysExhausted: (info: RelaysExhaustedInfo) => void;
 }
 
 type EventKey = keyof VestaConnectionEvents;
@@ -155,11 +175,21 @@ export class VestaConnection {
     private activeRelayIndex = 0;
     private notifiedRelayIndex = -1;
     private attemptReachedWelcome = false;
-    private relayDirectory: RelayDirectory | undefined;
+    private consecutiveFailures = 0;
+    private exhaustionRaised = false;
+    private readonly lastAttempts = new Map<string, string>();
+    private readonly retiredSockets = new WeakSet<VestaSocket>();
+    private federation: FederationClient | undefined;
+
+    /** The attached relay directory, if any. */
+    relayDirectory: RelayDirectory | undefined;
+
+    /** Whether the connection reconnects on its own after a drop. */
+    readonly autoReconnect: boolean;
 
     private readonly clientId: string;
     private readonly createSocket: SocketFactory;
-    private readonly autoReconnect: boolean;
+    private readonly relayExhaustionPasses: number;
     private readonly initialReconnectDelay: number;
     private readonly maxReconnectDelay: number;
     private readonly lastSequences: Record<string, number>;
@@ -185,6 +215,7 @@ export class VestaConnection {
         this._channels = [...options.channels];
         this.createSocket = options.createSocket;
         this.autoReconnect = options.autoReconnect ?? true;
+        this.relayExhaustionPasses = Math.max(1, options.relayExhaustionPasses ?? 3);
         this.initialReconnectDelay = options.initialReconnectDelay ?? 1000;
         this.maxReconnectDelay = options.maxReconnectDelay ?? 30000;
         this.lastSequences = { ...options.lastSequences };
@@ -297,9 +328,13 @@ export class VestaConnection {
         if (this.socket) return;
 
         this.attemptReachedWelcome = false;
-        this.socket = this.createSocket(this.activeRelay);
+        const attemptedRelay: string = this.activeRelay;
+        const socket: VestaSocket = this.createSocket(attemptedRelay);
+        this.socket = socket;
+        let attemptError: string | null = null;
 
         this.socket.addEventListener("open", () => {
+            if (this.retiredSockets.has(socket)) return;
             this.sendRaw({
                 type: "HELLO",
                 clientId: this.clientId,
@@ -310,6 +345,7 @@ export class VestaConnection {
         });
 
         this.socket.addEventListener("message", (ev) => {
+            if (this.retiredSockets.has(socket)) return;
             const data =
                 typeof ev.data === "string" ? ev.data : ev.data?.toString?.();
             if (!data) return;
@@ -325,10 +361,18 @@ export class VestaConnection {
         });
 
         this.socket.addEventListener("close", (ev) => {
+            if (this.retiredSockets.has(socket)) return;
             this._isConnected = false;
             this.socket = null;
             const reached = this.attemptReachedWelcome;
             this.emit("disconnected", ev.reason || "Connection closed");
+
+            if (!reached && !this.disposed) {
+                this.recordAttemptFailure(
+                    attemptedRelay,
+                    attemptError ?? (ev.reason || "Connection closed before the relay accepted it"),
+                );
+            }
 
             if (this.autoReconnect && !this.disposed) {
                 // If this attempt never reached WELCOME, the relay is unreachable —
@@ -341,9 +385,53 @@ export class VestaConnection {
             }
         });
 
-        this.socket.addEventListener("error", () => {
-            // The close event will follow; we handle reconnect there.
+        this.socket.addEventListener("error", (ev) => {
+            // The close event will follow and handles reconnect; just remember why.
+            const message: unknown = (ev as { message?: unknown } | null)?.message;
+            if (typeof message === "string" && message) attemptError = message;
         });
+    }
+
+    /**
+     * Close the current socket (if any) and connect again right now, walking the candidate list.
+     * Resolves true once WELCOME arrives, false once a full pass (or one attempt when
+     * `autoReconnect` is off) has failed. Auto-reconnect keeps retrying in the background.
+     */
+    reconnect(): Promise<boolean> {
+        if (this.disposed) return Promise.resolve(false);
+        if (this._isConnected) return Promise.resolve(true);
+        const outcome = this.waitForOutcome(this.autoReconnect ? this.relayCandidates.length : 1);
+        this.restart();
+        return outcome;
+    }
+
+    /**
+     * Persist `url` as the user's relay override (the escape hatch that always wins locally) and
+     * connect to it now. Resolves true if it connected. Requires an attached {@link RelayDirectory}.
+     */
+    adoptRelay(url: string): Promise<boolean> {
+        const directory = this.relayDirectory;
+        if (!directory) {
+            return Promise.reject(new Error("No relayDirectory attached — cannot set a relay override."));
+        }
+        directory.setUserOverride(url);
+        this.updateRelayCandidates(directory.resolveCandidates());
+        const index = this.relayCandidates.indexOf(url);
+        this.activeRelayIndex = index >= 0 ? index : 0;
+        const outcome = this.waitForOutcome(1);
+        this.restart();
+        return outcome;
+    }
+
+    /** Clear the user relay override and reconnect using the freshly resolved candidates. */
+    clearRelayOverride(): Promise<boolean> {
+        const directory = this.relayDirectory;
+        if (!directory) {
+            return Promise.reject(new Error("No relayDirectory attached — cannot clear a relay override."));
+        }
+        directory.clearUserOverride();
+        this.updateRelayCandidates(directory.resolveCandidates());
+        return this.reconnect();
     }
 
     /** Gracefully disconnect. Does not trigger auto-reconnect. */
@@ -643,6 +731,9 @@ export class VestaConnection {
                 this.reconnectAttempt = 0;
                 this.attemptReachedWelcome = true;
                 this.hasReachedWelcomeOnce = true;
+                this.consecutiveFailures = 0;
+                this.exhaustionRaised = false;
+                this.lastAttempts.clear();
                 if (this.activeRelayIndex !== this.notifiedRelayIndex) {
                     this.notifiedRelayIndex = this.activeRelayIndex;
                     this.emit("relaySwitched", this.activeRelay);
@@ -660,6 +751,7 @@ export class VestaConnection {
                 if (this.localStore) {
                     void this.flushOutbox();
                 }
+                void this.refreshPeerCache(this.activeRelay);
                 break;
             }
 
@@ -790,6 +882,69 @@ export class VestaConnection {
             } catch {
                 // Listener errors should not break the connection
             }
+        }
+    }
+
+    private restart(): void {
+        this.cancelReconnect();
+        if (this.socket) {
+            this.retiredSockets.add(this.socket);
+            this.socket.close(1000, "Reconnecting");
+            this.socket = null;
+        }
+        this._isConnected = false;
+        this.connect();
+    }
+
+    private waitForOutcome(maxFailures: number): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            let failures = 0;
+            const finish = (ok: boolean): void => {
+                this.off("connected", onConnected);
+                this.off("relayAttemptFailed", onFailed);
+                resolve(ok);
+            };
+            const onConnected = (): void => finish(true);
+            const onFailed = (): void => {
+                failures++;
+                if (failures >= maxFailures) finish(false);
+            };
+            this.on("connected", onConnected);
+            this.on("relayAttemptFailed", onFailed);
+        });
+    }
+
+    private recordAttemptFailure(relay: string, reason: string): void {
+        this.lastAttempts.set(relay, reason);
+        this.consecutiveFailures++;
+        this.emit("relayAttemptFailed", { relay, reason });
+
+        const threshold: number = this.relayExhaustionPasses * this.relayCandidates.length;
+        if (this.autoReconnect && !this.exhaustionRaised && this.consecutiveFailures >= threshold) {
+            this.exhaustionRaised = true;
+            const attempts: RelayAttempt[] = this.relayCandidates
+                .filter((url) => this.lastAttempts.has(url))
+                .map((url) => ({ relay: url, reason: this.lastAttempts.get(url)! }));
+            this.emit("relaysExhausted", {
+                attempts,
+                passes: Math.floor(this.consecutiveFailures / this.relayCandidates.length),
+            });
+        }
+    }
+
+    // Best-effort: remember verified federation peers so recovery has hints if every known relay dies.
+    private async refreshPeerCache(relay: string): Promise<void> {
+        const directory = this.relayDirectory;
+        const cache = directory?.peerCache;
+        if (!directory || !cache) return;
+        const baseUrl: string | null = FederationClient.toFederationBaseUrl(relay);
+        if (!baseUrl) return;
+        try {
+            this.federation ??= new FederationClient(directory.config);
+            const peers = await this.federation.listAllRelays(baseUrl);
+            if (peers.length > 0) cache.save(peers);
+        } catch {
+            // Cache refresh must never disturb a healthy connection.
         }
     }
 

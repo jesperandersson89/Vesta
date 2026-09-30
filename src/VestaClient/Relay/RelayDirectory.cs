@@ -21,13 +21,15 @@ public sealed class RelayDirectory
     public RelayDirectory(
         VestaAppConfig config,
         IRelayOverrideStore? overrideStore = null,
-        IManifestStore? manifestStore = null)
+        IManifestStore? manifestStore = null,
+        IPeerCacheStore? peerCache = null)
     {
         ArgumentNullException.ThrowIfNull(config);
 
         _config = config;
         _overrideStore = overrideStore;
         _manifestStore = manifestStore;
+        PeerCache = peerCache;
 
         // Load any cached manifest, but only trust it if it still verifies against the
         // app's compiled-in owner key — a tampered cache must never influence resolution.
@@ -56,8 +58,18 @@ public sealed class RelayDirectory
         return new RelayDirectory(
             config,
             new FileRelayOverrideStore(Path.Combine(directory, $"{safeAppId}.override.json")),
-            new FileManifestStore(Path.Combine(directory, $"{safeAppId}.manifest.json")));
+            new FileManifestStore(Path.Combine(directory, $"{safeAppId}.manifest.json")),
+            new FilePeerCacheStore(Path.Combine(directory, $"{safeAppId}.peers.json")));
     }
+
+    /// <summary>Federation peers remembered from healthy sessions, used as recovery hints. Null if not configured.</summary>
+    public IPeerCacheStore? PeerCache { get; }
+
+    /// <summary>The app config this directory was built for.</summary>
+    public VestaAppConfig Config => _config;
+
+    /// <summary>The user's stored relay override, or null.</summary>
+    public Uri? ActiveOverride => _overrideStore?.GetOverride();
 
     private static string DefaultStoreDirectory()
     {

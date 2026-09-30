@@ -12,12 +12,16 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from vesta_client.federation import FederationClient
 from vesta_client.identity import VestaIdentity
 from vesta_client.limits import VestaLimitNotice, classify_error_code
 from vesta_client.relay import (
     RELAY_MANIFEST_EVENT_TYPE,
+    RelayAttempt,
     RelayDirectory,
     RelayManifest,
+    RelaysExhaustedError,
+    RelaysExhaustedInfo,
 )
 from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
@@ -58,6 +62,7 @@ class VestaConnection:
         local_store: ClientEventStore | None = None,
         identity: VestaIdentity | None = None,
         relay_directory: RelayDirectory | None = None,
+        relay_exhaustion_passes: int = 3,
     ):
         self.server_url = server_url
         self._relay_candidates = list(relays) if relays else [server_url]
@@ -84,6 +89,17 @@ class VestaConnection:
         self._is_connected = False
         self._server_id: str | None = None
         self._has_reached_welcome_once = False
+        self._closing = False
+        self._reconnect_task: asyncio.Task | None = None
+        self._background_tasks: set[asyncio.Task] = set()
+        self._federation: FederationClient | None = None
+
+        # Relay exhaustion tracking: fires once per outage after N full failed passes.
+        self.relay_exhaustion_passes = max(1, relay_exhaustion_passes)
+        self._consecutive_failures = 0
+        self._exhaustion_raised = False
+        self._last_attempts: dict[str, str] = {}
+        self._listeners: dict[str, list[Callable[..., None]]] = {}
 
         # Callbacks
         self._on_event: Callable[[EventMessage], None] | None = None
@@ -96,6 +112,7 @@ class VestaConnection:
         self._on_disconnected: Callable[[str], None] | None = None
         self._on_relay_switched: Callable[[str], None] | None = None
         self._on_manifest_applied: Callable[[RelayManifest], None] | None = None
+        self._on_relays_exhausted: Callable[[RelaysExhaustedInfo], None] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -118,6 +135,31 @@ class VestaConnection:
     def relays(self) -> list[str]:
         """The ordered relay candidate list tried on connect/failover."""
         return list(self._relay_candidates)
+
+    @property
+    def relay_directory(self) -> RelayDirectory | None:
+        return self._relay_directory
+
+    def add_listener(self, event: str, listener: Callable[..., None]) -> Callable[[], None]:
+        """
+        Add a listener for ``"disconnected"`` (reason), ``"reconnected"`` (welcome) or
+        ``"relays_exhausted"`` (:class:`RelaysExhaustedInfo`). Unlike the single ``on_*``
+        callbacks, any number of listeners coexist. Returns an unsubscribe function.
+        """
+        self._listeners.setdefault(event, []).append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._listeners.get(event, []):
+                self._listeners[event].remove(listener)
+
+        return unsubscribe
+
+    def _emit(self, event: str, *args: Any) -> None:
+        for listener in list(self._listeners.get(event, [])):
+            try:
+                listener(*args)
+            except Exception:
+                logger.exception("Listener for %s raised", event)
 
     # ── Event registration ────────────────────────────────────────────────────
 
@@ -154,6 +196,11 @@ class VestaConnection:
 
     def on_manifest_applied(self, callback: Callable[[RelayManifest], None]) -> None:
         self._on_manifest_applied = callback
+
+    def on_relays_exhausted(self, callback: Callable[[RelaysExhaustedInfo], None]) -> None:
+        """Register a callback fired once per outage when every relay candidate has failed
+        ``relay_exhaustion_passes`` full passes while ``auto_reconnect`` is on."""
+        self._on_relays_exhausted = callback
 
     # ── Relay directory / failover ────────────────────────────────────────────
 
@@ -203,6 +250,50 @@ class VestaConnection:
         self._relay_directory.clear_user_override()
         self.update_relay_candidates(self._relay_directory.resolve_candidates())
 
+    async def reconnect(self) -> bool:
+        """
+        Connect again right now, walking the candidate list once. Returns True once connected,
+        False if every candidate failed (auto-reconnect keeps retrying in the background).
+        """
+        if self._disposed:
+            return False
+        if self._is_connected:
+            return True
+        self._cancel_reconnect()
+        connected: bool = await self._try_connect_candidates()
+        if not connected:
+            self._schedule_reconnect()
+        return connected
+
+    async def adopt_relay(self, url: str) -> bool:
+        """
+        Persist ``url`` as the user's relay override (the escape hatch that always wins locally)
+        and connect to it now. Returns True if it connected. Requires a :class:`RelayDirectory`.
+        """
+        if self._relay_directory is None:
+            raise RuntimeError("No relay_directory attached — cannot set a relay override.")
+        if self._disposed:
+            return False
+        self._relay_directory.set_user_override(url)
+        self.update_relay_candidates(self._relay_directory.resolve_candidates())
+        self._active_relay_index = (
+            self._relay_candidates.index(url) if url in self._relay_candidates else 0
+        )
+        self._cancel_reconnect()
+        await self.disconnect()
+        connected: bool = await self._try_connect_candidates(limit=1)
+        if not connected:
+            self._schedule_reconnect()
+        return connected
+
+    async def clear_relay_override(self) -> bool:
+        """Clear the user relay override and reconnect using the freshly resolved candidates."""
+        if self._relay_directory is None:
+            raise RuntimeError("No relay_directory attached — cannot clear a relay override.")
+        self._relay_directory.clear_user_override()
+        self.update_relay_candidates(self._relay_directory.resolve_candidates())
+        return await self.reconnect()
+
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
     async def connect(self) -> None:
@@ -211,18 +302,26 @@ class VestaConnection:
             raise RuntimeError("Connection has been disposed")
 
         if not await self._try_connect_candidates():
-            raise RuntimeError(
-                f"Could not connect to any of the {len(self._relay_candidates)} configured relay(s)."
+            raise RelaysExhaustedError(
+                RelaysExhaustedInfo(
+                    attempts=[
+                        RelayAttempt(relay=url, reason=self._last_attempts[url])
+                        for url in self._relay_candidates
+                        if url in self._last_attempts
+                    ],
+                    passes=1,
+                )
             )
 
-    async def _try_connect_candidates(self) -> bool:
+    async def _try_connect_candidates(self, limit: int | None = None) -> bool:
         count = len(self._relay_candidates)
-        for offset in range(count):
+        for offset in range(count if limit is None else min(limit, count)):
             index = (self._active_relay_index + offset) % count
             relay = self._relay_candidates[index]
             try:
                 await self._connect_to(relay)
-            except Exception:
+            except Exception as error:
+                self._record_attempt_failure(relay, str(error) or type(error).__name__)
                 continue
 
             self._active_relay_index = index
@@ -235,26 +334,37 @@ class VestaConnection:
 
     async def _connect_to(self, relay: str) -> None:
         """Open the WebSocket connection to a specific relay and perform the HELLO handshake."""
-        self._ws = await websockets.connect(relay)
+        ws = await websockets.connect(relay)
+        self._ws = ws
+        try:
+            # Send HELLO
+            hello: dict[str, Any] = {
+                "type": "HELLO",
+                "clientId": self.client_id,
+                "channels": self._channels,
+                "lastSequences": self._last_sequences,
+            }
+            if self.public_key:
+                hello["publicKey"] = self.public_key
+            await ws.send(json.dumps(hello))
 
-        # Send HELLO
-        hello: dict[str, Any] = {
-            "type": "HELLO",
-            "clientId": self.client_id,
-            "channels": self._channels,
-            "lastSequences": self._last_sequences,
-        }
-        if self.public_key:
-            hello["publicKey"] = self.public_key
-        await self._ws.send(json.dumps(hello))
-
-        # Wait for WELCOME
-        raw = await self._ws.recv()
-        msg = parse_server_message(json.loads(raw))
-        if not isinstance(msg, WelcomeMessage):
-            raise RuntimeError(f"Expected WELCOME, got {type(msg).__name__}")
+            # Wait for WELCOME
+            raw = await ws.recv()
+            msg = parse_server_message(json.loads(raw))
+            if not isinstance(msg, WelcomeMessage):
+                raise RuntimeError(f"Expected WELCOME, got {type(msg).__name__}")
+        except BaseException:
+            self._ws = None
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            raise
 
         self._is_connected = True
+        self._consecutive_failures = 0
+        self._exhaustion_raised = False
+        self._last_attempts.clear()
         self._server_id = msg.server_id
         self._channels = list(msg.channels)
         self._reconnect_attempt = 0
@@ -265,9 +375,16 @@ class VestaConnection:
             self._on_connected(msg)
         if was_reconnect and self._on_reconnected:
             self._on_reconnected(msg)
+        if was_reconnect:
+            self._emit("reconnected", msg)
 
         # Start receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
+
+        if self._relay_directory is not None and self._relay_directory.peer_cache is not None:
+            task: asyncio.Task = asyncio.create_task(self._refresh_peer_cache(relay))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         # Ensure we are subscribed to the manifest channel when a directory is attached.
         if (
@@ -284,11 +401,14 @@ class VestaConnection:
         """Gracefully close the connection."""
         self._is_connected = False
         if self._receive_task:
+            self._closing = True
             self._receive_task.cancel()
             try:
                 await self._receive_task
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._closing = False
             self._receive_task = None
         if self._ws:
             await self._ws.close()
@@ -298,6 +418,7 @@ class VestaConnection:
         """Permanently dispose the connection."""
         self._disposed = True
         self.auto_reconnect = False
+        self._cancel_reconnect()
         await self.disconnect()
 
     # ── Publishing ────────────────────────────────────────────────────────────
@@ -575,8 +696,21 @@ class VestaConnection:
             self._is_connected = False
             if self._on_disconnected:
                 self._on_disconnected("Connection closed")
-            if self.auto_reconnect and not self._disposed:
-                asyncio.create_task(self._reconnect())
+            self._emit("disconnected", "Connection closed")
+            if self.auto_reconnect and not self._disposed and not self._closing:
+                self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        if not self.auto_reconnect or self._disposed:
+            return
+        self._cancel_reconnect()
+        self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    def _cancel_reconnect(self) -> None:
+        task: asyncio.Task | None = self._reconnect_task
+        self._reconnect_task = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
 
     async def _reconnect(self) -> None:
         self._reconnect_attempt += 1
@@ -589,8 +723,48 @@ class VestaConnection:
         try:
             await self.connect()
         except Exception:
-            if self.auto_reconnect and not self._disposed:
-                asyncio.create_task(self._reconnect())
+            self._schedule_reconnect()
+
+    def _record_attempt_failure(self, relay: str, reason: str) -> None:
+        self._last_attempts[relay] = reason
+        self._consecutive_failures += 1
+        count: int = len(self._relay_candidates)
+        threshold: int = self.relay_exhaustion_passes * count
+        if (
+            self.auto_reconnect
+            and not self._exhaustion_raised
+            and self._consecutive_failures >= threshold
+        ):
+            self._exhaustion_raised = True
+            info = RelaysExhaustedInfo(
+                attempts=[
+                    RelayAttempt(relay=url, reason=self._last_attempts[url])
+                    for url in self._relay_candidates
+                    if url in self._last_attempts
+                ],
+                passes=self._consecutive_failures // count,
+            )
+            if self._on_relays_exhausted:
+                self._on_relays_exhausted(info)
+            self._emit("relays_exhausted", info)
+
+    async def _refresh_peer_cache(self, relay: str) -> None:
+        # Best-effort: remember verified federation peers so recovery has hints if every relay dies.
+        directory: RelayDirectory | None = self._relay_directory
+        cache = directory.peer_cache if directory else None
+        if directory is None or cache is None:
+            return
+        base: str | None = FederationClient.to_federation_base_url(relay)
+        if base is None:
+            return
+        try:
+            if self._federation is None:
+                self._federation = FederationClient(directory.config)
+            peers = await self._federation.list_all_relays(base)
+            if peers:
+                cache.save(peers)
+        except Exception:
+            logger.debug("Peer cache refresh failed", exc_info=True)
 
     def _dispatch(self, msg: ServerMessage) -> None:
         match msg:
