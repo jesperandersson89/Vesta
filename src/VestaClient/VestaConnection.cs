@@ -49,10 +49,10 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 
     /// <summary>
     /// Whether the built-in relay picker page opens when every relay is exhausted. On for every app
-    /// (it is part of the core, not an opt-in); internal so this library's tests can keep it from
-    /// launching a browser.
+    /// (it is part of the core, not an opt-in). Process-wide; set to <c>false</c> in headless or
+    /// service hosts that should fail with <see cref="RelaysExhaustedException"/> instead of launching a browser.
     /// </summary>
-    internal static bool RelayPickerEnabled { get; set; } = true;
+    public static bool RelayPickerEnabled { get; set; } = true;
 
     /// <summary>Replaces the system-browser launch of the relay picker page (tests only).</summary>
     internal static Func<Uri, bool>? RelayPickerLauncher { get; set; }

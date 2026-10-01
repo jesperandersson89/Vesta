@@ -22,10 +22,12 @@ manifest relays, compiled-in defaults). A **pass** is one walk over all candidat
 Background reconnect keeps running while the prompt is open. If a relay comes back, the session
 returns to `Healthy` and the view goes away.
 
-A failed **first** connect has no outage to witness: C# `ConnectAsync` throws
-`RelaysExhaustedException` and Python `connect()` raises `RelaysExhaustedError`, both carrying the
-same info as `.Info` / `.info`. Hand it to `session.ReportExhausted(ex.Info)` /
-`session.report_exhausted(err.info)` to open the prompt. TypeScript `connect()` is not async and
+A failed **first** connect has no outage to witness. In C#, `ConnectAsync` opens the built-in
+loopback web picker and waits for the user to pick a relay that works; it throws
+`RelaysExhaustedException` only if the page is dismissed or cannot be shown (headless host). Set
+`VestaConnection.RelayPickerEnabled = false` to skip the page and always throw. Python `connect()`
+raises `RelaysExhaustedError`; both carry the same info as `.Info` / `.info`. Hand it to
+`session.ReportExhausted(ex.Info)` / `session.report_exhausted(err.info)` to open your own prompt. TypeScript `connect()` is not async and
 has no error class: with `autoReconnect` on, the failure arrives as the `relaysExhausted` event,
 which a session created before `connect()` picks up automatically.
 
@@ -43,7 +45,8 @@ which a session created before `connect()` picks up automatically.
 | Hide     | `Dismiss()`                                | `dismiss()`                       | `dismiss()`                          |
 | Teardown | `Dispose()`                                | `dispose()`                       | `dispose()`                          |
 
-Built-in views: `ConsoleRelayPicker.RunAsync(session, input, output)` (C#),
+Built-in views: `ConsoleRelayPicker.RunAsync(session, input, output)` and the automatic loopback
+web picker (C#, on by default, opt out with `VestaConnection.RelayPickerEnabled = false`),
 `runConsoleRelayPicker(session, { readLine, write })` and the `<vesta-relay-picker>` web
 component (TS, `element.session = session`), `run_console_relay_picker(session, read_line, write)`
 (Python, async `read_line`).
