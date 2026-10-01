@@ -31,7 +31,7 @@ public sealed class FilePeerCacheStore(string filePath) : IPeerCacheStore
 
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    private sealed record Entry(string RelayPublicKey, List<string> Urls, bool HostsRequestedApp, DateTimeOffset IssuedAt);
+    private sealed record Entry(string RelayPublicKey, List<string> Urls, bool HostsRequestedApp, DateTimeOffset IssuedAt, bool? AcceptsUnregisteredApps = null);
 
     public IReadOnlyList<DiscoveredRelay> Load()
     {
@@ -56,7 +56,7 @@ public sealed class FilePeerCacheStore(string filePath) : IPeerCacheStore
                 }
                 if (urls.Count > 0 && !string.IsNullOrEmpty(entry.RelayPublicKey))
                 {
-                    peers.Add(new DiscoveredRelay(entry.RelayPublicKey, urls, entry.HostsRequestedApp, entry.IssuedAt));
+                    peers.Add(new DiscoveredRelay(entry.RelayPublicKey, urls, entry.HostsRequestedApp, entry.IssuedAt, entry.AcceptsUnregisteredApps));
                 }
             }
             return peers;
@@ -78,7 +78,7 @@ public sealed class FilePeerCacheStore(string filePath) : IPeerCacheStore
 
         List<Entry> entries = [.. peers
             .Take(MaxEntries)
-            .Select(p => new Entry(p.RelayPublicKey, [.. p.Urls.Select(u => u.ToString())], p.HostsRequestedApp, p.IssuedAt))];
+            .Select(p => new Entry(p.RelayPublicKey, [.. p.Urls.Select(u => u.ToString())], p.HostsRequestedApp, p.IssuedAt, p.AcceptsUnregisteredApps))];
         File.WriteAllText(filePath, JsonSerializer.Serialize(entries, Options));
     }
 }

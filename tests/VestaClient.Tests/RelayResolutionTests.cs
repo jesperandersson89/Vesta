@@ -13,6 +13,7 @@ public sealed class RelayResolutionTests : IDisposable
     private static readonly Uri Manifest1 = new("wss://manifest-a.example/ws");
     private static readonly Uri Manifest2 = new("wss://manifest-b.example/ws");
     private static readonly Uri Override = new("wss://my-relay.example/ws");
+    private static readonly RelayOverride StoredOverride = new(Override);
 
     private readonly string _tempPath = Path.Combine(
         Path.GetTempPath(),
@@ -102,16 +103,16 @@ public sealed class RelayResolutionTests : IDisposable
     {
         FileRelayOverrideStore store = new(_tempPath);
 
-        store.SetOverride(Override);
+        store.SetOverride(StoredOverride);
 
-        Assert.Equal(Override, store.GetOverride());
+        Assert.Equal(StoredOverride, store.GetOverride());
     }
 
     [Fact]
     public void Override_SetThenClear_ReturnsNull()
     {
         FileRelayOverrideStore store = new(_tempPath);
-        store.SetOverride(Override);
+        store.SetOverride(StoredOverride);
 
         store.ClearOverride();
 
@@ -122,11 +123,11 @@ public sealed class RelayResolutionTests : IDisposable
     [Fact]
     public void Override_PersistsAcrossStoreInstances()
     {
-        new FileRelayOverrideStore(_tempPath).SetOverride(Override);
+        new FileRelayOverrideStore(_tempPath).SetOverride(StoredOverride);
 
         FileRelayOverrideStore reopened = new(_tempPath);
 
-        Assert.Equal(Override, reopened.GetOverride());
+        Assert.Equal(StoredOverride, reopened.GetOverride());
     }
 
     [Fact]
@@ -143,11 +144,11 @@ public sealed class RelayResolutionTests : IDisposable
     public void Override_FeedsResolverAsHighestPriority()
     {
         FileRelayOverrideStore store = new(_tempPath);
-        store.SetOverride(Override);
+        store.SetOverride(StoredOverride);
 
         IReadOnlyList<Uri> result = RelayResolver.Resolve(
             [Default1, Default2],
-            userOverride: store.GetOverride(),
+            userOverride: store.GetOverride()?.Relay,
             manifestRelays: [Manifest1]);
 
         Assert.Equal([Override, Manifest1, Default1, Default2], result);

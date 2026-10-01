@@ -37,8 +37,8 @@ which a session created before `connect()` picks up automatically.
 | State    | `Snapshot`, `OnChanged`                    | `snapshot`, `onChange(fn)`        | `snapshot`, `on_change(fn)`          |
 | Retry    | `RetryAsync()`                             | `retry()`                         | `await retry()`                      |
 | Discover | `DiscoverAsync()`                          | `discover()`                      | `await discover()`                   |
-| Pick     | `AdoptAsync(RelayChoice)`                  | `adopt(choice)`                   | `await adopt(choice)`                |
-| Manual   | `UseManualAsync(url)`                      | `useManual(url)`                  | `await use_manual(url)`              |
+| Pick     | `AdoptAsync(RelayChoice, RelayAdoptOptions?)` | `adopt(choice, options?)`      | `await adopt(choice, options)`       |
+| Manual   | `UseManualAsync(url, RelayAdoptOptions?)`  | `useManual(url, options?)`        | `await use_manual(url, options)`     |
 | Reset    | `ClearOverrideAsync()`                     | `clearOverride()`                 | `await clear_override()`             |
 | Hide     | `Dismiss()`                                | `dismiss()`                       | `dismiss()`                          |
 | Teardown | `Dispose()`                                | `dispose()`                       | `dispose()`                          |
@@ -56,12 +56,13 @@ A view renders **only** the snapshot and holds no other state:
 | ------------------- | -------------------------------------------------------------------------- |
 | `phase`             | See the state machine below                                                |
 | `triedRelays`       | `(relay, reason)` per failed candidate, from the last pass                 |
-| `choices`           | `RelayChoice[]`: `url`, `relayPublicKey?`, `hostsRequestedApp`, `fromCache` |
-| `activeOverride`    | The user's saved relay, if any (offer "clear")                             |
+| `choices`           | `RelayChoice[]`: `url`, `relayPublicKey?`, `hostsRequestedApp`, `fromCache`, `acceptsUnregisteredApps?` |
+| `activeOverride`    | The user's saved relay, if any (offer "clear"); also carries the namespace/register-on-connect choice made at adoption time |
 | `backgroundRetrying`| True while auto-reconnect is still running underneath the prompt           |
 | `failedPasses`      | How many full passes failed                                                |
 | `adopting`          | The relay being connected to in the `Adopting` phase                       |
 | `failureReason`     | Human-readable reason in the `Failed` phase                                |
+| `failedChoice` / `failedOptions` | The choice + `RelayAdoptOptions` that were just rejected, so a view can reopen pre-filled with an error instead of starting over |
 
 ### State machine
 
@@ -113,12 +114,38 @@ These are what a port must preserve:
 5. **Adoption is a local override**, persisted per user and clearable with `ClearOverride`. It
    never changes the owner's manifest.
 
+## Adopting under a different namespace
+
+`Adopt` and `UseManual` take an optional `RelayAdoptOptions { AppId, RegisterApp }`
+(`appId`/`registerApp` in TS, `app_id`/`register_app` in Python):
+
+- **`AppId`** — run the app under a different namespace on the new relay (its own channel prefix
+  is still busy, is reserved, or the relay is managed and the canonical id isn't registered
+  there). `VestaConnection` remaps every channel id transparently on the wire — the app and its
+  local store always see the **canonical** app id; only the adopted relay sees the chosen one.
+  Leave it null/empty to keep the app's own id.
+- **`RegisterApp`** — send `REGISTER_APP` for the effective namespace right after connecting
+  (needed on relays with `RequireAppRegistration` that don't already know this app).
+
+Adoption is **probationary**: if the relay refuses the namespace or the registration (`INVALID_APP`,
+`APP_NOT_ALLOWED`, `APPS_NOT_SUPPORTED`, `UNKNOWN_APP`, `DUPLICATE_APP` on first register), the
+session falls back to `Choices` with `failureReason` set and `failedChoice` / `failedOptions`
+carrying what was just tried, so a view can reopen the same form pre-filled with an error instead
+of losing the user's input. The override is only persisted once the relay has accepted the
+namespace (first successful post-connect ack) — a rejected attempt never gets written to disk.
+`ClearOverride` drops the namespace/register choice along with the relay.
+
+A choice's `acceptsUnregisteredApps` (from the relay's signed descriptor, nullable — the relay
+may not advertise it) tells a view whether registration is likely needed at all: `true` means
+open mode, no registration required; `false` means registration is enforced.
+
 ## Managed relays
 
-Relays that require app registration only accept an app that its owner registered. If the app's
-developer is gone, only relays that **already host the app**, or **open-mode** relays, will accept
-the user. `hostsRequestedApp` in the choice list is the signal; expect "unverified" choices to
-fail on managed relays.
+Relays that require app registration only accept an app that its owner registered under that
+exact namespace. If the app's developer is gone, only relays that **already host the app**, or
+**open-mode** relays, will accept the user without an explicit `AppId` / `RegisterApp` choice.
+`hostsRequestedApp` in the choice list is the signal; expect "unverified" choices to fail on
+managed relays unless the user also opts into a fresh namespace + registration.
 
 ## Adding a platform
 

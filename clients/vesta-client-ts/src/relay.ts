@@ -174,10 +174,45 @@ function extractManifestRelays(manifest: RelayManifest): string[] {
 
 // ─── Override + manifest stores ──────────────────────────────────────────────
 
+/**
+ * The user's local relay choice: the relay, plus the per-relay inputs the app runs with there.
+ * `appId` is the app namespace to use on that relay (channels are remapped transparently);
+ * `registerApp` asks for the namespace to be registered on connect.
+ */
+export interface RelayOverride {
+    relay: string;
+    appId?: string | null;
+    registerApp?: boolean;
+}
+
+/** Parse a persisted override: the JSON object form, or the legacy plain-URL / `{url}` forms. */
+export function parseRelayOverride(raw: unknown): RelayOverride | null {
+    let value: unknown = raw;
+    if (typeof value === "string") {
+        const text: string = value.trim();
+        if (text.length === 0) return null;
+        if (!text.startsWith("{")) return { relay: text };
+        try {
+            value = JSON.parse(text);
+        } catch {
+            return null;
+        }
+    }
+    if (value === null || typeof value !== "object") return null;
+    const obj = value as { relay?: unknown; url?: unknown; appId?: unknown; registerApp?: unknown };
+    const relay: unknown = obj.relay ?? obj.url;
+    if (typeof relay !== "string" || relay.length === 0) return null;
+    return {
+        relay,
+        appId: typeof obj.appId === "string" && obj.appId.length > 0 ? obj.appId : null,
+        registerApp: obj.registerApp === true,
+    };
+}
+
 /** Persists the user's local relay override — the individual escape hatch. */
 export interface RelayOverrideStore {
-    getOverride(): string | null;
-    setOverride(url: string): void;
+    getOverride(): RelayOverride | null;
+    setOverride(override: RelayOverride): void;
     clearOverride(): void;
 }
 
@@ -235,12 +270,12 @@ export class LocalStoragePeerCacheStore implements PeerCacheStore {
 }
 
 export class InMemoryRelayOverrideStore implements RelayOverrideStore {
-    private override: string | null = null;
-    getOverride(): string | null {
+    private override: RelayOverride | null = null;
+    getOverride(): RelayOverride | null {
         return this.override;
     }
-    setOverride(url: string): void {
-        this.override = url;
+    setOverride(override: RelayOverride): void {
+        this.override = override;
     }
     clearOverride(): void {
         this.override = null;
@@ -260,11 +295,11 @@ export class InMemoryManifestStore implements ManifestStore {
 /** A `localStorage`-backed override store for browser apps. */
 export class LocalStorageRelayOverrideStore implements RelayOverrideStore {
     constructor(private readonly key: string) {}
-    getOverride(): string | null {
-        return globalThis.localStorage?.getItem(this.key) ?? null;
+    getOverride(): RelayOverride | null {
+        return parseRelayOverride(globalThis.localStorage?.getItem(this.key) ?? null);
     }
-    setOverride(url: string): void {
-        globalThis.localStorage?.setItem(this.key, url);
+    setOverride(override: RelayOverride): void {
+        globalThis.localStorage?.setItem(this.key, JSON.stringify(override));
     }
     clearOverride(): void {
         globalThis.localStorage?.removeItem(this.key);
@@ -296,6 +331,7 @@ export class LocalStorageManifestStore implements ManifestStore {
  */
 export class RelayDirectory {
     private current: RelayManifest | null = null;
+    private pendingOverride: RelayOverride | null = null;
 
     constructor(
         private readonly appConfig: VestaAppConfig,
@@ -322,8 +358,13 @@ export class RelayDirectory {
         return this.peerCacheStore;
     }
 
-    get activeOverride(): string | null {
-        return this.overrideStore?.getOverride() ?? null;
+    /** The override in effect: a pending (on-probation) one wins over the persisted one. */
+    get activeOverride(): RelayOverride | null {
+        return this.pendingOverride ?? this.overrideStore?.getOverride() ?? null;
+    }
+
+    get hasPendingOverride(): boolean {
+        return this.pendingOverride !== null;
     }
 
     get manifestChannel(): string {
@@ -335,7 +376,7 @@ export class RelayDirectory {
     }
 
     resolveCandidates(): string[] {
-        const override = this.overrideStore?.getOverride() ?? undefined;
+        const override = this.activeOverride?.relay ?? undefined;
         const manifestRelays = this.current
             ? extractManifestRelays(this.current)
             : undefined;
@@ -352,17 +393,36 @@ export class RelayDirectory {
         return true;
     }
 
-    setUserOverride(url: string): void {
-        if (!this.overrideStore) {
-            throw new Error("No relay override store was configured.");
+    /**
+     * Set the user's override. With `persist` false it is only held pending (probation) until
+     * {@link commitPendingOverride}; {@link discardPendingOverride} restores the previous state.
+     */
+    setUserOverride(override: RelayOverride, persist = true): void {
+        if (persist) {
+            if (!this.overrideStore) {
+                throw new Error("No relay override store was configured.");
+            }
+            this.pendingOverride = null;
+            this.overrideStore.setOverride(override);
+            return;
         }
-        this.overrideStore.setOverride(url);
+        this.pendingOverride = override;
     }
 
+    commitPendingOverride(): void {
+        // Without a store the choice stays held in memory for this session.
+        if (!this.pendingOverride || !this.overrideStore) return;
+        this.overrideStore.setOverride(this.pendingOverride);
+        this.pendingOverride = null;
+    }
+
+    discardPendingOverride(): void {
+        this.pendingOverride = null;
+    }
+
+    /** Clear both the pending and the persisted override. */
     clearUserOverride(): void {
-        if (!this.overrideStore) {
-            throw new Error("No relay override store was configured.");
-        }
-        this.overrideStore.clearOverride();
+        this.pendingOverride = null;
+        this.overrideStore?.clearOverride();
     }
 }

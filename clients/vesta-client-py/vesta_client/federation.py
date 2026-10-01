@@ -46,6 +46,7 @@ class ServerDescriptor:
     ttl_seconds: int
     apps: list[DiscoverableApp] = field(default_factory=list)
     signature: str | None = None
+    accepts_unregistered_apps: bool | None = None
 
     def is_expired(self, now: datetime | None = None) -> bool:
         now = now or datetime.now(timezone.utc)
@@ -64,6 +65,7 @@ class ServerDescriptor:
                 for a in d.get("apps", [])
             ],
             signature=d.get("signature"),
+            accepts_unregistered_apps=d.get("acceptsUnregisteredApps"),
         )
 
 
@@ -75,6 +77,7 @@ class DiscoveredRelay:
     urls: list[str]
     hosts_requested_app: bool
     issued_at: str
+    accepts_unregistered_apps: bool | None = None
 
 
 def build_descriptor_signing_input(descriptor: ServerDescriptor) -> bytes:
@@ -86,6 +89,8 @@ def build_descriptor_signing_input(descriptor: ServerDescriptor) -> bytes:
         "ttlSeconds": descriptor.ttl_seconds,
         "urls": list(descriptor.urls),
     }
+    if isinstance(descriptor.accepts_unregistered_apps, bool):
+        fields["acceptsUnregisteredApps"] = descriptor.accepts_unregistered_apps
     return _canonicalize(fields).encode("utf-8")
 
 
@@ -183,6 +188,7 @@ class FederationClient:
             urls=list(descriptor.urls),
             hosts_requested_app=hosts_requested_app,
             issued_at=descriptor.issued_at,
+            accepts_unregistered_apps=descriptor.accepts_unregistered_apps,
         )
 
     @staticmethod

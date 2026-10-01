@@ -35,6 +35,12 @@ public sealed record ServerDescriptor
     /// <summary>The discoverable apps this relay hosts. May be empty (the relay still participates in the mesh).</summary>
     public IReadOnlyList<DiscoverableApp> Apps { get; init; } = [];
 
+    /// <summary>
+    /// True when the relay accepts any app namespace without prior registration (open mode). Null when
+    /// the relay did not advertise it (older relays); omitted from the signing input in that case.
+    /// </summary>
+    public bool? AcceptsUnregisteredApps { get; init; }
+
     /// <summary>When the descriptor was issued. Combined with <see cref="TtlSeconds"/> to expire stale gossip.</summary>
     public required DateTimeOffset IssuedAt { get; init; }
 

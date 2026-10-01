@@ -227,11 +227,53 @@ def _extract_manifest_relays(manifest: RelayManifest) -> list[str]:
 # ── Override + manifest stores ───────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class RelayOverride:
+    """
+    The user's local relay choice: the relay, plus the per-relay inputs the app runs with there.
+    ``app_id`` is the app namespace to use on that relay (channels are remapped transparently);
+    ``register_app`` asks for the namespace to be registered on connect.
+    """
+
+    relay: str
+    app_id: str | None = None
+    register_app: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"relay": self.relay, "appId": self.app_id, "registerApp": self.register_app}
+
+
+def parse_relay_override(raw: Any) -> RelayOverride | None:
+    """Parse a persisted override: the JSON object form, or the legacy plain-URL / ``{url}`` forms."""
+    value: Any = raw
+    if isinstance(value, str):
+        text: str = value.strip()
+        if not text:
+            return None
+        if not text.startswith("{"):
+            return RelayOverride(relay=text)
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    relay: Any = value.get("relay") or value.get("url")
+    if not isinstance(relay, str) or not relay:
+        return None
+    app_id: Any = value.get("appId")
+    return RelayOverride(
+        relay=relay,
+        app_id=app_id if isinstance(app_id, str) and app_id else None,
+        register_app=value.get("registerApp") is True,
+    )
+
+
 class RelayOverrideStore(Protocol):
     """Persists the user's local relay override — the individual escape hatch."""
 
-    def get_override(self) -> str | None: ...
-    def set_override(self, url: str) -> None: ...
+    def get_override(self) -> RelayOverride | None: ...
+    def set_override(self, override: RelayOverride) -> None: ...
     def clear_override(self) -> None: ...
 
 
@@ -244,13 +286,13 @@ class ManifestStore(Protocol):
 
 class InMemoryRelayOverrideStore:
     def __init__(self) -> None:
-        self._override: str | None = None
+        self._override: RelayOverride | None = None
 
-    def get_override(self) -> str | None:
+    def get_override(self) -> RelayOverride | None:
         return self._override
 
-    def set_override(self, url: str) -> None:
-        self._override = url
+    def set_override(self, override: RelayOverride) -> None:
+        self._override = override
 
     def clear_override(self) -> None:
         self._override = None
@@ -273,19 +315,17 @@ class FileRelayOverrideStore:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
 
-    def get_override(self) -> str | None:
+    def get_override(self) -> RelayOverride | None:
         if not self._path.exists():
             return None
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            value = data.get("relay")
-            return value if isinstance(value, str) and value else None
-        except (json.JSONDecodeError, OSError):
+            return parse_relay_override(self._path.read_text(encoding="utf-8"))
+        except OSError:
             return None
 
-    def set_override(self, url: str) -> None:
+    def set_override(self, override: RelayOverride) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps({"relay": url}, indent=2), encoding="utf-8")
+        self._path.write_text(json.dumps(override.to_dict(), indent=2), encoding="utf-8")
 
     def clear_override(self) -> None:
         if self._path.exists():
@@ -346,6 +386,11 @@ class FilePeerCacheStore:
                     urls=list(d["urls"]),
                     hosts_requested_app=bool(d["hostsRequestedApp"]),
                     issued_at=d["issuedAt"],
+                    accepts_unregistered_apps=(
+                        d.get("acceptsUnregisteredApps")
+                        if isinstance(d.get("acceptsUnregisteredApps"), bool)
+                        else None
+                    ),
                 )
                 for d in data
             ]
@@ -360,6 +405,7 @@ class FilePeerCacheStore:
                 "urls": p.urls,
                 "hostsRequestedApp": p.hosts_requested_app,
                 "issuedAt": p.issued_at,
+                "acceptsUnregisteredApps": p.accepts_unregistered_apps,
             }
             for p in peers[:64]
         ]
@@ -387,6 +433,7 @@ class RelayDirectory:
         self._manifest_store = manifest_store
         self._peer_cache_store = peer_cache_store
         self._current: RelayManifest | None = None
+        self._pending_override: RelayOverride | None = None
 
         cached = manifest_store.get_cached() if manifest_store else None
         if (
@@ -405,9 +452,15 @@ class RelayDirectory:
         return self._peer_cache_store
 
     @property
-    def active_override(self) -> str | None:
-        """The user's saved relay override, if any."""
+    def active_override(self) -> RelayOverride | None:
+        """The override in effect: a pending (on-probation) one wins over the persisted one."""
+        if self._pending_override is not None:
+            return self._pending_override
         return self._override_store.get_override() if self._override_store else None
+
+    @property
+    def has_pending_override(self) -> bool:
+        return self._pending_override is not None
 
     @property
     def manifest_channel(self) -> str:
@@ -418,7 +471,8 @@ class RelayDirectory:
         return self._current
 
     def resolve_candidates(self) -> list[str]:
-        override = self._override_store.get_override() if self._override_store else None
+        active: RelayOverride | None = self.active_override
+        override: str | None = active.relay if active else None
         manifest_relays = _extract_manifest_relays(self._current) if self._current else None
         return resolve_relay_candidates(self._config.default_relays, override, manifest_relays)
 
@@ -435,12 +489,31 @@ class RelayDirectory:
             self._manifest_store.save(manifest)
         return True
 
-    def set_user_override(self, url: str) -> None:
-        if self._override_store is None:
-            raise RuntimeError("No relay override store was configured.")
-        self._override_store.set_override(url)
+    def set_user_override(self, override: RelayOverride, persist: bool = True) -> None:
+        """
+        Set the user's override. With ``persist`` false it is only held pending (probation) until
+        :meth:`commit_pending_override`; :meth:`discard_pending_override` restores the previous state.
+        """
+        if persist:
+            if self._override_store is None:
+                raise RuntimeError("No relay override store was configured.")
+            self._pending_override = None
+            self._override_store.set_override(override)
+            return
+        self._pending_override = override
+
+    def commit_pending_override(self) -> None:
+        pending: RelayOverride | None = self._pending_override
+        if pending is None or self._override_store is None:
+            return
+        self._override_store.set_override(pending)
+        self._pending_override = None
+
+    def discard_pending_override(self) -> None:
+        self._pending_override = None
 
     def clear_user_override(self) -> None:
-        if self._override_store is None:
-            raise RuntimeError("No relay override store was configured.")
-        self._override_store.clear_override()
+        """Clear both the pending and the persisted override."""
+        self._pending_override = None
+        if self._override_store is not None:
+            self._override_store.clear_override()

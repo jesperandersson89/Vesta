@@ -14,6 +14,7 @@ from vesta_client import (
     RelayDirectory,
     RelayEndpoint,
     RelayManifest,
+    RelayOverride,
     VestaAppConfig,
     VestaIdentity,
     manifest_channel_for,
@@ -207,7 +208,7 @@ class RelayDirectoryTests(unittest.TestCase):
         directory = RelayDirectory(
             self._config(owner.public_key_b64), override_store=override_store
         )
-        directory.set_user_override("wss://mine.example")
+        directory.set_user_override(RelayOverride(relay="wss://mine.example"))
         self.assertEqual("wss://mine.example", directory.resolve_candidates()[0])
 
 

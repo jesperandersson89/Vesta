@@ -19,11 +19,14 @@ import {
     InMemoryRelayOverrideStore,
     RelayDirectory,
     RelayRecoverySession,
-    runConsoleRelayPicker,
+    setRelayPickerEnabled,
     VestaConnection,
     VestaIdentity,
 } from "../dist/index.js";
 import { FilePeerCacheStore } from "../dist/node.js";
+
+// Importing the Node entry registers the web picker; never open a browser from tests.
+setRelayPickerEnabled(false);
 
 const DEAD_RELAY = "wss://dead.example/ws";
 const owner = VestaIdentity.generate();
@@ -58,14 +61,18 @@ class FakeHost extends EventEmitter {
         this.relays = [DEAD_RELAY];
         this.autoReconnect = true;
         this.adopted = [];
+        this.overrides = [];
         this.connectSucceeds = connectSucceeds;
     }
     async reconnect() {
         return this.connectSucceeds;
     }
-    async adoptRelay(url) {
-        this.adopted.push(url);
-        return this.connectSucceeds;
+    async adoptRelay(override) {
+        this.adopted.push(override.relay);
+        this.overrides.push(override);
+        return this.connectSucceeds
+            ? { connected: true, failureReason: null }
+            : { connected: false, failureReason: "refused" };
     }
     async clearRelayOverride() {
         return true;
@@ -265,23 +272,35 @@ test("RelayRecoverySession: background reconnect returns to healthy", () => {
     assert.equal(session.snapshot.backgroundRetrying, false);
 });
 
-test("runConsoleRelayPicker requires confirmation for an unverified relay", async () => {
-    const { host, session } = setup({
-        federation: federation(descriptor("wss://other.example/ws", false)),
-    });
+test("RelayRecoverySession.adopt forwards the chosen app namespace and registration", async () => {
+    const { host, session } = setup();
+    const choice = {
+        url: "wss://new.example/ws",
+        relayPublicKey: "k",
+        hostsRequestedApp: false,
+        fromCache: false,
+        acceptsUnregisteredApps: true,
+    };
+
     host.emit("relaysExhausted", exhausted());
-    await session.discover();
+    await session.adopt(choice, { appId: "chess-2", registerApp: true });
 
-    const lines = ["1", "n", "q"];
-    let output = "";
-    const recovered = await runConsoleRelayPicker(session, {
-        readLine: async () => lines.shift() ?? null,
-        write: (text) => {
-            output += text;
-        },
-    });
+    assert.equal(host.overrides[0].appId, "chess-2");
+    assert.equal(host.overrides[0].registerApp, true);
+});
 
-    assert.equal(recovered, false);
+test("RelayRecoverySession.adopt rejects an invalid namespace without adopting", async () => {
+    const { host, session } = setup();
+    const choice = {
+        url: "wss://new.example/ws",
+        relayPublicKey: "k",
+        hostsRequestedApp: false,
+        fromCache: false,
+        acceptsUnregisteredApps: null,
+    };
+
+    await session.adopt(choice, { appId: "Not Valid!" });
+
+    assert.equal(session.snapshot.phase, "failed");
     assert.equal(host.adopted.length, 0);
-    assert.match(output, /not verified/);
 });

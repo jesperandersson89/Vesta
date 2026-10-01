@@ -35,13 +35,13 @@ public sealed class RelayRecoveryTests : IDisposable
 
     private sealed class FakeOverrideStore : IRelayOverrideStore
     {
-        private Uri? _relay;
+        private RelayOverride? _override;
 
-        public Uri? GetOverride() => _relay;
+        public RelayOverride? GetOverride() => _override;
 
-        public void SetOverride(Uri relay) => _relay = relay;
+        public void SetOverride(RelayOverride relayOverride) => _override = relayOverride;
 
-        public void ClearOverride() => _relay = null;
+        public void ClearOverride() => _override = null;
     }
 
     private sealed class FakeHost(RelayDirectory directory, bool connectSucceeds = true) : IRelayRecoveryHost
@@ -52,7 +52,7 @@ public sealed class RelayRecoveryTests : IDisposable
 
         public bool AutoReconnect => true;
 
-        public List<Uri> Adopted { get; } = [];
+        public List<RelayOverride> Adopted { get; } = [];
 
         public bool ConnectSucceeds { get; set; } = connectSucceeds;
 
@@ -70,10 +70,12 @@ public sealed class RelayRecoveryTests : IDisposable
 
         public Task<bool> ReconnectAsync(CancellationToken cancellationToken = default) => Task.FromResult(ConnectSucceeds);
 
-        public Task<bool> SetUserRelayOverrideAsync(Uri relay, CancellationToken cancellationToken = default)
+        public Task<RelayAdoptResult> AdoptRelayAsync(RelayOverride relayOverride, CancellationToken cancellationToken = default)
         {
-            Adopted.Add(relay);
-            return Task.FromResult(ConnectSucceeds);
+            Adopted.Add(relayOverride);
+            return Task.FromResult(ConnectSucceeds
+                ? new RelayAdoptResult(true)
+                : new RelayAdoptResult(false, "refused"));
         }
 
         public Task<bool> ClearUserRelayOverrideAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
@@ -245,7 +247,36 @@ public sealed class RelayRecoveryTests : IDisposable
         await session.AdoptAsync(choice);
 
         Assert.Equal(RelayRecoveryPhase.Healthy, session.Snapshot.Phase);
-        Assert.Equal(choice.Url, Assert.Single(host.Adopted));
+        Assert.Equal(choice.Url, Assert.Single(host.Adopted).Relay);
+    }
+
+    [Fact]
+    public async Task Session_Adopt_WithNamespaceAndRegister_PassesThemToHost()
+    {
+        VestaAppConfig config = Config();
+        FakeHost host = new(new RelayDirectory(config, new FakeOverrideStore()));
+        using RelayRecoverySession session = new(host, Federation(config));
+        RelayChoice choice = new(new Uri("wss://new.example/ws"), "k", HostsRequestedApp: false, FromCache: false);
+
+        await session.AdoptAsync(choice, new RelayAdoptOptions(AppId: "chess-2", RegisterApp: true));
+
+        RelayOverride adopted = Assert.Single(host.Adopted);
+        Assert.Equal("chess-2", adopted.AppId);
+        Assert.True(adopted.RegisterApp);
+    }
+
+    [Fact]
+    public async Task Session_Adopt_InvalidNamespace_FailsWithoutAdopting()
+    {
+        VestaAppConfig config = Config();
+        FakeHost host = new(new RelayDirectory(config, new FakeOverrideStore()));
+        using RelayRecoverySession session = new(host, Federation(config));
+        RelayChoice choice = new(new Uri("wss://new.example/ws"), "k", HostsRequestedApp: false, FromCache: false);
+
+        await session.AdoptAsync(choice, new RelayAdoptOptions(AppId: "Bad Name!"));
+
+        Assert.Equal(RelayRecoveryPhase.Failed, session.Snapshot.Phase);
+        Assert.Empty(host.Adopted);
     }
 
     [Fact]
@@ -259,7 +290,7 @@ public sealed class RelayRecoveryTests : IDisposable
         await session.UseManualAsync("https://typed.example");
 
         Assert.Equal(RelayRecoveryPhase.Failed, session.Snapshot.Phase);
-        Assert.Equal(new Uri("wss://typed.example/"), Assert.Single(host.Adopted));
+        Assert.Equal(new Uri("wss://typed.example/"), Assert.Single(host.Adopted).Relay);
         Assert.True(session.Snapshot.BackgroundRetrying);
     }
 
@@ -299,22 +330,5 @@ public sealed class RelayRecoveryTests : IDisposable
 
         Assert.Equal(RelayRecoveryPhase.Healthy, session.Snapshot.Phase);
         Assert.False(session.Snapshot.BackgroundRetrying);
-    }
-
-    [Fact]
-    public async Task ConsolePicker_UnverifiedChoice_RequiresConfirmation()
-    {
-        VestaAppConfig config = Config();
-        FakeHost host = new(new RelayDirectory(config, new FakeOverrideStore()));
-        using RelayRecoverySession session = new(host, Federation(config, Descriptor("wss://other.example/ws", hostsApp: false)));
-        host.RaiseExhausted(Exhausted());
-        await session.DiscoverAsync();
-
-        StringWriter output = new();
-        bool recovered = await ConsoleRelayPicker.RunAsync(session, new StringReader("1\nn\nq\n"), output);
-
-        Assert.False(recovered);
-        Assert.Empty(host.Adopted);
-        Assert.Contains("not verified", output.ToString());
     }
 }

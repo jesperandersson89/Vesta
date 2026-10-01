@@ -17,6 +17,7 @@ public sealed class RelayDirectory
     private readonly IRelayOverrideStore? _overrideStore;
     private readonly IManifestStore? _manifestStore;
     private RelayManifest? _currentManifest;
+    private RelayOverride? _pendingOverride;
 
     public RelayDirectory(
         VestaAppConfig config,
@@ -68,8 +69,11 @@ public sealed class RelayDirectory
     /// <summary>The app config this directory was built for.</summary>
     public VestaAppConfig Config => _config;
 
-    /// <summary>The user's stored relay override, or null.</summary>
-    public Uri? ActiveOverride => _overrideStore?.GetOverride();
+    /// <summary>The user's relay override in effect (a pending one on probation, else the stored one), or null.</summary>
+    public RelayOverride? ActiveOverride => _pendingOverride ?? _overrideStore?.GetOverride();
+
+    /// <summary>True while an override is held in memory, not yet persisted because the relay hasn't proven it accepts the app.</summary>
+    public bool HasPendingOverride => _pendingOverride is not null;
 
     private static string DefaultStoreDirectory()
     {
@@ -102,7 +106,7 @@ public sealed class RelayDirectory
     /// </summary>
     public IReadOnlyList<Uri> ResolveCandidates()
     {
-        Uri? userOverride = _overrideStore?.GetOverride();
+        Uri? userOverride = ActiveOverride?.Relay;
         IReadOnlyList<Uri>? manifestRelays = _currentManifest is null
             ? null
             : ExtractRelays(_currentManifest);
@@ -137,23 +141,53 @@ public sealed class RelayDirectory
         return true;
     }
 
-    /// <summary>Set the user's local relay override. Requires an override store.</summary>
-    public void SetUserOverride(Uri relay)
+    /// <summary>
+    /// Set the user's local relay override. Requires an override store. With <paramref name="persist"/>
+    /// false the override is held in memory only (probation) until <see cref="CommitPendingOverride"/>;
+    /// a relay that rejects the app can then be discarded without overwriting the stored override.
+    /// </summary>
+    public void SetUserOverride(RelayOverride relayOverride, bool persist = true)
     {
+        ArgumentNullException.ThrowIfNull(relayOverride);
         if (_overrideStore is null)
         {
             throw new InvalidOperationException("No relay override store was configured.");
         }
-        _overrideStore.SetOverride(relay);
+
+        if (persist)
+        {
+            _pendingOverride = null;
+            _overrideStore.SetOverride(relayOverride);
+        }
+        else
+        {
+            _pendingOverride = relayOverride;
+        }
     }
 
-    /// <summary>Clear the user's local relay override. Requires an override store.</summary>
+    /// <summary>Persist the pending override. Returns false if there was none.</summary>
+    public bool CommitPendingOverride()
+    {
+        if (_pendingOverride is null)
+        {
+            return false;
+        }
+        _overrideStore?.SetOverride(_pendingOverride);
+        _pendingOverride = null;
+        return true;
+    }
+
+    /// <summary>Drop the pending override, restoring whatever was stored.</summary>
+    public void DiscardPendingOverride() => _pendingOverride = null;
+
+    /// <summary>Clear the user's local relay override (pending and stored). Requires an override store.</summary>
     public void ClearUserOverride()
     {
         if (_overrideStore is null)
         {
             throw new InvalidOperationException("No relay override store was configured.");
         }
+        _pendingOverride = null;
         _overrideStore.ClearOverride();
     }
 

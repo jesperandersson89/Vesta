@@ -35,6 +35,8 @@ export interface ServerDescriptor {
     issuedAt: string;
     /** How long (seconds) the descriptor stays valid. */
     ttlSeconds: number;
+    /** True if the relay runs in open mode (accepts apps without registration). Absent on older relays. */
+    acceptsUnregisteredApps?: boolean | null;
     /** base64url Ed25519 signature over the canonical descriptor. */
     signature?: string;
 }
@@ -46,6 +48,8 @@ export interface DiscoveredRelay {
     /** True when this relay verifiably hosts the specifically queried app. */
     hostsRequestedApp: boolean;
     issuedAt: string;
+    /** True if the relay's signed descriptor says it is open; null/undefined if it didn't say. */
+    acceptsUnregisteredApps?: boolean | null;
 }
 
 // ─── Signing / verification ──────────────────────────────────────────────────
@@ -59,6 +63,9 @@ export function buildDescriptorSigningInput(descriptor: ServerDescriptor): Uint8
         ttlSeconds: descriptor.ttlSeconds,
         urls: descriptor.urls,
     };
+    if (typeof descriptor.acceptsUnregisteredApps === "boolean") {
+        fields.acceptsUnregisteredApps = descriptor.acceptsUnregisteredApps;
+    }
     return new TextEncoder().encode(canonicalize(fields));
 }
 
@@ -156,6 +163,7 @@ export class FederationClient {
             urls: descriptor.urls,
             hostsRequestedApp,
             issuedAt: descriptor.issuedAt,
+            acceptsUnregisteredApps: descriptor.acceptsUnregisteredApps ?? null,
         };
     }
 

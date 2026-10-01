@@ -268,6 +268,11 @@ throwaway key changes the relay's advertised identity on each fresh deployment).
 federation identity only — it is unrelated to `Admin:BootstrapPublicKeys` and grants no admin
 rights.
 
+**Open-mode hint.** The descriptor's `acceptsUnregisteredApps` field mirrors this relay's own
+`!RequireAppRegistration && AllowedApps.Count == 0` check — operators don't set it directly. It
+lets a client's [relay-recovery picker](relay-recovery.md#adopting-under-a-different-namespace)
+show whether registering a namespace is likely needed before the user adopts a discovered relay.
+
 **HTTP surface** (mapped only when `Discovery:Enabled`, all unauthenticated reads):
 
 | Endpoint                       | Returns                                                                |

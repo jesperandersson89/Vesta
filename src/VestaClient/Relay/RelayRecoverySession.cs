@@ -1,4 +1,5 @@
 using VestaClient.Federation;
+using VestaCore.Channels;
 
 namespace VestaClient.Relay;
 
@@ -19,10 +20,20 @@ public interface IRelayRecoveryHost
 
     Task<bool> ReconnectAsync(CancellationToken cancellationToken = default);
 
-    Task<bool> SetUserRelayOverrideAsync(Uri relay, CancellationToken cancellationToken = default);
+    Task<RelayAdoptResult> AdoptRelayAsync(RelayOverride relayOverride, CancellationToken cancellationToken = default);
 
     Task<bool> ClearUserRelayOverrideAsync(CancellationToken cancellationToken = default);
 }
+
+/// <summary>Outcome of moving to a relay the user picked.</summary>
+/// <param name="Connected">True if the connection is up on the new relay and the relay accepted the app.</param>
+/// <param name="FailureReason">Why it was not adopted (unreachable, namespace rejected, registration refused), or null.</param>
+public sealed record RelayAdoptResult(bool Connected, string? FailureReason = null);
+
+/// <summary>The per-relay inputs a user can set when moving to a relay.</summary>
+/// <param name="AppId">The app namespace to use on the new relay, or null/empty to keep the app's own id.</param>
+/// <param name="RegisterApp">True to register the namespace on the relay after connecting.</param>
+public sealed record RelayAdoptOptions(string? AppId = null, bool RegisterApp = false);
 
 public enum RelayRecoveryPhase
 {
@@ -41,18 +52,21 @@ public enum RelayRecoveryPhase
 /// <param name="RelayPublicKey">The relay's descriptor key, or null for a manually entered URL.</param>
 /// <param name="HostsRequestedApp">True if the relay verifiably advertised this app under the trusted owner.</param>
 /// <param name="FromCache">True if only the persisted peer cache knows this relay (not confirmed live this session).</param>
-public sealed record RelayChoice(Uri Url, string? RelayPublicKey, bool HostsRequestedApp, bool FromCache);
+/// <param name="AcceptsUnregisteredApps">True if the relay's signed descriptor says it runs in open mode, null if it didn't say.</param>
+public sealed record RelayChoice(Uri Url, string? RelayPublicKey, bool HostsRequestedApp, bool FromCache, bool? AcceptsUnregisteredApps = null);
 
 /// <summary>Everything a view needs to render the recovery prompt. Views hold no other state.</summary>
 public sealed record RelayRecoverySnapshot(
     RelayRecoveryPhase Phase,
     IReadOnlyList<RelayAttempt> TriedRelays,
     IReadOnlyList<RelayChoice> Choices,
-    Uri? ActiveOverride,
+    RelayOverride? ActiveOverride,
     bool BackgroundRetrying,
     int FailedPasses,
     Uri? Adopting,
-    string? FailureReason);
+    string? FailureReason,
+    Uri? FailedRelay = null,
+    RelayAdoptOptions? FailedOptions = null);
 
 /// <summary>
 /// Headless state machine behind every relay-recovery UI (console, web, and future iOS/Android
@@ -135,59 +149,78 @@ public sealed class RelayRecoverySession : IDisposable
     }
 
     /// <summary>Move to a relay the user picked from <see cref="RelayRecoverySnapshot.Choices"/>.</summary>
-    public Task AdoptAsync(RelayChoice choice, CancellationToken cancellationToken = default)
+    public Task AdoptAsync(RelayChoice choice, RelayAdoptOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(choice);
-        return AdoptCoreAsync(choice.Url, cancellationToken);
+        return AdoptCoreAsync(choice.Url, options, cancellationToken);
     }
 
     /// <summary>Move to a relay URL the user typed or scanned. Accepts ws/wss (http/https are mapped).</summary>
-    public Task UseManualAsync(string url, CancellationToken cancellationToken = default)
+    public Task UseManualAsync(string url, RelayAdoptOptions? options = null, CancellationToken cancellationToken = default)
     {
         if (!TryNormalize(url, out Uri? relay))
         {
             Update(Snapshot with { Phase = RelayRecoveryPhase.Failed, FailureReason = "Not a valid relay URL (expected ws://, wss://, http:// or https://)." });
             return Task.CompletedTask;
         }
-        return AdoptCoreAsync(relay!, cancellationToken);
+        return AdoptCoreAsync(relay!, options, cancellationToken);
     }
 
     /// <summary>Drop the user's override and go back to manifest/default relays.</summary>
     public async Task ClearOverrideAsync(CancellationToken cancellationToken = default)
     {
         bool connected = await _host.ClearUserRelayOverrideAsync(cancellationToken);
-        Update(connected ? Build(RelayRecoveryPhase.Healthy) : Snapshot with { ActiveOverride = null });
+        Update(connected ? Build(RelayRecoveryPhase.Healthy) : Snapshot with { ActiveOverride = null, FailedRelay = null, FailedOptions = null });
     }
 
     /// <summary>Hide the prompt. Background reconnect continues; the prompt returns on the next exhaustion.</summary>
     public void Dismiss()
     {
-        Update(Snapshot with { Phase = RelayRecoveryPhase.Degraded, Choices = [], FailureReason = null });
+        Update(Snapshot with { Phase = RelayRecoveryPhase.Degraded, Choices = [], FailureReason = null, FailedRelay = null, FailedOptions = null });
     }
 
-    private async Task AdoptCoreAsync(Uri relay, CancellationToken cancellationToken)
+    private async Task AdoptCoreAsync(Uri relay, RelayAdoptOptions? options, CancellationToken cancellationToken)
     {
-        Update(Snapshot with { Phase = RelayRecoveryPhase.Adopting, Adopting = relay, FailureReason = null });
-
-        bool connected;
-        try
+        string? requested = string.IsNullOrWhiteSpace(options?.AppId) ? null : options!.AppId!.Trim();
+        if (requested is not null && !AppId.IsValid(requested))
         {
-            connected = await _host.SetUserRelayOverrideAsync(relay, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            Update(Snapshot with { Phase = RelayRecoveryPhase.Failed, Adopting = null, FailureReason = ex.Message });
+            Update(Snapshot with
+            {
+                Phase = RelayRecoveryPhase.Failed,
+                FailedRelay = relay,
+                FailedOptions = options,
+                FailureReason = "Invalid app namespace: use lowercase letters, digits and single hyphens (max 64 characters).",
+            });
             return;
         }
 
-        Update(connected
+        // Using the app's own id needs no remap.
+        string? appId = requested == _host.RelayDirectory.Config.AppId ? null : requested;
+        bool register = options?.RegisterApp ?? false;
+        RelayAdoptOptions effective = new(requested, register);
+
+        Update(Snapshot with { Phase = RelayRecoveryPhase.Adopting, Adopting = relay, FailureReason = null, FailedRelay = null, FailedOptions = null });
+
+        RelayAdoptResult result;
+        try
+        {
+            result = await _host.AdoptRelayAsync(new RelayOverride(relay, appId, register), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            result = new RelayAdoptResult(false, ex.Message);
+        }
+
+        Update(result.Connected
             ? Build(RelayRecoveryPhase.Healthy)
             : Snapshot with
             {
                 Phase = RelayRecoveryPhase.Failed,
                 Adopting = null,
                 ActiveOverride = _host.RelayDirectory.ActiveOverride,
-                FailureReason = $"Could not connect to {relay}.",
+                FailureReason = result.FailureReason ?? $"Could not connect to {relay}.",
+                FailedRelay = relay,
+                FailedOptions = effective,
             });
     }
 
@@ -222,7 +255,7 @@ public sealed class RelayRecoverySession : IDisposable
         {
             foreach (Uri url in peer.Urls)
             {
-                merged[url] = new RelayChoice(url, peer.RelayPublicKey, peer.HostsRequestedApp, FromCache: true);
+                merged[url] = new RelayChoice(url, peer.RelayPublicKey, peer.HostsRequestedApp, FromCache: true, peer.AcceptsUnregisteredApps);
             }
         }
         foreach (IReadOnlyList<DiscoveredRelay> relays in live)
@@ -232,7 +265,7 @@ public sealed class RelayRecoverySession : IDisposable
                 foreach (Uri url in relay.Urls)
                 {
                     bool hosts = relay.HostsRequestedApp || (merged.TryGetValue(url, out RelayChoice? prior) && !prior.FromCache && prior.HostsRequestedApp);
-                    merged[url] = new RelayChoice(url, relay.RelayPublicKey, hosts, FromCache: false);
+                    merged[url] = new RelayChoice(url, relay.RelayPublicKey, hosts, FromCache: false, relay.AcceptsUnregisteredApps);
                 }
             }
         }
@@ -307,7 +340,9 @@ public sealed class RelayRecoverySession : IDisposable
         BackgroundRetrying: false,
         FailedPasses: 0,
         Adopting: null,
-        FailureReason: null);
+        FailureReason: null,
+        FailedRelay: null,
+        FailedOptions: null);
 
     private void Update(RelayRecoverySnapshot next)
     {

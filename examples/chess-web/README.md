@@ -33,21 +33,19 @@ Open the printed Vite URL (default `http://localhost:5173`) in **two** browser w
 
 ## Relay independence, limits & federation
 
-The footer's relay panel (visible once connected) demonstrates the SDK's relay-independence
-story:
+The SDK handles relay independence itself — no app UI is wired up for it:
 
 - **Failover**: paste a comma-separated relay list into the connect field; the client walks it
   automatically if the active relay drops.
 - **Owner-signed manifests**: set `VITE_VESTA_OWNER_PUBLIC_KEY` (see below) to enable manifest
-  verification — an accepted manifest republishes the candidate list and shows a banner.
-- **User override**: "My relay override" persists a personal relay choice in `localStorage`,
-  taking precedence over the manifest and defaults.
-- **Federation discovery**: "Discover relays" / "Browse all relays" query the active relay's
-  `/federation/*` HTTP surface for other relays hosting this app (or the whole mesh). Every
-  result is signature-verified and owner-matched before being shown; adopting one is still a
-  manual "Use" click — discovery never auto-fails-over.
-- **Limit notices**: a `QUOTA_EXCEEDED` / `RATE_LIMITED` / etc. response from the relay surfaces
-  as a red `[LIMITED]` line in the panel via `connection.on("limited", ...)`.
+  verification — an accepted manifest silently republishes the candidate list.
+- **Built-in relay picker**: if every relay becomes unreachable, `VestaConnection` mounts its
+  own `<vesta-relay-picker>` overlay automatically — manual URL entry, "Find other relays"
+  (federation discovery), and "Clear saved relay" all live there. The user's choice persists via
+  `LocalStorageRelayOverrideStore` (`localStorage`), taking precedence over the manifest and
+  defaults on future visits.
+- **Limit notices**: a `QUOTA_EXCEEDED` / `RATE_LIMITED` / etc. response from the relay is logged
+  via `connection.on("limited", ...)` (see the browser console).
 
 Set these before `npm run build` / `npm run dev` (e.g. in a `.env` file) to exercise manifests
 and federation:

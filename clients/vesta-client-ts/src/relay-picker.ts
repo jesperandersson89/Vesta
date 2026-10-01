@@ -1,10 +1,11 @@
 /**
- * Views over {@link RelayRecoverySession}: a `<vesta-relay-picker>` custom element for browsers
- * and a transport-agnostic console prompt for CLI apps. Both render only from the session
- * snapshot and never adopt a relay without an explicit user action.
+ * The browser view over {@link RelayRecoverySession}: a `<vesta-relay-picker>` custom element that
+ * `VestaConnection` mounts automatically when every relay is unavailable (Node uses the loopback web
+ * page in `node-relay-picker.ts` instead). It renders only from the session snapshot and never
+ * adopts a relay without an explicit user action.
  */
 
-import type { RelayChoice, RelayRecoverySession, RelayRecoverySnapshot } from "./relay-recovery.js";
+import type { RelayAdoptOptions, RelayChoice, RelayRecoverySession, RelayRecoverySnapshot } from "./relay-recovery.js";
 
 export const UNVERIFIED_RELAY_WARNING =
     "is not verified to host this app. It may not have your data, and a relay you don't trust can see what you send it.";
@@ -20,8 +21,6 @@ const PHASE_TITLES: Record<RelayRecoverySnapshot["phase"], string> = {
     failed: "Failed.",
 };
 
-// ─── Browser element ─────────────────────────────────────────────────────────
-
 const STYLE = `
 :host { display: block; font: 14px system-ui, sans-serif; }
 :host([hidden]) { display: none; }
@@ -32,8 +31,9 @@ li { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
 .url { font-family: ui-monospace, monospace; word-break: break-all; }
 .tag { font-size: 12px; color: #57534e; }
 .error { color: #b91c1c; }
-.row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-input { flex: 1; min-width: 12em; padding: 4px 8px; }
+.row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+label { display: flex; gap: 6px; align-items: center; }
+input[type=url], input[type=text] { flex: 1; min-width: 12em; padding: 4px 8px; }
 button { padding: 4px 10px; cursor: pointer; }
 `;
 
@@ -48,8 +48,10 @@ const ElementBase: typeof HTMLElement =
 export class VestaRelayPickerElement extends ElementBase {
     private _session: RelayRecoverySession | null = null;
     private unsubscribe: (() => void) | null = null;
-    private pendingConfirm: RelayChoice | null = null;
+    private pendingConfirm: { choice: RelayChoice; options: RelayAdoptOptions } | null = null;
     private manualUrl = "";
+    private appId: string | null = null;
+    private registerApp = false;
     private root: ShadowRoot | null = null;
 
     get session(): RelayRecoverySession | null {
@@ -73,6 +75,12 @@ export class VestaRelayPickerElement extends ElementBase {
     disconnectedCallback(): void {
         this.unsubscribe?.();
         this.unsubscribe = null;
+    }
+
+    private options(snapshot: RelayRecoverySnapshot, session: RelayRecoverySession): RelayAdoptOptions {
+        const fallback: string =
+            snapshot.failedOptions?.appId ?? snapshot.activeOverride?.appId ?? session.appId;
+        return { appId: this.appId ?? fallback, registerApp: this.registerApp };
     }
 
     private render(): void {
@@ -112,9 +120,10 @@ export class VestaRelayPickerElement extends ElementBase {
         }
 
         if (this.pendingConfirm) {
-            panel.append(this.renderConfirm(session, this.pendingConfirm));
+            panel.append(this.renderConfirm(session, this.pendingConfirm.choice, this.pendingConfirm.options));
         } else {
-            if (snapshot.choices.length > 0) panel.append(this.renderChoices(snapshot.choices));
+            if (snapshot.choices.length > 0) panel.append(this.renderChoices(session, snapshot));
+            panel.append(this.renderSettings(session, snapshot));
             panel.append(this.renderActions(session, snapshot));
         }
 
@@ -127,35 +136,42 @@ export class VestaRelayPickerElement extends ElementBase {
         this.root.append(style, panel);
     }
 
-    private renderChoices(choices: RelayChoice[]): HTMLUListElement {
+    private renderChoices(session: RelayRecoverySession, snapshot: RelayRecoverySnapshot): HTMLUListElement {
         const list: HTMLUListElement = document.createElement("ul");
-        for (const choice of choices) {
+        for (const choice of snapshot.choices) {
             const item: HTMLLIElement = document.createElement("li");
             const url: HTMLSpanElement = document.createElement("span");
             url.className = "url";
             url.textContent = choice.url;
             const tag: HTMLSpanElement = document.createElement("span");
             tag.className = "tag";
-            tag.textContent = `${choice.hostsRequestedApp ? "hosts this app" : "unverified"}${
-                choice.fromCache ? ", remembered" : ""
-            }`;
-            const use: HTMLButtonElement = this.button("Use", () => this.choose(choice));
+            const parts: string[] = [choice.hostsRequestedApp ? "hosts this app" : "unverified"];
+            if (choice.acceptsUnregisteredApps === true) parts.push("open relay");
+            else if (choice.acceptsUnregisteredApps === false) parts.push("registered apps only");
+            if (choice.fromCache) parts.push("remembered");
+            tag.textContent = parts.join(", ");
+            const use: HTMLButtonElement = this.button("Use", () => this.choose(session, snapshot, choice));
             item.append(url, tag, use);
             list.append(item);
         }
         return list;
     }
 
-    private choose(choice: RelayChoice): void {
+    private choose(session: RelayRecoverySession, snapshot: RelayRecoverySnapshot, choice: RelayChoice): void {
+        const options: RelayAdoptOptions = this.options(snapshot, session);
         if (choice.hostsRequestedApp) {
-            void this._session?.adopt(choice);
+            void session.adopt(choice, options);
             return;
         }
-        this.pendingConfirm = choice;
+        this.pendingConfirm = { choice, options };
         this.render();
     }
 
-    private renderConfirm(session: RelayRecoverySession, choice: RelayChoice): HTMLElement {
+    private renderConfirm(
+        session: RelayRecoverySession,
+        choice: RelayChoice,
+        options: RelayAdoptOptions,
+    ): HTMLElement {
         const box: HTMLDivElement = document.createElement("div");
         const text: HTMLParagraphElement = document.createElement("p");
         text.textContent = `${choice.url} ${UNVERIFIED_RELAY_WARNING}`;
@@ -164,7 +180,7 @@ export class VestaRelayPickerElement extends ElementBase {
         row.append(
             this.button("Connect anyway", () => {
                 this.pendingConfirm = null;
-                void session.adopt(choice);
+                void session.adopt(choice, options);
             }),
             this.button("Cancel", () => {
                 this.pendingConfirm = null;
@@ -173,6 +189,36 @@ export class VestaRelayPickerElement extends ElementBase {
         );
         box.append(text, row);
         return box;
+    }
+
+    private renderSettings(session: RelayRecoverySession, snapshot: RelayRecoverySnapshot): HTMLElement {
+        const busy: boolean = snapshot.phase === "adopting" || snapshot.phase === "discovering";
+        const wrap: HTMLDivElement = document.createElement("div");
+        wrap.className = "row";
+
+        const nsLabel: HTMLLabelElement = document.createElement("label");
+        nsLabel.append("App namespace");
+        const ns: HTMLInputElement = document.createElement("input");
+        ns.type = "text";
+        ns.value = this.options(snapshot, session).appId ?? "";
+        ns.disabled = busy;
+        ns.addEventListener("input", () => {
+            this.appId = ns.value;
+        });
+        nsLabel.append(ns);
+
+        const regLabel: HTMLLabelElement = document.createElement("label");
+        const reg: HTMLInputElement = document.createElement("input");
+        reg.type = "checkbox";
+        reg.checked = this.registerApp;
+        reg.disabled = busy;
+        reg.addEventListener("change", () => {
+            this.registerApp = reg.checked;
+        });
+        regLabel.append(reg, "Register app on connect");
+
+        wrap.append(nsLabel, regLabel);
+        return wrap;
     }
 
     private renderActions(session: RelayRecoverySession, snapshot: RelayRecoverySnapshot): HTMLElement {
@@ -196,15 +242,15 @@ export class VestaRelayPickerElement extends ElementBase {
         const input: HTMLInputElement = document.createElement("input");
         input.type = "url";
         input.placeholder = "wss://relay.example.com";
-        input.value = this.manualUrl;
+        input.value = this.manualUrl || (snapshot.failedRelay ?? "");
         input.disabled = busy;
         input.addEventListener("input", () => {
             this.manualUrl = input.value;
         });
         const use: HTMLButtonElement = this.button("Use this relay", () => {
-            const url: string = this.manualUrl;
+            const url: string = this.manualUrl || (snapshot.failedRelay ?? "");
             this.manualUrl = "";
-            void session.useManual(url);
+            void session.useManual(url, this.options(snapshot, session));
         });
         use.disabled = busy;
         manual.append(input, use);
@@ -230,101 +276,20 @@ export function defineRelayPicker(tagName = "vesta-relay-picker"): typeof VestaR
     return VestaRelayPickerElement;
 }
 
-// ─── Console prompt ──────────────────────────────────────────────────────────
-
-/** Line-oriented I/O for {@link runConsoleRelayPicker}; wire it to `readline`, a TTY, or a test script. */
-export interface ConsoleRelayPickerIO {
-    /** Resolve the next input line, or null at end of input. */
-    readLine(): Promise<string | null>;
-    write(text: string): void;
-}
-
 /**
- * A plain-text prompt loop over a {@link RelayRecoverySession}. Resolves true once the
- * connection is healthy again, false if the user quits the prompt or input ends.
+ * Mount a `<vesta-relay-picker>` bound to `session` as a fixed overlay at the top of the page.
+ * Returns a function that removes it, or null when there is no DOM (e.g. Node).
  */
-export async function runConsoleRelayPicker(
-    session: RelayRecoverySession,
-    io: ConsoleRelayPickerIO,
-): Promise<boolean> {
-    for (;;) {
-        const snapshot: RelayRecoverySnapshot = session.snapshot;
-        if (snapshot.phase === "healthy") {
-            io.write("Connected.\n");
-            return true;
-        }
-
-        renderConsole(snapshot, io);
-
-        const line: string | null = await io.readLine();
-        if (line === null) return false;
-        const command: string = line.trim();
-        if (command.length === 0) continue;
-
-        const number: number = Number(command);
-        if (Number.isInteger(number) && number >= 1 && number <= snapshot.choices.length) {
-            const choice: RelayChoice = snapshot.choices[number - 1]!;
-            if (!choice.hostsRequestedApp && !(await confirmConsole(io, choice))) continue;
-            await session.adopt(choice);
-            continue;
-        }
-
-        const [verb = "", rest = ""] = splitOnce(command);
-        switch (verb.toLowerCase()) {
-            case "r":
-                await session.retry();
-                break;
-            case "d":
-                await session.discover();
-                break;
-            case "u":
-                await session.useManual(rest);
-                break;
-            case "c":
-                await session.clearOverride();
-                break;
-            case "q":
-                session.dismiss();
-                return false;
-            default:
-                io.write("Unknown command.\n");
-        }
-    }
-}
-
-function splitOnce(command: string): [string, string] {
-    const index: number = command.search(/\s/);
-    return index < 0 ? [command, ""] : [command.slice(0, index), command.slice(index + 1).trim()];
-}
-
-async function confirmConsole(io: ConsoleRelayPickerIO, choice: RelayChoice): Promise<boolean> {
-    io.write(`${choice.url} ${UNVERIFIED_RELAY_WARNING}\n`);
-    io.write("Connect anyway? [y/N] ");
-    const answer: string | null = await io.readLine();
-    return answer?.trim().toLowerCase() === "y";
-}
-
-function renderConsole(snapshot: RelayRecoverySnapshot, io: ConsoleRelayPickerIO): void {
-    const title: string =
-        snapshot.phase === "degraded"
-            ? "Connection lost. Retrying..."
-            : snapshot.phase === "adopting"
-              ? `Connecting to ${snapshot.adopting}...`
-              : snapshot.phase === "failed"
-                ? (snapshot.failureReason ?? "Failed.")
-                : PHASE_TITLES[snapshot.phase];
-    io.write(`\n${title}\n`);
-
-    for (const attempt of snapshot.triedRelays) {
-        io.write(`  x ${attempt.relay} - ${attempt.reason}\n`);
-    }
-    snapshot.choices.forEach((choice, i) => {
-        const tag: string = choice.hostsRequestedApp ? "hosts this app" : "unverified";
-        const cached: string = choice.fromCache ? ", remembered" : "";
-        io.write(`  ${i + 1}. ${choice.url} (${tag}${cached})\n`);
-    });
-
-    if (snapshot.backgroundRetrying) io.write("  (still retrying in the background)\n");
-    const clear: string = snapshot.activeOverride === null ? "" : ", [c]lear saved relay";
-    io.write(`[r]etry, [d]iscover, [u]se <url>${clear}, [q]uit prompt, or a number > `);
+export function mountRelayPickerOverlay(session: RelayRecoverySession): (() => void) | null {
+    if (typeof document === "undefined" || typeof customElements === "undefined" || !document.body) return null;
+    defineRelayPicker();
+    const element: VestaRelayPickerElement = document.createElement("vesta-relay-picker") as VestaRelayPickerElement;
+    element.style.cssText =
+        "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483647;max-width:min(40rem,95vw);box-shadow:0 4px 24px rgba(0,0,0,.25)";
+    document.body.append(element);
+    element.session = session;
+    return () => {
+        element.session = null;
+        element.remove();
+    };
 }

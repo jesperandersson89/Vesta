@@ -11,7 +11,7 @@ namespace VestaClient.Federation;
 /// the descriptor's signature has been verified (the relay really authored it) and the app's
 /// owner client id matched the app's compiled-in trust anchor, but the client still cannot prove
 /// the relay actually carries the app's data. The user adopts a discovered relay manually (via
-/// <see cref="VestaConnection.SetUserRelayOverrideAsync"/>); discovery never auto-fails-over here —
+/// <see cref="VestaConnection.AdoptRelayAsync"/>); discovery never auto-fails-over here —
 /// owner-signed manifest relays remain the only automatic tier.
 /// </summary>
 /// <param name="RelayPublicKey">The base64url Ed25519 public key the relay signs its descriptor with.</param>
@@ -22,11 +22,13 @@ namespace VestaClient.Federation;
 /// browse that do not (verifiably) host the app.
 /// </param>
 /// <param name="IssuedAt">When the relay issued the descriptor.</param>
+/// <param name="AcceptsUnregisteredApps">Whether the relay advertised open mode; null if it did not say.</param>
 public sealed record DiscoveredRelay(
     string RelayPublicKey,
     IReadOnlyList<Uri> Urls,
     bool HostsRequestedApp,
-    DateTimeOffset IssuedAt);
+    DateTimeOffset IssuedAt,
+    bool? AcceptsUnregisteredApps = null);
 
 /// <summary>
 /// Pulls signed <see cref="ServerDescriptor"/> records from a relay's public <c>/federation/*</c>
@@ -245,7 +247,8 @@ public sealed class FederationClient
             return false;
         }
 
-        relay = new DiscoveredRelay(descriptor.RelayPublicKey, urls, hostsRequestedApp, descriptor.IssuedAt);
+        relay = new DiscoveredRelay(
+            descriptor.RelayPublicKey, urls, hostsRequestedApp, descriptor.IssuedAt, descriptor.AcceptsUnregisteredApps);
         return true;
     }
 

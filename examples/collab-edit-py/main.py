@@ -19,14 +19,21 @@ Conflict model:
   are deferred to avoid fighting with the user's input.
 
 Run:  python main.py [ws://host:port/ws] [room-name]
-Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
+Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays),
+      VESTA_APP_OWNER_KEY (manifest trust anchor; defaults to your own public key)
+
+Relay picker: if every relay is unreachable, the SDK opens its own relay picker (a local
+web page) in your browser — no app UI needed. The choice is remembered in
+~/.vesta/relays/{appId}.override.json.
 
 Local cache: ~/.vesta/collab-edit-{room}-{username}-cache.db (offline outbox + event cache)
 Snapshot:    ~/.vesta/collab-edit-{room}-{username}-snapshots.db (LwwRegister projection snapshot)
 """
 
 import asyncio
+import os
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -35,8 +42,12 @@ from pathlib import Path
 from tkinter import scrolledtext
 
 from vesta_client import (
+    FileManifestStore,
+    FileRelayOverrideStore,
     LwwRegister,
+    RelayDirectory,
     SequencedEvent,
+    VestaAppConfig,
     VestaConnection,
     VestaEvent,
     VestaIdentity,
@@ -44,6 +55,7 @@ from vesta_client import (
     create_event,
     load_or_create_identity,
 )
+from vesta_client.relay import FilePeerCacheStore, RelaysExhaustedError
 from vesta_client.projection_store import SqliteProjectionStore, restore_projection, save_projection
 from vesta_client.storage import SqliteClientEventStore
 
@@ -148,6 +160,7 @@ class App:
 
         # ── Editor ────────────────────────────────────────────────────────────
         editor_frame = tk.Frame(self.root, bg="#333333", bd=0)
+        self.editor_frame = editor_frame
         editor_frame.pack(fill="both", expand=True, padx=12, pady=8)
 
         self.editor = scrolledtext.ScrolledText(
@@ -280,6 +293,11 @@ class App:
                 elif kind == "connected":
                     self._connected = True
                     self.status_var.set(f"●  Connected — {item['server_id']}")
+                    self.limit_var.set("")
+
+                elif kind == "unreachable":
+                    self.status_var.set("○  Can't reach any relay — check your browser for the relay picker…")
+                    self.limit_var.set(item["detail"])
 
                 elif kind == "disconnected":
                     self._connected = False
@@ -302,13 +320,33 @@ class App:
 
 
 # ── WebSocket background task ─────────────────────────────────────────────────
+def build_relay_directory(app_id: str, owner_public_key: str, default_relay: str) -> RelayDirectory:
+    """Relay directory with the user override persisted under ~/.vesta/relays/."""
+    safe_id = re.sub(r'[<>:"/\\|?*]', "_", app_id)
+    base = VESTA_DIR / "relays"
+    return RelayDirectory(
+        VestaAppConfig(app_id=app_id, owner_public_key=owner_public_key, default_relays=[default_relay]),
+        FileRelayOverrideStore(base / f"{safe_id}.override.json"),
+        FileManifestStore(base / f"{safe_id}.manifest.json"),
+        FilePeerCacheStore(base / f"{safe_id}.peers.json"),
+    )
+
+
 async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop, local_store: SqliteClientEventStore):
+    app_id: str = app.channel.split("/", 1)[0]
+    directory = build_relay_directory(
+        app_id,
+        os.environ.get("VESTA_APP_OWNER_KEY") or app.identity.public_key_b64,
+        app.server_url,
+    )
     conn = VestaConnection(
         server_url=app.server_url,
         client_id=app.client_id,
         channels=[app.channel],
+        relays=directory.resolve_candidates(),
         public_key=app.identity.public_key_b64,
         local_store=local_store,
+        relay_directory=directory,
     )
 
     def on_connected(welcome):
@@ -358,7 +396,12 @@ async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop, local_store: Sql
     conn.on_disconnected(on_disconnected)
     conn.on_limited(on_limited)
 
-    await conn.connect()
+    try:
+        await conn.connect()
+    except RelaysExhaustedError as error:
+        detail: str = "; ".join(f"{a.relay}: {a.reason}" for a in error.info.attempts)
+        app.incoming.put({"kind": "unreachable", "detail": detail or str(error)})
+        await conn.reconnect()  # falls back to background retry with backoff
     # Keep the loop running
     await asyncio.Event().wait()
 

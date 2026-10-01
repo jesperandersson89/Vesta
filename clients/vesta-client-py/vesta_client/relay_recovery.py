@@ -10,13 +10,19 @@ explicit :meth:`RelayRecoverySession.adopt` / :meth:`RelayRecoverySession.use_ma
 from __future__ import annotations
 
 import asyncio
+import re
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from vesta_client.federation import DiscoveredRelay, FederationClient
-from vesta_client.relay import RelayAttempt, RelayDirectory, RelaysExhaustedInfo
+from vesta_client.relay import (
+    RelayAttempt,
+    RelayDirectory,
+    RelayOverride,
+    RelaysExhaustedInfo,
+)
 
 HEALTHY = "healthy"
 DEGRADED = "degraded"
@@ -29,15 +35,44 @@ FAILED = "failed"
 
 _MAX_SEEDS = 16
 
+_INVALID_URL_MESSAGE = "Not a valid relay URL (expected ws://, wss://, http:// or https://)."
+_INVALID_NAMESPACE_MESSAGE = (
+    "Invalid app namespace: use lowercase letters, digits and single hyphens (max 64 characters)."
+)
+_APP_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_APP_ID_MAX_LENGTH = 64
+
+
+def is_valid_app_id(app_id: str | None) -> bool:
+    """Mirrors C# ``AppId.IsValid``."""
+    return bool(app_id) and len(app_id) <= _APP_ID_MAX_LENGTH and _APP_ID_PATTERN.match(app_id) is not None
+
+
+@dataclass(frozen=True)
+class RelayAdoptOptions:
+    """The per-relay inputs a user can set when moving to a relay."""
+
+    app_id: str | None = None
+    register_app: bool = False
+
+
+@dataclass(frozen=True)
+class RelayAdoptResult:
+    """Outcome of moving to a relay the user picked."""
+
+    connected: bool
+    failure_reason: str | None = None
+
 
 @dataclass(frozen=True)
 class RelayChoice:
     """A relay the user may pick. ``hosts_requested_app`` is False for unverified relays."""
 
     url: str
-    relay_public_key: str
+    relay_public_key: str | None
     hosts_requested_app: bool
     from_cache: bool
+    accepts_unregistered_apps: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -45,11 +80,13 @@ class RelayRecoverySnapshot:
     phase: str
     tried_relays: list[RelayAttempt] = field(default_factory=list)
     choices: list[RelayChoice] = field(default_factory=list)
-    active_override: str | None = None
+    active_override: RelayOverride | None = None
     background_retrying: bool = False
     failed_passes: int = 0
     adopting: str | None = None
     failure_reason: str | None = None
+    failed_relay: str | None = None
+    failed_options: RelayAdoptOptions | None = None
 
 
 class RelayRecoveryHost(Protocol):
@@ -59,9 +96,12 @@ class RelayRecoveryHost(Protocol):
     relays: list[str]
     auto_reconnect: bool
 
+    @property
+    def active_relay(self) -> str: ...
+
     def add_listener(self, event: str, listener: Callable[..., None]) -> Callable[[], None]: ...
     async def reconnect(self) -> bool: ...
-    async def adopt_relay(self, url: str) -> bool: ...
+    async def adopt_relay(self, override: RelayOverride) -> RelayAdoptResult: ...
     async def clear_relay_override(self) -> bool: ...
 
 
@@ -86,12 +126,12 @@ def normalize_relay_url(url: str) -> str | None:
 
 
 class RelayRecoverySession:
-    def __init__(self, host: RelayRecoveryHost, federation: FederationClient) -> None:
+    def __init__(self, host: RelayRecoveryHost, federation: FederationClient | None = None) -> None:
         if host.relay_directory is None:
             raise ValueError("RelayRecoverySession requires the connection to have a relay_directory.")
         self._host = host
-        self._federation = federation
         self._directory: RelayDirectory = host.relay_directory
+        self._federation: FederationClient = federation or FederationClient(self._directory.config)
         self._listeners: list[Callable[[RelayRecoverySnapshot], None]] = []
         self._snapshot: RelayRecoverySnapshot = self._build(HEALTHY)
         self._unsubscribes: list[Callable[[], None]] = [
@@ -103,6 +143,11 @@ class RelayRecoverySession:
     @property
     def snapshot(self) -> RelayRecoverySnapshot:
         return self._snapshot
+
+    @property
+    def app_id(self) -> str:
+        """The app's canonical namespace (from its config)."""
+        return self._directory.config.app_id
 
     def on_change(self, listener: Callable[[RelayRecoverySnapshot], None]) -> Callable[[], None]:
         """Subscribe to snapshot changes. Returns an unsubscribe function."""
@@ -135,44 +180,76 @@ class RelayRecoverySession:
         choices: list[RelayChoice] = await self._collect_choices()
         self._update(replace(self._snapshot, phase=CHOICES if choices else NOTHING_FOUND, choices=choices))
 
-    async def adopt(self, choice: RelayChoice) -> None:
-        await self._adopt_core(choice.url)
+    async def adopt(self, choice: RelayChoice, options: RelayAdoptOptions | None = None) -> None:
+        """Move to a relay the user picked from ``snapshot.choices``."""
+        await self._adopt_core(choice.url, options)
 
-    async def use_manual(self, url: str) -> None:
+    async def use_manual(self, url: str, options: RelayAdoptOptions | None = None) -> None:
+        """Move to a relay URL the user typed. Accepts ws/wss (http/https are mapped)."""
         relay: str | None = normalize_relay_url(url)
         if relay is None:
-            self._update(
-                replace(
-                    self._snapshot,
-                    phase=FAILED,
-                    failure_reason="Not a valid relay URL (expected ws://, wss://, http:// or https://).",
-                )
-            )
+            self._update(replace(self._snapshot, phase=FAILED, failure_reason=_INVALID_URL_MESSAGE))
             return
-        await self._adopt_core(relay)
+        await self._adopt_core(relay, options)
 
     async def clear_override(self) -> None:
         connected: bool = await self._host.clear_relay_override()
         if connected:
             self._update(self._build(HEALTHY))
         else:
-            self._update(replace(self._snapshot, active_override=None))
+            self._update(
+                replace(self._snapshot, active_override=None, failed_relay=None, failed_options=None)
+            )
 
     def dismiss(self) -> None:
-        self._update(replace(self._snapshot, phase=DEGRADED, choices=[], failure_reason=None))
+        self._update(
+            replace(
+                self._snapshot,
+                phase=DEGRADED,
+                choices=[],
+                failure_reason=None,
+                failed_relay=None,
+                failed_options=None,
+            )
+        )
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    async def _adopt_core(self, relay: str) -> None:
-        self._update(replace(self._snapshot, phase=ADOPTING, adopting=relay, failure_reason=None))
-        try:
-            connected: bool = await self._host.adopt_relay(relay)
-        except Exception as error:
+    async def _adopt_core(self, relay: str, options: RelayAdoptOptions | None) -> None:
+        requested: str = ((options.app_id if options else None) or "").strip()
+        register_app: bool = bool(options and options.register_app)
+
+        if requested and not is_valid_app_id(requested):
             self._update(
-                replace(self._snapshot, phase=FAILED, adopting=None, failure_reason=str(error))
+                replace(
+                    self._snapshot,
+                    phase=FAILED,
+                    adopting=None,
+                    failure_reason=_INVALID_NAMESPACE_MESSAGE,
+                    failed_relay=relay,
+                    failed_options=RelayAdoptOptions(requested, register_app),
+                )
             )
             return
-        if connected:
+        app_id: str | None = None if not requested or requested == self.app_id else requested
+
+        self._update(
+            replace(
+                self._snapshot,
+                phase=ADOPTING,
+                adopting=relay,
+                failure_reason=None,
+                failed_relay=None,
+                failed_options=None,
+            )
+        )
+        try:
+            result: RelayAdoptResult = await self._host.adopt_relay(
+                RelayOverride(relay=relay, app_id=app_id, register_app=register_app)
+            )
+        except Exception as error:
+            result = RelayAdoptResult(False, str(error))
+        if result.connected:
             self._update(self._build(HEALTHY))
         else:
             self._update(
@@ -181,7 +258,9 @@ class RelayRecoverySession:
                     phase=FAILED,
                     adopting=None,
                     active_override=self._directory.active_override,
-                    failure_reason=f"Could not connect to {relay}.",
+                    failure_reason=result.failure_reason or f"Could not connect to {relay}.",
+                    failed_relay=relay,
+                    failed_options=RelayAdoptOptions(app_id, register_app),
                 )
             )
 
@@ -239,7 +318,16 @@ class RelayRecoverySession:
         merged: dict[str, RelayChoice] = {}
         for peer in cached:
             for url in peer.urls:
-                merged.setdefault(url, RelayChoice(url, peer.relay_public_key, peer.hosts_requested_app, True))
+                merged.setdefault(
+                    url,
+                    RelayChoice(
+                        url,
+                        peer.relay_public_key,
+                        peer.hosts_requested_app,
+                        True,
+                        peer.accepts_unregistered_apps,
+                    ),
+                )
         for relays in live:
             for relay in relays:
                 for url in relay.urls:
@@ -247,7 +335,9 @@ class RelayRecoverySession:
                     hosts: bool = relay.hosts_requested_app or bool(
                         prior is not None and not prior.from_cache and prior.hosts_requested_app
                     )
-                    merged[url] = RelayChoice(url, relay.relay_public_key, hosts, False)
+                    merged[url] = RelayChoice(
+                        url, relay.relay_public_key, hosts, False, relay.accepts_unregistered_apps
+                    )
 
         tried: set[str] = {a.relay for a in self._snapshot.tried_relays}
         remaining: list[RelayChoice] = [c for c in merged.values() if c.url not in tried]

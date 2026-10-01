@@ -9,12 +9,29 @@
 
 import { FederationClient } from "./federation.js";
 import type { DiscoveredRelay } from "./federation.js";
-import type { RelayAttempt, RelayDirectory, RelaysExhaustedInfo } from "./relay.js";
+import type { RelayAttempt, RelayDirectory, RelayOverride, RelaysExhaustedInfo } from "./relay.js";
+
+/** Outcome of moving to a relay the user picked. */
+export interface RelayAdoptResult {
+    /** True if the connection is up on the new relay and the relay accepted the app. */
+    connected: boolean;
+    /** Why it was not adopted (unreachable, namespace rejected, registration refused). */
+    failureReason?: string | null;
+}
+
+/** The per-relay inputs a user can set when moving to a relay. */
+export interface RelayAdoptOptions {
+    /** The app namespace to use on the new relay; empty/null keeps the app's own id. */
+    appId?: string | null;
+    /** Register the namespace on the relay after connecting. */
+    registerApp?: boolean;
+}
 
 /** The slice of `VestaConnection` a {@link RelayRecoverySession} drives. */
 export interface RelayRecoveryHost {
     readonly relayDirectory: RelayDirectory | undefined;
     readonly relays: readonly string[];
+    readonly activeRelay?: string | null;
     readonly autoReconnect: boolean;
     on(event: "disconnected", listener: (reason: string) => void): unknown;
     on(event: "reconnected", listener: () => void): unknown;
@@ -23,7 +40,7 @@ export interface RelayRecoveryHost {
     off(event: "reconnected", listener: () => void): unknown;
     off(event: "relaysExhausted", listener: (info: RelaysExhaustedInfo) => void): unknown;
     reconnect(): Promise<boolean>;
-    adoptRelay(url: string): Promise<boolean>;
+    adoptRelay(override: RelayOverride): Promise<RelayAdoptResult>;
     clearRelayOverride(): Promise<boolean>;
 }
 
@@ -46,6 +63,8 @@ export interface RelayChoice {
     hostsRequestedApp: boolean;
     /** True if only the persisted peer cache knows this relay (not confirmed live this session). */
     fromCache: boolean;
+    /** True if the relay's signed descriptor says it runs in open mode, null if it didn't say. */
+    acceptsUnregisteredApps: boolean | null;
 }
 
 /** Everything a view needs to render the recovery prompt. Views hold no other state. */
@@ -53,16 +72,28 @@ export interface RelayRecoverySnapshot {
     phase: RelayRecoveryPhase;
     triedRelays: RelayAttempt[];
     choices: RelayChoice[];
-    activeOverride: string | null;
+    activeOverride: RelayOverride | null;
     backgroundRetrying: boolean;
     failedPasses: number;
     adopting: string | null;
     failureReason: string | null;
+    /** The relay of the last failed adoption, so a view can re-offer it with the inputs intact. */
+    failedRelay: string | null;
+    failedOptions: RelayAdoptOptions | null;
 }
 
 const MAX_FEDERATION_BASES = 16;
 const INVALID_URL_MESSAGE =
     "Not a valid relay URL (expected ws://, wss://, http:// or https://).";
+const INVALID_NAMESPACE_MESSAGE =
+    "Invalid app namespace: use lowercase letters, digits and single hyphens (max 64 characters).";
+const APP_ID_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+const APP_ID_MAX_LENGTH = 64;
+
+/** Mirrors C# `AppId.IsValid`. */
+export function isValidAppId(appId: string | null | undefined): boolean {
+    return !!appId && appId.length <= APP_ID_MAX_LENGTH && APP_ID_PATTERN.test(appId);
+}
 
 export class RelayRecoverySession {
     private readonly host: RelayRecoveryHost;
@@ -91,6 +122,11 @@ export class RelayRecoverySession {
 
     get snapshot(): RelayRecoverySnapshot {
         return this.current;
+    }
+
+    /** The app's canonical namespace (from its config). */
+    get appId(): string {
+        return this.directory.config.appId;
     }
 
     /** Subscribe to state changes. Returns an unsubscribe function. */
@@ -130,56 +166,91 @@ export class RelayRecoverySession {
     }
 
     /** Move to a relay the user picked from `snapshot.choices`. */
-    adopt(choice: RelayChoice): Promise<void> {
-        return this.adoptCore(choice.url);
+    adopt(choice: RelayChoice, options?: RelayAdoptOptions): Promise<void> {
+        return this.adoptCore(choice.url, options);
     }
 
     /** Move to a relay URL the user typed or scanned. Accepts ws/wss (http/https are mapped). */
-    useManual(url: string): Promise<void> {
+    useManual(url: string, options?: RelayAdoptOptions): Promise<void> {
         const relay: string | null = RelayRecoverySession.normalize(url);
         if (relay === null) {
             this.update({ ...this.current, phase: "failed", failureReason: INVALID_URL_MESSAGE });
             return Promise.resolve();
         }
-        return this.adoptCore(relay);
+        return this.adoptCore(relay, options);
     }
 
     /** Drop the user's override and go back to manifest/default relays. */
     async clearOverride(): Promise<void> {
         const connected: boolean = await this.host.clearRelayOverride();
-        this.update(connected ? this.build("healthy") : { ...this.current, activeOverride: null });
+        this.update(
+            connected
+                ? this.build("healthy")
+                : { ...this.current, activeOverride: null, failedRelay: null, failedOptions: null },
+        );
     }
 
     /** Hide the prompt. Background reconnect continues; the prompt returns on the next exhaustion. */
     dismiss(): void {
-        this.update({ ...this.current, phase: "degraded", choices: [], failureReason: null });
+        this.update({
+            ...this.current,
+            phase: "degraded",
+            choices: [],
+            failureReason: null,
+            failedRelay: null,
+            failedOptions: null,
+        });
     }
 
-    private async adoptCore(relay: string): Promise<void> {
-        this.update({ ...this.current, phase: "adopting", adopting: relay, failureReason: null });
+    private async adoptCore(relay: string, options?: RelayAdoptOptions): Promise<void> {
+        const config = this.directory.config;
+        const requested: string = (options?.appId ?? "").trim();
+        const registerApp: boolean = options?.registerApp === true;
+        const failedOptions: RelayAdoptOptions = { appId: requested || null, registerApp };
 
-        let connected: boolean;
-        try {
-            connected = await this.host.adoptRelay(relay);
-        } catch (error) {
+        if (requested.length > 0 && !isValidAppId(requested)) {
             this.update({
                 ...this.current,
                 phase: "failed",
                 adopting: null,
-                failureReason: error instanceof Error ? error.message : String(error),
+                failureReason: INVALID_NAMESPACE_MESSAGE,
+                failedRelay: relay,
+                failedOptions,
             });
             return;
         }
+        const appId: string | null = requested.length === 0 || requested === config.appId ? null : requested;
+
+        this.update({
+            ...this.current,
+            phase: "adopting",
+            adopting: relay,
+            failureReason: null,
+            failedRelay: null,
+            failedOptions: null,
+        });
+
+        let result: RelayAdoptResult;
+        try {
+            result = await this.host.adoptRelay({ relay, appId, registerApp });
+        } catch (error) {
+            result = {
+                connected: false,
+                failureReason: error instanceof Error ? error.message : String(error),
+            };
+        }
 
         this.update(
-            connected
+            result.connected
                 ? this.build("healthy")
                 : {
                       ...this.current,
                       phase: "failed",
                       adopting: null,
                       activeOverride: this.directory.activeOverride,
-                      failureReason: `Could not connect to ${relay}.`,
+                      failureReason: result.failureReason ?? `Could not connect to ${relay}.`,
+                      failedRelay: relay,
+                      failedOptions: { appId, registerApp },
                   },
         );
     }
@@ -213,6 +284,7 @@ export class RelayRecoverySession {
                     relayPublicKey: peer.relayPublicKey,
                     hostsRequestedApp: peer.hostsRequestedApp,
                     fromCache: true,
+                    acceptsUnregisteredApps: peer.acceptsUnregisteredApps ?? null,
                 });
             }
         }
@@ -228,6 +300,7 @@ export class RelayRecoverySession {
                         relayPublicKey: relay.relayPublicKey,
                         hostsRequestedApp: hosts,
                         fromCache: false,
+                        acceptsUnregisteredApps: relay.acceptsUnregisteredApps ?? null,
                     });
                 }
             }
@@ -278,6 +351,8 @@ export class RelayRecoverySession {
             failedPasses: info.passes,
             choices: [],
             failureReason: null,
+            failedRelay: null,
+            failedOptions: null,
         });
     }
 
@@ -291,6 +366,8 @@ export class RelayRecoverySession {
             failedPasses: 0,
             adopting: null,
             failureReason: null,
+            failedRelay: null,
+            failedOptions: null,
         };
     }
 

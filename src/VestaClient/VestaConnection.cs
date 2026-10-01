@@ -3,6 +3,7 @@ using System.Text.Json;
 using VestaClient.Federation;
 using VestaClient.Relay;
 using VestaClient.Storage;
+using VestaCore.Channels;
 using VestaCore.Events;
 using VestaCore.Identity;
 using VestaCore.Protocol;
@@ -39,6 +40,34 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     private IReadOnlyList<string>? _channels;
     private IReadOnlyList<RelayAttempt> _lastAttempts = [];
     private FederationClient? _federation;
+    private string? _remoteAppId;
+    private bool _registerOnConnect;
+    private bool _namespaceConfirmed;
+    private TaskCompletionSource<string?>? _probationFailure;
+    private readonly object _pickerGate = new();
+    private WebRelayPicker? _picker;
+
+    /// <summary>
+    /// Whether the built-in relay picker page opens when every relay is exhausted. On for every app
+    /// (it is part of the core, not an opt-in); internal so this library's tests can keep it from
+    /// launching a browser.
+    /// </summary>
+    internal static bool RelayPickerEnabled { get; set; } = true;
+
+    /// <summary>Replaces the system-browser launch of the relay picker page (tests only).</summary>
+    internal static Func<Uri, bool>? RelayPickerLauncher { get; set; }
+
+    private static readonly HashSet<string> NamespaceErrorCodes = new(StringComparer.Ordinal)
+    {
+        "APP_NOT_ALLOWED", "UNKNOWN_APP", "INVALID_APP", "APPS_NOT_SUPPORTED", "INVALID_CHANNEL", "ACCESS_DENIED",
+    };
+
+    /// <summary>
+    /// How long <see cref="AdoptRelayAsync"/> waits for the relay to refuse the app's namespace before
+    /// it persists the user's choice. Skipped when the relay already accepted the app's channels.
+    /// Default: 1.5 seconds.
+    /// </summary>
+    public TimeSpan RelayAdoptProbation { get; set; } = TimeSpan.FromMilliseconds(1500);
 
     /// <summary>
     /// When true, the connection will automatically attempt to reconnect with
@@ -253,7 +282,91 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 
         if (!await TryConnectCandidatesAsync(lastSequences, cancellationToken))
         {
-            throw new RelaysExhaustedException(new RelaysExhaustedInfo(_lastAttempts, Passes: 1));
+            RelaysExhaustedInfo info = new(_lastAttempts, Passes: 1);
+
+            // Ask the user (built-in page) and continue if they pick a relay that works.
+            if (await AwaitRelayPickerAsync(info, cancellationToken))
+            {
+                return;
+            }
+            throw new RelaysExhaustedException(info);
+        }
+    }
+
+    private WebRelayPicker GetRelayPicker()
+    {
+        lock (_pickerGate)
+        {
+            return _picker ??= new WebRelayPicker(this, _appConfig, RelayPickerLauncher);
+        }
+    }
+
+    private void ShowRelayPicker(RelaysExhaustedInfo info)
+    {
+        if (!RelayPickerEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            GetRelayPicker().Show(info);
+        }
+        catch (Exception)
+        {
+            // The prompt is a convenience; never let it break the reconnect loop.
+        }
+    }
+
+    /// <summary>
+    /// Failed first connect: open the picker and wait until the user gets connected (true) or
+    /// dismisses it (false).
+    /// </summary>
+    private async Task<bool> AwaitRelayPickerAsync(RelaysExhaustedInfo info, CancellationToken cancellationToken)
+    {
+        if (!RelayPickerEnabled)
+        {
+            return false;
+        }
+
+        WebRelayPicker picker;
+        try
+        {
+            picker = GetRelayPicker();
+            if (!picker.Show(info))
+            {
+                // Nobody can see the page (headless): fail fast rather than wait forever.
+                return false;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        TaskCompletionSource<bool> outcome = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnChanged(RelayRecoverySnapshot snapshot)
+        {
+            switch (snapshot.Phase)
+            {
+                case RelayRecoveryPhase.Healthy:
+                    outcome.TrySetResult(true);
+                    break;
+                case RelayRecoveryPhase.Degraded:
+                    outcome.TrySetResult(false);
+                    break;
+            }
+        }
+
+        picker.Session.OnChanged += OnChanged;
+        try
+        {
+            OnChanged(picker.Session.Snapshot);
+            return await outcome.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            picker.Session.OnChanged -= OnChanged;
         }
     }
 
@@ -416,18 +529,68 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
-    /// Set the user's local relay override — the individual escape hatch that always wins locally —
-    /// persist it via the relay directory, and switch to it immediately. This is how an end-user
-    /// keeps an app alive on a relay of their choosing regardless of what the app ships with.
-    /// Returns true if the switch connected.
+    /// Move to a relay the user chose — the individual escape hatch that always wins locally. The
+    /// override can carry an app namespace to use on that relay (channels are remapped transparently)
+    /// and ask for the namespace to be registered on connect. The choice is held as pending and only
+    /// persisted once the relay has accepted the app; otherwise it is discarded and the previous
+    /// state restored, so a bad pick can never strand the app.
     /// </summary>
-    public async Task<bool> SetUserRelayOverrideAsync(Uri relay, CancellationToken cancellationToken = default)
+    public async Task<RelayAdoptResult> AdoptRelayAsync(RelayOverride relayOverride, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(relay);
+        ArgumentNullException.ThrowIfNull(relayOverride);
 
-        _relayDirectory!.SetUserOverride(relay);
-        UpdateRelayCandidates(_relayDirectory.ResolveCandidates());
-        return await SwitchRelayAsync(relay, cancellationToken);
+        RelayDirectory directory = _relayDirectory!;
+        TaskCompletionSource<string?> failure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _probationFailure = failure;
+        _namespaceConfirmed = false;
+        try
+        {
+            directory.SetUserOverride(relayOverride, persist: false);
+            UpdateRelayCandidates(directory.ResolveCandidates());
+            bool connected = await SwitchRelayAsync(relayOverride.Relay, cancellationToken);
+            bool onTarget = connected && ActiveRelay == relayOverride.Relay;
+
+            string? reason;
+            if (onTarget)
+            {
+                if (!failure.Task.IsCompleted && !_namespaceConfirmed)
+                {
+                    using CancellationTokenSource delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    await Task.WhenAny(failure.Task, Task.Delay(RelayAdoptProbation, delayCts.Token));
+                    delayCts.Cancel();
+                }
+
+                if (!failure.Task.IsCompleted)
+                {
+                    directory.CommitPendingOverride();
+                    return new RelayAdoptResult(true);
+                }
+
+                reason = failure.Task.Result;
+            }
+            else
+            {
+                reason = _lastAttempts.FirstOrDefault(a => a.Relay == relayOverride.Relay)?.Reason ?? "Could not connect";
+            }
+
+            directory.DiscardPendingOverride();
+            UpdateRelayCandidates(directory.ResolveCandidates());
+            if (onTarget)
+            {
+                await ReconnectAsync(cancellationToken);
+            }
+
+            return new RelayAdoptResult(false, reason);
+        }
+        catch (OperationCanceledException)
+        {
+            directory.DiscardPendingOverride();
+            throw;
+        }
+        finally
+        {
+            _probationFailure = null;
+        }
     }
 
     /// <summary>
@@ -522,6 +685,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         IReadOnlyDictionary<string, long>? lastSequences,
         CancellationToken cancellationToken)
     {
+        ResolveActiveNamespace(relay);
         _socket = new ClientWebSocket();
         await _socket.ConnectAsync(relay, cancellationToken);
 
@@ -555,10 +719,13 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             ? Base64Url.Encode(_identity.PublicKey)
             : null;
 
+        // When registering the namespace on connect, HELLO goes out empty (the relay would reject
+        // channels of an unregistered namespace) and the channels are subscribed after registration.
+        bool registerFirst = _registerOnConnect;
         HelloMessage hello = new(
             ClientId: _clientId,
-            Channels: _channels!.ToList(),
-            LastSequences: sequences,
+            Channels: registerFirst ? [] : _channels!.ToList(),
+            LastSequences: registerFirst ? new Dictionary<string, long>() : sequences,
             PublicKey: publicKeyBase64Url);
 
         await SendAsync(hello, cancellationToken);
@@ -566,12 +733,16 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         // Receive WELCOME (and possibly error messages before it)
         while (true)
         {
-            ProtocolMessage? response = await ReceiveOneAsync(cancellationToken);
+            ProtocolMessage? raw = await ReceiveOneAsync(cancellationToken);
+            ProtocolMessage? response = raw is null ? null : MapInbound(raw);
 
             if (response is WelcomeMessage welcome)
             {
                 ServerId = welcome.ServerId;
                 Channels = welcome.Channels;
+                _namespaceConfirmed = !registerFirst
+                    && _channels!.Count > 0
+                    && welcome.Channels.Any(c => _channels.Contains(c));
                 break;
             }
             else if (response is ErrorMessage error)
@@ -584,9 +755,23 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             }
         }
 
+        if (registerFirst)
+        {
+            await RegisterNamespaceAsync(cancellationToken);
+        }
+
         // Start the background receive loop
         _receiveCts = new CancellationTokenSource();
         _receiveLoop = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+
+        if (registerFirst)
+        {
+            foreach (string ch in _channels!)
+            {
+                await SubscribeAsync(ch, sequences[ch] + 1, cancellationToken);
+            }
+            Channels = _channels!;
+        }
 
         // If a relay directory is attached, make sure we are subscribed to the manifest channel
         // so we discover owner-signed relay changes even if the app did not list it explicitly.
@@ -599,6 +784,124 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         if (_localStore is not null)
         {
             await FlushOutboxAsync(cancellationToken);
+        }
+    }
+
+    // Namespace remap: the user may run the app under a different namespace on one relay. The app and
+    // its local store always see canonical channel ids; only the wire carries the remote namespace.
+    private void ResolveActiveNamespace(Uri candidate)
+    {
+        RelayOverride? active = _relayDirectory?.ActiveOverride;
+        bool applies = active is not null && active.Relay == candidate;
+        string? ns = applies ? active!.AppId : null;
+        _remoteAppId = string.IsNullOrEmpty(ns) || ns == _appConfig.AppId ? null : ns;
+        _registerOnConnect = applies && active!.RegisterApp;
+    }
+
+    private string ToRemote(string channelId) => RemapChannel(channelId, _appConfig.AppId, _remoteAppId);
+
+    private string ToLocal(string channelId) => RemapChannel(channelId, _remoteAppId, _appConfig.AppId);
+
+    internal static string RemapChannel(string channelId, string? from, string? to)
+    {
+        if (from is null || to is null || from == to || ChannelId.IsProtocolChannel(channelId))
+        {
+            return channelId;
+        }
+
+        return AppId.ExtractFromChannelId(channelId) == from ? to + channelId[from.Length..] : channelId;
+    }
+
+    private ProtocolMessage MapOutbound(ProtocolMessage message)
+    {
+        if (_remoteAppId is null)
+        {
+            return message;
+        }
+
+        return message switch
+        {
+            HelloMessage h => h with
+            {
+                Channels = h.Channels.Select(ToRemote).ToList(),
+                LastSequences = h.LastSequences.ToDictionary(kvp => ToRemote(kvp.Key), kvp => kvp.Value),
+            },
+            PublishMessage p => RemapPublish(p),
+            SubscribeMessage s => s with { ChannelId = ToRemote(s.ChannelId) },
+            UnsubscribeMessage u => u with { ChannelId = ToRemote(u.ChannelId) },
+            FetchMessage f => f with { ChannelId = ToRemote(f.ChannelId) },
+            CreateChannelMessage c => c with { ChannelId = ToRemote(c.ChannelId) },
+            GrantAccessMessage g => g with { ChannelId = ToRemote(g.ChannelId) },
+            DeleteChannelMessage d => d with { ChannelId = ToRemote(d.ChannelId) },
+            _ => message,
+        };
+    }
+
+    // The signature covers the channel id, so a remapped event must be signed again under the remote id.
+    private PublishMessage RemapPublish(PublishMessage publish)
+    {
+        string remote = ToRemote(publish.Event.ChannelId);
+        if (remote == publish.Event.ChannelId)
+        {
+            return publish;
+        }
+
+        VestaEvent remapped = publish.Event with { ChannelId = remote, Signature = null };
+        if (_identity is not null)
+        {
+            remapped = EventSigner.SignEvent(remapped, _identity);
+        }
+
+        return new PublishMessage(remote, remapped);
+    }
+
+    private ProtocolMessage MapInbound(ProtocolMessage message)
+    {
+        if (_remoteAppId is null)
+        {
+            return message;
+        }
+
+        return message switch
+        {
+            WelcomeMessage w => w with { Channels = w.Channels.Select(ToLocal).ToList() },
+            EventMessage e => e with { ChannelId = ToLocal(e.ChannelId), Event = LocalizeEvent(e.Event) },
+            EventsBatchMessage b => b with
+            {
+                ChannelId = ToLocal(b.ChannelId),
+                Events = b.Events.Select(s => s with { Event = LocalizeEvent(s.Event) }).ToList(),
+            },
+            AckMessage a => a with { ChannelId = ToLocal(a.ChannelId) },
+            ErrorMessage err => err with { ChannelId = err.ChannelId is null ? null : ToLocal(err.ChannelId) },
+            _ => message,
+        };
+    }
+
+    private VestaEvent LocalizeEvent(VestaEvent evt) => evt with { ChannelId = ToLocal(evt.ChannelId) };
+
+    // REGISTER_APP is answered with an ACK for the app id; an existing registration is fine to reuse
+    // (access to its channels is still gated by the relay).
+    private async Task RegisterNamespaceAsync(CancellationToken cancellationToken)
+    {
+        string ns = _remoteAppId ?? _appConfig.AppId;
+        await SendAsync(new RegisterAppMessage(ns), cancellationToken);
+
+        while (true)
+        {
+            ProtocolMessage? response = await ReceiveOneAsync(cancellationToken);
+            switch (response)
+            {
+                case null:
+                    throw new InvalidOperationException("Connection closed during app registration");
+                case AckMessage ack when ack.EventId == Guid.Empty && ack.ChannelId == ns:
+                    _namespaceConfirmed = true;
+                    return;
+                case ErrorMessage { Code: "DUPLICATE_APP" }:
+                    return;
+                case ErrorMessage error:
+                    HandleErrorMessage(MapInbound(error) as ErrorMessage ?? error);
+                    throw new InvalidOperationException($"{error.Code}: {error.Message}");
+            }
         }
     }
 
@@ -875,6 +1178,14 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 
     public async ValueTask DisposeAsync()
     {
+        WebRelayPicker? picker;
+        lock (_pickerGate)
+        {
+            picker = _picker;
+            _picker = null;
+        }
+        picker?.Dispose();
+
         await CleanupAsync();
         _sendLock.Dispose();
     }
@@ -913,7 +1224,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         if (_socket is null)
             throw new InvalidOperationException("Not connected");
 
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes<ProtocolMessage>(message, _jsonOptions);
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(MapOutbound(message), _jsonOptions);
 
         await _sendLock.WaitAsync(cancellationToken);
         try
@@ -1001,7 +1312,9 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             if (!exhaustionRaised && failedPasses >= RelayExhaustionPasses)
             {
                 exhaustionRaised = true;
-                OnRelaysExhausted?.Invoke(new RelaysExhaustedInfo(_lastAttempts, failedPasses));
+                RelaysExhaustedInfo info = new(_lastAttempts, failedPasses);
+                OnRelaysExhausted?.Invoke(info);
+                ShowRelayPicker(info);
             }
 
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxReconnectDelay.Ticks));
@@ -1010,7 +1323,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 
     private void DispatchMessage(ProtocolMessage message)
     {
-        switch (message)
+        switch (MapInbound(message))
         {
             case EventMessage evt:
                 CacheEventLocally(evt);
@@ -1034,6 +1347,11 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     {
         // Always surface the raw error.
         OnError?.Invoke(error);
+
+        if (_probationFailure is not null && NamespaceErrorCodes.Contains(error.Code))
+        {
+            _probationFailure.TrySetResult($"{error.Code}: {error.Message}");
+        }
 
         VestaErrorCodes.Classification classification = VestaErrorCodes.Classify(error.Code);
 

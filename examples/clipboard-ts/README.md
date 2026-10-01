@@ -57,6 +57,8 @@ Projected with `LwwMap<string, ClipboardEntry>` keyed by client id (see `clipboa
 
 ## Relay independence & limits
 
-If every configured relay fails, the app keeps running against its local cache. A `limited`
-event (quota / rate-limit / registration refusal) is surfaced as a red `[LIMITED]` line in the
-footer via `connection.on("limited", ...)`.
+If every configured relay fails, the app keeps running against its local cache while the SDK
+opens its own relay picker — a loopback web page in your system browser — automatically; no app
+UI is wired up for it. The choice is remembered via `FileRelayOverrideStore` (see above) across
+runs. A `limited` event (quota / rate-limit / registration refusal) is surfaced as a red
+`[LIMITED]` line in the footer via `connection.on("limited", ...)`.

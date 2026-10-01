@@ -27,8 +27,66 @@ import type {
     RelayAttempt,
     RelayDirectory,
     RelayManifest,
+    RelayOverride,
     RelaysExhaustedInfo,
+    VestaAppConfig,
 } from "./relay.js";
+import { signEvent } from "./signing.js";
+import { RelayRecoverySession } from "./relay-recovery.js";
+import type { RelayAdoptResult, RelayRecoveryHost } from "./relay-recovery.js";
+import { mountRelayPickerOverlay } from "./relay-picker.js";
+
+// ── Built-in relay picker wiring ─────────────────────────────────────────────
+// The picker is part of the connection: when every relay is exhausted the connection prompts the
+// user itself. Node registers a loopback web page (node.ts); browsers get the overlay element.
+
+/** A UI that can prompt the user to pick another relay. */
+export interface RelayPickerHandle {
+    show(info: RelaysExhaustedInfo): Promise<boolean>;
+    dispose(): void;
+}
+
+type RelayPickerFactory = (host: RelayRecoveryHost, config: VestaAppConfig) => RelayPickerHandle;
+
+let relayPickerFactory: RelayPickerFactory | null = null;
+let relayPickerEnabled = true;
+
+/** Register the platform picker used when relays are exhausted (called by `node.ts` on import). */
+export function setRelayPickerFactory(factory: RelayPickerFactory | null): void {
+    relayPickerFactory = factory;
+}
+
+/** Enable or disable the built-in relay picker globally (on by default). Mainly for tests. */
+export function setRelayPickerEnabled(enabled: boolean): void {
+    relayPickerEnabled = enabled;
+}
+
+/** Error codes that mean "the relay does not accept this app namespace". */
+export const NAMESPACE_ERROR_CODES: ReadonlySet<string> = new Set([
+    "APP_NOT_ALLOWED",
+    "UNKNOWN_APP",
+    "INVALID_APP",
+    "APPS_NOT_SUPPORTED",
+    "INVALID_CHANNEL",
+    "ACCESS_DENIED",
+]);
+
+/** How long a freshly adopted relay must stay free of namespace errors before it is committed. */
+export const RELAY_ADOPT_PROBATION_MS = 1500;
+
+const NIL_EVENT_ID = "00000000-0000-0000-0000-000000000000";
+
+/** Rewrite the first path segment of a channel id from `from` to `to` (protocol channels are left alone). */
+export function remapChannel(
+    channelId: string,
+    from: string | null,
+    to: string | null,
+): string {
+    if (!from || !to || from === to) return channelId;
+    if (channelId.startsWith("vesta/")) return channelId;
+    if (channelId === from) return to;
+    return channelId.startsWith(from + "/") ? to + channelId.slice(from.length) : channelId;
+}
 
 // ── WebSocket abstraction ────────────────────────────────────────────────────
 // We support both the `ws` package (Node.js) and the browser WebSocket API.
@@ -180,6 +238,14 @@ export class VestaConnection {
     private readonly lastAttempts = new Map<string, string>();
     private readonly retiredSockets = new WeakSet<VestaSocket>();
     private federation: FederationClient | undefined;
+    private remoteAppId: string | null = null;
+    private registerOnConnect = false;
+    private namespaceConfirmed = false;
+    private probationFail: ((reason: string) => void) | null = null;
+    private registration: { resolve(): void; reject(error: Error): void } | null = null;
+    private picker: RelayPickerHandle | null = null;
+    private overlayDispose: (() => void) | null = null;
+    private pickerShown = false;
 
     /** The attached relay directory, if any. */
     relayDirectory: RelayDirectory | undefined;
@@ -299,27 +365,6 @@ export class VestaConnection {
         this.connect();
     }
 
-    /**
-     * Persist a user-chosen relay override (the local escape hatch) and refresh the candidate
-     * list to prefer it. Requires a {@link RelayDirectory} to have been attached.
-     */
-    setUserRelayOverride(url: string): void {
-        if (!this.relayDirectory) {
-            throw new Error("No relayDirectory attached — cannot set a relay override.");
-        }
-        this.relayDirectory.setUserOverride(url);
-        this.updateRelayCandidates(this.relayDirectory.resolveCandidates());
-    }
-
-    /** Clear the user relay override and fall back to manifest / default relays. */
-    clearUserRelayOverride(): void {
-        if (!this.relayDirectory) {
-            throw new Error("No relayDirectory attached — cannot clear a relay override.");
-        }
-        this.relayDirectory.clearUserOverride();
-        this.updateRelayCandidates(this.relayDirectory.resolveCandidates());
-    }
-
     // ── Connection lifecycle ─────────────────────────────────────────────────
 
     /** Open the WebSocket connection. */
@@ -329,17 +374,20 @@ export class VestaConnection {
 
         this.attemptReachedWelcome = false;
         const attemptedRelay: string = this.activeRelay;
+        this.resolveActiveNamespace(attemptedRelay);
         const socket: VestaSocket = this.createSocket(attemptedRelay);
         this.socket = socket;
         let attemptError: string | null = null;
 
         this.socket.addEventListener("open", () => {
             if (this.retiredSockets.has(socket)) return;
+            // Registering first: greet with no channels so nothing is requested before the namespace exists.
+            const registerFirst: boolean = this.registerOnConnect;
             this.sendRaw({
                 type: "HELLO",
                 clientId: this.clientId,
-                channels: this._channels,
-                lastSequences: this.lastSequences,
+                channels: registerFirst ? [] : this._channels,
+                lastSequences: registerFirst ? {} : this.lastSequences,
                 publicKey: this.publicKey ?? null,
             });
         });
@@ -406,21 +454,72 @@ export class VestaConnection {
     }
 
     /**
-     * Persist `url` as the user's relay override (the escape hatch that always wins locally) and
-     * connect to it now. Resolves true if it connected. Requires an attached {@link RelayDirectory}.
+     * Move to the relay (and app namespace) the user chose. The override is applied provisionally:
+     * it is only persisted once the relay is reachable and stays free of namespace errors for a
+     * short probation; otherwise the previous state is restored and the reason is returned.
+     * Requires an attached {@link RelayDirectory}.
      */
-    adoptRelay(url: string): Promise<boolean> {
+    async adoptRelay(override: RelayOverride): Promise<RelayAdoptResult> {
         const directory = this.relayDirectory;
         if (!directory) {
-            return Promise.reject(new Error("No relayDirectory attached — cannot set a relay override."));
+            throw new Error("No relayDirectory attached — cannot set a relay override.");
         }
-        directory.setUserOverride(url);
-        this.updateRelayCandidates(directory.resolveCandidates());
-        const index = this.relayCandidates.indexOf(url);
-        this.activeRelayIndex = index >= 0 ? index : 0;
-        const outcome = this.waitForOutcome(1);
-        this.restart();
-        return outcome;
+
+        const probation: { reason: string | null } = { reason: null };
+        let signalFailure: () => void = () => {};
+        const failure = new Promise<void>((resolve) => {
+            signalFailure = resolve;
+        });
+        this.probationFail = (reason: string): void => {
+            if (probation.reason !== null) return;
+            probation.reason = reason;
+            signalFailure();
+        };
+        this.namespaceConfirmed = false;
+
+        try {
+            directory.setUserOverride(override, false);
+            this.updateRelayCandidates(directory.resolveCandidates());
+            const index: number = this.relayCandidates.indexOf(override.relay);
+            this.activeRelayIndex = index >= 0 ? index : 0;
+            const outcome: Promise<boolean> = this.waitForOutcome(1);
+            this.restart();
+            const connected: boolean = await outcome;
+            const onTarget: boolean = connected && this.activeRelay === override.relay;
+
+            let reason: string | null;
+            if (onTarget) {
+                if (probation.reason === null && !this.namespaceConfirmed) {
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    const elapsed = new Promise<void>((resolve) => {
+                        timer = setTimeout(resolve, RELAY_ADOPT_PROBATION_MS);
+                    });
+                    await Promise.race([failure, elapsed]);
+                    if (timer) clearTimeout(timer);
+                }
+                if (probation.reason === null) {
+                    directory.commitPendingOverride();
+                    return { connected: true, failureReason: null };
+                }
+                reason = probation.reason;
+            } else {
+                reason = this.lastAttempts.get(override.relay) ?? "Could not connect";
+            }
+
+            directory.discardPendingOverride();
+            this.updateRelayCandidates(directory.resolveCandidates());
+            if (onTarget && !this.disposed) {
+                this.activeRelayIndex = 0;
+                const again: Promise<boolean> = this.waitForOutcome(
+                    this.autoReconnect ? this.relayCandidates.length : 1,
+                );
+                this.restart();
+                await again;
+            }
+            return { connected: false, failureReason: reason };
+        } finally {
+            this.probationFail = null;
+        }
     }
 
     /** Clear the user relay override and reconnect using the freshly resolved candidates. */
@@ -448,6 +547,10 @@ export class VestaConnection {
     dispose(): void {
         this.disposed = true;
         this.disconnect();
+        this.picker?.dispose();
+        this.picker = null;
+        this.overlayDispose?.();
+        this.overlayDispose = null;
         this.listeners.clear();
     }
 
@@ -721,13 +824,21 @@ export class VestaConnection {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    private handleMessage(msg: ServerMessage): void {
+    private handleMessage(raw: ServerMessage): void {
+        const msg: ServerMessage = this.mapInbound(raw);
         switch (msg.type) {
             case "WELCOME": {
                 const wasReconnect = this.hasReachedWelcomeOnce;
+                const registerFirst: boolean = this.registerOnConnect;
+                const requested: string[] = this._channels;
+                this.namespaceConfirmed =
+                    !registerFirst &&
+                    msg.channels.length > 0 &&
+                    msg.channels.some((c: string) => requested.includes(c));
                 this._isConnected = true;
                 this._serverId = msg.serverId;
-                this._channels = [...msg.channels];
+                if (!registerFirst) this._channels = [...msg.channels];
+                this.pickerShown = false;
                 this.reconnectAttempt = 0;
                 this.attemptReachedWelcome = true;
                 this.hasReachedWelcomeOnce = true;
@@ -741,6 +852,11 @@ export class VestaConnection {
                 this.emit("connected", msg);
                 if (wasReconnect) {
                     this.emit("reconnected", msg);
+                }
+                if (registerFirst) {
+                    void this.registerThenSubscribe();
+                    void this.refreshPeerCache(this.activeRelay);
+                    break;
                 }
                 if (
                     this.relayDirectory &&
@@ -785,6 +901,11 @@ export class VestaConnection {
                 break;
 
             case "ACK":
+                if (msg.eventId === NIL_EVENT_ID) {
+                    // Registration acknowledgement, not an event.
+                    this.registration?.resolve();
+                    break;
+                }
                 this.updateSequence(msg.channelId, msg.sequence);
                 if (this.localStore) {
                     void this.cacheEventOnAck(msg);
@@ -793,9 +914,131 @@ export class VestaConnection {
                 break;
 
             case "ERROR":
+                if (this.registration) {
+                    if (msg.code === "DUPLICATE_APP") this.registration.resolve();
+                    else this.registration.reject(new Error(`${msg.code}: ${msg.message}`));
+                    break;
+                }
+                if (this.probationFail && NAMESPACE_ERROR_CODES.has(msg.code)) {
+                    this.probationFail(`${msg.code}: ${msg.message}`);
+                }
                 this.emit("error", msg);
                 this.handlePossibleLimit(msg);
                 break;
+        }
+    }
+
+    /** Decide which app namespace (if any) applies to `candidate`, from the active override. */
+    private resolveActiveNamespace(candidate: string): void {
+        const localAppId: string | undefined = this.relayDirectory?.config.appId;
+        const active: RelayOverride | null | undefined = this.relayDirectory?.activeOverride;
+        const applies: boolean = !!active && active.relay === candidate;
+        const ns: string | null | undefined = applies ? active?.appId : null;
+        this.remoteAppId = !ns || ns === localAppId ? null : ns;
+        this.registerOnConnect = applies && active?.registerApp === true;
+    }
+
+    /** After a register-first handshake: claim the namespace, then subscribe and flush as usual. */
+    private async registerThenSubscribe(): Promise<void> {
+        const appId: string | undefined = this.remoteAppId ?? this.relayDirectory?.config.appId;
+        try {
+            if (!appId) throw new Error("No app id to register");
+            await new Promise<void>((resolve, reject) => {
+                this.registration = { resolve, reject };
+                this.sendRaw({ type: "REGISTER_APP", appId });
+            });
+        } catch (error) {
+            const reason: string = error instanceof Error ? error.message : String(error);
+            this.registration = null;
+            if (this.probationFail) this.probationFail(reason);
+            else this.emit("error", { type: "ERROR", code: "REGISTER_APP_FAILED", message: reason });
+            return;
+        }
+        this.registration = null;
+        try {
+            for (const channelId of this._channels) {
+                const last: number = this.lastSequences[channelId] ?? 0;
+                this.sendRaw({ type: "SUBSCRIBE", channelId, fromSequence: last + 1 });
+            }
+            if (
+                this.relayDirectory &&
+                !this._channels.includes(this.relayDirectory.manifestChannel)
+            ) {
+                this.sendRaw({
+                    type: "SUBSCRIBE",
+                    channelId: this.relayDirectory.manifestChannel,
+                    fromSequence: 0,
+                });
+            }
+            this.namespaceConfirmed = true;
+            if (this.localStore) await this.flushOutbox();
+        } catch {
+            // Socket dropped mid-setup; the next connect repeats the handshake.
+        }
+    }
+
+    private mapOutbound(msg: ClientMessage): ClientMessage {
+        const remote: string | null = this.remoteAppId;
+        const local: string | undefined = this.relayDirectory?.config.appId;
+        if (!remote || !local) return msg;
+        const map = (channelId: string): string => remapChannel(channelId, local, remote);
+        switch (msg.type) {
+            case "HELLO": {
+                const lastSequences: Record<string, number> = {};
+                for (const [channelId, sequence] of Object.entries(msg.lastSequences)) {
+                    lastSequences[map(channelId)] = sequence;
+                }
+                return { ...msg, channels: msg.channels.map(map), lastSequences };
+            }
+            case "PUBLISH": {
+                const channelId: string = map(msg.channelId);
+                if (channelId === msg.event.channelId) return { ...msg, channelId };
+                const event: VestaEvent = { ...msg.event, channelId };
+                delete event.signature;
+                if (this.identity) signEvent(event, this.identity.privateKey);
+                return { ...msg, channelId, event };
+            }
+            case "SUBSCRIBE":
+            case "UNSUBSCRIBE":
+            case "FETCH":
+            case "CREATE_CHANNEL":
+            case "GRANT_ACCESS":
+            case "DELETE_CHANNEL":
+                return { ...msg, channelId: map(msg.channelId) };
+            default:
+                return msg;
+        }
+    }
+
+    private mapInbound(msg: ServerMessage): ServerMessage {
+        const remote: string | null = this.remoteAppId;
+        const local: string | undefined = this.relayDirectory?.config.appId;
+        if (!remote || !local) return msg;
+        const map = (channelId: string): string => remapChannel(channelId, remote, local);
+        switch (msg.type) {
+            case "WELCOME":
+                return { ...msg, channels: msg.channels.map(map) };
+            case "EVENT":
+                return {
+                    ...msg,
+                    channelId: map(msg.channelId),
+                    event: { ...msg.event, channelId: map(msg.event.channelId) },
+                };
+            case "EVENTS_BATCH":
+                return {
+                    ...msg,
+                    channelId: map(msg.channelId),
+                    events: msg.events.map((se) => ({
+                        ...se,
+                        event: { ...se.event, channelId: map(se.event.channelId) },
+                    })),
+                };
+            case "ACK":
+                return { ...msg, channelId: map(msg.channelId) };
+            case "ERROR":
+                return msg.channelId ? { ...msg, channelId: map(msg.channelId) } : msg;
+            default:
+                return msg;
         }
     }
 
@@ -867,7 +1110,7 @@ export class VestaConnection {
         if (!this.socket || this.socket.readyState !== 1 /* OPEN */) {
             throw new Error("Not connected");
         }
-        this.socket.send(JSON.stringify(msg));
+        this.socket.send(JSON.stringify(this.mapOutbound(msg)));
     }
 
     private emit<K extends EventKey>(
@@ -925,10 +1168,42 @@ export class VestaConnection {
             const attempts: RelayAttempt[] = this.relayCandidates
                 .filter((url) => this.lastAttempts.has(url))
                 .map((url) => ({ relay: url, reason: this.lastAttempts.get(url)! }));
-            this.emit("relaysExhausted", {
+            const info: RelaysExhaustedInfo = {
                 attempts,
                 passes: Math.floor(this.consecutiveFailures / this.relayCandidates.length),
-            });
+            };
+            this.emit("relaysExhausted", info);
+            void this.maybeShowPicker(info);
+        }
+    }
+
+    /** Prompt the user (once per outage) to pick another relay, using the platform's built-in picker. */
+    private async maybeShowPicker(info: RelaysExhaustedInfo): Promise<void> {
+        if (!relayPickerEnabled || this.disposed || this.pickerShown) return;
+        const directory: RelayDirectory | undefined = this.relayDirectory;
+        if (!directory) return;
+        this.pickerShown = true;
+        try {
+            if (relayPickerFactory) {
+                this.picker ??= relayPickerFactory(this, directory.config);
+                await this.picker.show(info);
+                return;
+            }
+            if (!this.overlayDispose) {
+                const session = new RelayRecoverySession(this);
+                const dispose: (() => void) | null = mountRelayPickerOverlay(session);
+                if (!dispose) {
+                    session.dispose();
+                    return;
+                }
+                this.overlayDispose = (): void => {
+                    dispose();
+                    session.dispose();
+                };
+                session.reportExhausted(info);
+            }
+        } catch {
+            // A picker failure must never disturb reconnecting.
         }
     }
 

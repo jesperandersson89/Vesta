@@ -11,6 +11,9 @@
  *
  * Run:  npx tsx src/main.ts [ws://host:port/ws] [room-name]
  * Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
+ *
+ * If every relay is unreachable, the SDK opens its own relay picker (a loopback browser
+ * page) automatically — no app UI needed. The choice is remembered under ~/.vesta/relays/.
  */
 
 import { createInterface } from "node:readline";
@@ -117,17 +120,21 @@ function renderUI(
     channel: string,
     localClipboard: string,
     limitNotice: string | null,
+    relayProblem: string | null,
 ): void {
     clearScreen();
 
     const status = connected
         ? `${GREEN}●${RESET} Connected to ${serverUrl}`
-        : `${YELLOW}○${RESET} Disconnected — retrying…`;
+        : `${YELLOW}○${RESET} Disconnected from ${serverUrl} — retrying…`;
 
     console.log(
         `${BOLD}Vesta Shared Clipboard${RESET}  ${DIM}[${channel}]${RESET}`,
     );
     console.log(status);
+    if (!connected && relayProblem) {
+        console.log(`${RED}  Can't reach relay: ${relayProblem}${RESET}`);
+    }
     console.log(`${DIM}${"─".repeat(60)}${RESET}`);
     console.log();
 
@@ -242,6 +249,7 @@ async function main(): Promise<void> {
     state.applyLocal(initialSelf);
 
     let lastLimitNotice: string | null = null;
+    let relayProblem: string | null = null;
 
     function redraw(): void {
         renderUI(
@@ -252,6 +260,7 @@ async function main(): Promise<void> {
             channel,
             lastClipboard,
             lastLimitNotice,
+            relayProblem,
         );
     }
 
@@ -266,7 +275,13 @@ async function main(): Promise<void> {
         relayDirectory,
     });
 
+    connection.on("relayAttemptFailed", (attempt) => {
+        relayProblem = `${attempt.relay} (${attempt.reason})`;
+        redraw();
+    });
+
     connection.on("connected", () => {
+        relayProblem = null;
         if (lastClipboard) {
             connection.publish(
                 createEvent(
@@ -322,6 +337,14 @@ async function main(): Promise<void> {
 
     connection.connect();
     redraw();
+
+    if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on("data", (chunk: Buffer) => {
+            if (chunk.toString() === "\u0003") process.emit("SIGINT");
+        });
+    }
 
     // ── Clipboard polling ────────────────────────────────────────────────────
     setInterval(async () => {

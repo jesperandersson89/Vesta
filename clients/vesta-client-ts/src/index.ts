@@ -4,7 +4,7 @@ export type {
     VestaConnectionOptions,
     VestaSocket,
 } from "./connection.js";
-export { VestaConnection } from "./connection.js";
+export { remapChannel, setRelayPickerEnabled, VestaConnection } from "./connection.js";
 export { createEvent } from "./events.js";
 export { loadOrCreateIdentity, VestaIdentity } from "./identity.js";
 export type { SerializedIdentity } from "./identity.js";
@@ -63,6 +63,7 @@ export {
     LocalStoragePeerCacheStore,
     LocalStorageRelayOverrideStore,
     manifestChannelFor,
+    parseRelayOverride,
     RELAY_MANIFEST_EVENT_TYPE,
     RelayDirectory,
     resolveRelayCandidates,
@@ -76,12 +77,15 @@ export type {
     RelayAttempt,
     RelayEndpoint,
     RelayManifest,
+    RelayOverride,
     RelayOverrideStore,
     RelaysExhaustedInfo,
     VestaAppConfig,
 } from "./relay.js";
 export { RelayRecoverySession } from "./relay-recovery.js";
 export type {
+    RelayAdoptOptions,
+    RelayAdoptResult,
     RelayChoice,
     RelayRecoveryHost,
     RelayRecoveryPhase,
@@ -89,11 +93,10 @@ export type {
 } from "./relay-recovery.js";
 export {
     defineRelayPicker,
-    runConsoleRelayPicker,
+    mountRelayPickerOverlay,
     UNVERIFIED_RELAY_WARNING,
     VestaRelayPickerElement,
 } from "./relay-picker.js";
-export type { ConsoleRelayPickerIO } from "./relay-picker.js";
 export {
     base64UrlToBytes,
     bytesToBase64Url,

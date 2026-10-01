@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,9 +21,12 @@ from vesta_client.relay import (
     RelayAttempt,
     RelayDirectory,
     RelayManifest,
+    RelayOverride,
     RelaysExhaustedError,
     RelaysExhaustedInfo,
 )
+from vesta_client.relay_recovery import RelayAdoptResult
+from vesta_client.signing import sign_event
 from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
     AckMessage,
@@ -37,6 +41,53 @@ from vesta_client.types import (
 )
 
 logger = logging.getLogger("vesta_client")
+
+# Error codes meaning "the relay does not accept this app namespace".
+NAMESPACE_ERROR_CODES = frozenset(
+    {
+        "APP_NOT_ALLOWED",
+        "UNKNOWN_APP",
+        "INVALID_APP",
+        "APPS_NOT_SUPPORTED",
+        "INVALID_CHANNEL",
+        "ACCESS_DENIED",
+    }
+)
+RELAY_ADOPT_PROBATION = 1.5  # seconds
+NIL_EVENT_ID = "00000000-0000-0000-0000-000000000000"
+
+# ── Built-in relay picker wiring ─────────────────────────────────────────────
+# The picker is part of the connection: when every relay is exhausted the connection prompts
+# the user itself via a loopback web page. No app wiring is required.
+
+_relay_picker_factory: Callable[["VestaConnection", Any], Any] | None = None
+_relay_picker_enabled: bool = True
+
+
+def set_relay_picker_factory(factory: Callable[["VestaConnection", Any], Any] | None) -> None:
+    """Override the built-in picker (mainly for tests)."""
+    global _relay_picker_factory
+    _relay_picker_factory = factory
+
+
+def set_relay_picker_enabled(enabled: bool) -> None:
+    """Enable or disable the built-in relay picker globally (on by default). Mainly for tests."""
+    global _relay_picker_enabled
+    _relay_picker_enabled = enabled
+
+
+def remap_channel(channel_id: str, from_ns: str | None, to_ns: str | None) -> str:
+    """Rewrite a channel id's namespace segment, e.g. ``myapp/x`` -> ``theirs/x``."""
+    if not from_ns or not to_ns or from_ns == to_ns:
+        return channel_id
+    if channel_id.startswith("vesta/"):
+        return channel_id
+    if channel_id == from_ns:
+        return to_ns
+    prefix = f"{from_ns}/"
+    if channel_id.startswith(prefix):
+        return to_ns + channel_id[len(from_ns):]
+    return channel_id
 
 
 class VestaConnection:
@@ -113,6 +164,17 @@ class VestaConnection:
         self._on_relay_switched: Callable[[str], None] | None = None
         self._on_manifest_applied: Callable[[RelayManifest], None] | None = None
         self._on_relays_exhausted: Callable[[RelaysExhaustedInfo], None] | None = None
+
+        # Relay namespace remapping (active relay override with a different app namespace).
+        self._remote_app_id: str | None = None
+        self._register_on_connect: bool = False
+        self._namespace_confirmed: bool = False
+        self._registration: asyncio.Future[None] | None = None
+        self._probation_fail: Callable[[str], None] | None = None
+
+        # Built-in relay picker.
+        self._picker: Any | None = None
+        self._picker_shown: bool = False
 
     @property
     def is_connected(self) -> bool:
@@ -235,21 +297,6 @@ class VestaConnection:
         await self.disconnect()
         await self.connect()
 
-    def set_user_relay_override(self, url: str) -> None:
-        """Persist a user-chosen relay override (the local escape hatch) and refresh the
-        candidate list to prefer it. Requires a :class:`RelayDirectory` to have been attached."""
-        if self._relay_directory is None:
-            raise RuntimeError("No relay_directory attached — cannot set a relay override.")
-        self._relay_directory.set_user_override(url)
-        self.update_relay_candidates(self._relay_directory.resolve_candidates())
-
-    def clear_user_relay_override(self) -> None:
-        """Clear the user relay override and fall back to manifest / default relays."""
-        if self._relay_directory is None:
-            raise RuntimeError("No relay_directory attached — cannot clear a relay override.")
-        self._relay_directory.clear_user_override()
-        self.update_relay_candidates(self._relay_directory.resolve_candidates())
-
     async def reconnect(self) -> bool:
         """
         Connect again right now, walking the candidate list once. Returns True once connected,
@@ -265,26 +312,68 @@ class VestaConnection:
             self._schedule_reconnect()
         return connected
 
-    async def adopt_relay(self, url: str) -> bool:
+    async def adopt_relay(self, override: RelayOverride) -> RelayAdoptResult:
         """
-        Persist ``url`` as the user's relay override (the escape hatch that always wins locally)
-        and connect to it now. Returns True if it connected. Requires a :class:`RelayDirectory`.
+        Move to the relay (and app namespace) the user chose. The override is applied
+        provisionally: it is only persisted once the relay is reachable and stays free of
+        namespace errors for a short probation; otherwise the previous state is restored and
+        the reason is returned. Requires an attached :class:`RelayDirectory`.
         """
-        if self._relay_directory is None:
+        directory: RelayDirectory | None = self._relay_directory
+        if directory is None:
             raise RuntimeError("No relay_directory attached — cannot set a relay override.")
-        if self._disposed:
-            return False
-        self._relay_directory.set_user_override(url)
-        self.update_relay_candidates(self._relay_directory.resolve_candidates())
-        self._active_relay_index = (
-            self._relay_candidates.index(url) if url in self._relay_candidates else 0
-        )
-        self._cancel_reconnect()
-        await self.disconnect()
-        connected: bool = await self._try_connect_candidates(limit=1)
-        if not connected:
-            self._schedule_reconnect()
-        return connected
+
+        probation_reason: str | None = None
+        failure_event: asyncio.Event = asyncio.Event()
+
+        def _fail(reason: str) -> None:
+            nonlocal probation_reason
+            if probation_reason is not None:
+                return
+            probation_reason = reason
+            failure_event.set()
+
+        self._probation_fail = _fail
+        self._namespace_confirmed = False
+
+        try:
+            directory.set_user_override(override, False)
+            self.update_relay_candidates(directory.resolve_candidates())
+            self._active_relay_index = (
+                self._relay_candidates.index(override.relay)
+                if override.relay in self._relay_candidates
+                else 0
+            )
+            self._cancel_reconnect()
+            await self.disconnect()
+            connected: bool = await self._try_connect_candidates(limit=1)
+            on_target: bool = connected and self.active_relay == override.relay
+
+            reason: str | None
+            if on_target:
+                if probation_reason is None and not self._namespace_confirmed:
+                    try:
+                        await asyncio.wait_for(failure_event.wait(), timeout=RELAY_ADOPT_PROBATION)
+                    except asyncio.TimeoutError:
+                        pass
+                if probation_reason is None:
+                    directory.commit_pending_override()
+                    return RelayAdoptResult(True, None)
+                reason = probation_reason
+            else:
+                reason = self._last_attempts.get(override.relay) or "Could not connect"
+
+            directory.discard_pending_override()
+            self.update_relay_candidates(directory.resolve_candidates())
+            if on_target and not self._disposed:
+                self._active_relay_index = 0
+                await self.disconnect()
+                restored: bool = await self._try_connect_candidates()
+                if not restored:
+                    self._schedule_reconnect()
+            return RelayAdoptResult(False, reason)
+        finally:
+            self._probation_fail = None
 
     async def clear_relay_override(self) -> bool:
         """Clear the user relay override and reconnect using the freshly resolved candidates."""
@@ -334,19 +423,23 @@ class VestaConnection:
 
     async def _connect_to(self, relay: str) -> None:
         """Open the WebSocket connection to a specific relay and perform the HELLO handshake."""
+        self._resolve_active_namespace(relay)
+        register_first: bool = self._register_on_connect
+
         ws = await websockets.connect(relay)
         self._ws = ws
         try:
-            # Send HELLO
+            # Registering first: greet with no channels so nothing is requested before the
+            # namespace exists.
             hello: dict[str, Any] = {
                 "type": "HELLO",
                 "clientId": self.client_id,
-                "channels": self._channels,
-                "lastSequences": self._last_sequences,
+                "channels": [] if register_first else list(self._channels),
+                "lastSequences": {} if register_first else dict(self._last_sequences),
             }
             if self.public_key:
                 hello["publicKey"] = self.public_key
-            await ws.send(json.dumps(hello))
+            await ws.send(json.dumps(self._map_outbound(hello)))
 
             # Wait for WELCOME
             raw = await ws.recv()
@@ -361,12 +454,19 @@ class VestaConnection:
                 pass
             raise
 
+        msg = self._map_inbound(msg)
+        requested: list[str] = list(self._channels)
+        self._namespace_confirmed = (
+            not register_first and bool(msg.channels) and any(c in requested for c in msg.channels)
+        )
         self._is_connected = True
         self._consecutive_failures = 0
         self._exhaustion_raised = False
         self._last_attempts.clear()
         self._server_id = msg.server_id
-        self._channels = list(msg.channels)
+        if not register_first:
+            self._channels = list(msg.channels)
+        self._picker_shown = False
         self._reconnect_attempt = 0
         was_reconnect = self._has_reached_welcome_once
         self._has_reached_welcome_once = True
@@ -381,8 +481,18 @@ class VestaConnection:
         # Start receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
 
+        if register_first:
+            task: asyncio.Task = asyncio.create_task(self._register_then_subscribe())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            if self._relay_directory is not None and self._relay_directory.peer_cache is not None:
+                peer_task: asyncio.Task = asyncio.create_task(self._refresh_peer_cache(relay))
+                self._background_tasks.add(peer_task)
+                peer_task.add_done_callback(self._background_tasks.discard)
+            return
+
         if self._relay_directory is not None and self._relay_directory.peer_cache is not None:
-            task: asyncio.Task = asyncio.create_task(self._refresh_peer_cache(relay))
+            task = asyncio.create_task(self._refresh_peer_cache(relay))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
@@ -396,6 +506,132 @@ class VestaConnection:
         # Flush any pending outbox events
         if self._local_store is not None:
             await self._flush_outbox()
+
+    async def _register_then_subscribe(self) -> None:
+        """After a register-first handshake: claim the namespace, then subscribe and flush as usual."""
+        app_id: str | None = self._remote_app_id or (
+            self._relay_directory.config.app_id if self._relay_directory else None
+        )
+        try:
+            if not app_id:
+                raise RuntimeError("No app id to register")
+            loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+            future: asyncio.Future[None] = loop.create_future()
+            self._registration = future
+            await self._send_mapped({"type": "REGISTER_APP", "appId": app_id})
+            await future
+        except Exception as error:
+            reason: str = str(error) or type(error).__name__
+            self._registration = None
+            if self._probation_fail is not None:
+                self._probation_fail(reason)
+            elif self._on_error:
+                self._on_error(ErrorMessage(code="REGISTER_APP_FAILED", message=reason))
+            return
+        self._registration = None
+        try:
+            for channel_id in self._channels:
+                last: int = self._last_sequences.get(channel_id, 0)
+                await self._send_mapped(
+                    {"type": "SUBSCRIBE", "channelId": channel_id, "fromSequence": last + 1}
+                )
+            if (
+                self._relay_directory is not None
+                and self._relay_directory.manifest_channel not in self._channels
+            ):
+                await self._send_mapped(
+                    {
+                        "type": "SUBSCRIBE",
+                        "channelId": self._relay_directory.manifest_channel,
+                        "fromSequence": 0,
+                    }
+                )
+            self._namespace_confirmed = True
+            if self._local_store is not None:
+                await self._flush_outbox()
+        except Exception:
+            # Socket dropped mid-setup; the next connect repeats the handshake.
+            pass
+
+    def _resolve_active_namespace(self, candidate: str) -> None:
+        """Decide which app namespace (if any) applies to ``candidate``, from the active override."""
+        local_app_id: str | None = self._relay_directory.config.app_id if self._relay_directory else None
+        active: RelayOverride | None = (
+            self._relay_directory.active_override if self._relay_directory else None
+        )
+        applies: bool = active is not None and active.relay == candidate
+        ns: str | None = active.app_id if applies and active is not None else None
+        self._remote_app_id = None if not ns or ns == local_app_id else ns
+        self._register_on_connect = applies and bool(active is not None and active.register_app)
+
+    def _map_outbound(self, msg: dict[str, Any]) -> dict[str, Any]:
+        remote: str | None = self._remote_app_id
+        local: str | None = self._relay_directory.config.app_id if self._relay_directory else None
+        if not remote or not local:
+            return msg
+
+        def map_id(channel_id: str) -> str:
+            return remap_channel(channel_id, local, remote)
+
+        msg_type: Any = msg.get("type")
+        if msg_type == "HELLO":
+            last_sequences = {map_id(k): v for k, v in msg.get("lastSequences", {}).items()}
+            return {
+                **msg,
+                "channels": [map_id(c) for c in msg.get("channels", [])],
+                "lastSequences": last_sequences,
+            }
+        if msg_type == "PUBLISH":
+            channel_id: str = map_id(msg["channelId"])
+            event: dict[str, Any] = msg["event"]
+            if channel_id == event.get("channelId"):
+                return {**msg, "channelId": channel_id}
+            new_event: dict[str, Any] = {**event, "channelId": channel_id}
+            new_event.pop("signature", None)
+            if self._identity is not None:
+                signed: VestaEvent = sign_event(VestaEvent.from_dict(new_event), self._identity)
+                new_event = signed.to_dict()
+            return {**msg, "channelId": channel_id, "event": new_event}
+        if msg_type in ("SUBSCRIBE", "UNSUBSCRIBE", "FETCH", "CREATE_CHANNEL", "GRANT_ACCESS", "DELETE_CHANNEL"):
+            return {**msg, "channelId": map_id(msg["channelId"])}
+        return msg
+
+    def _map_inbound(self, msg: ServerMessage) -> ServerMessage:
+        remote: str | None = self._remote_app_id
+        local: str | None = self._relay_directory.config.app_id if self._relay_directory else None
+        if not remote or not local:
+            return msg
+
+        def map_id(channel_id: str) -> str:
+            return remap_channel(channel_id, remote, local)
+
+        if isinstance(msg, WelcomeMessage):
+            return replace(msg, channels=[map_id(c) for c in msg.channels])
+        if isinstance(msg, EventMessage):
+            return replace(
+                msg,
+                channel_id=map_id(msg.channel_id),
+                event=replace(msg.event, channel_id=map_id(msg.event.channel_id)),
+            )
+        if isinstance(msg, EventsBatchMessage):
+            return replace(
+                msg,
+                channel_id=map_id(msg.channel_id),
+                events=[
+                    replace(se, event=replace(se.event, channel_id=map_id(se.event.channel_id)))
+                    for se in msg.events
+                ],
+            )
+        if isinstance(msg, AckMessage):
+            return replace(msg, channel_id=map_id(msg.channel_id))
+        if isinstance(msg, ErrorMessage) and msg.channel_id:
+            return replace(msg, channel_id=map_id(msg.channel_id))
+        return msg
+
+    async def _send_mapped(self, msg: dict[str, Any]) -> None:
+        if not self._ws:
+            raise RuntimeError("Not connected")
+        await self._ws.send(json.dumps(self._map_outbound(msg)))
 
     async def disconnect(self) -> None:
         """Gracefully close the connection."""
@@ -420,6 +656,9 @@ class VestaConnection:
         self.auto_reconnect = False
         self._cancel_reconnect()
         await self.disconnect()
+        if self._picker is not None:
+            self._picker.dispose()
+            self._picker = None
 
     # ── Publishing ────────────────────────────────────────────────────────────
 
@@ -440,7 +679,7 @@ class VestaConnection:
                 "channelId": event.channel_id,
                 "event": event.to_dict(),
             }
-            await self._ws.send(json.dumps(msg))
+            await self._send_mapped(msg)
             return
 
         if self._local_store is not None:
@@ -680,13 +919,13 @@ class VestaConnection:
     async def _send(self, msg: dict[str, Any]) -> None:
         if not self._ws or not self._is_connected:
             raise RuntimeError("Not connected")
-        await self._ws.send(json.dumps(msg))
+        await self._send_mapped(msg)
 
     async def _receive_loop(self) -> None:
         try:
             async for raw in self._ws:  # type: ignore[union-attr]
                 data = json.loads(raw)
-                msg = parse_server_message(data)
+                msg = self._map_inbound(parse_server_message(data))
                 self._dispatch(msg)
         except websockets.ConnectionClosed:
             pass
@@ -747,6 +986,30 @@ class VestaConnection:
             if self._on_relays_exhausted:
                 self._on_relays_exhausted(info)
             self._emit("relays_exhausted", info)
+            task: asyncio.Task = asyncio.create_task(self._maybe_show_picker(info))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+    async def _maybe_show_picker(self, info: RelaysExhaustedInfo) -> None:
+        """Prompt the user (once per outage) to pick another relay, via the built-in picker."""
+        if not _relay_picker_enabled or self._disposed or self._picker_shown:
+            return
+        directory: RelayDirectory | None = self._relay_directory
+        if directory is None:
+            return
+        self._picker_shown = True
+        try:
+            factory = _relay_picker_factory
+            if factory is None:
+                from vesta_client.relay_picker import WebRelayPicker
+
+                factory = lambda host, config: WebRelayPicker(host, config)  # noqa: E731
+            if self._picker is None:
+                self._picker = factory(self, directory.config)
+            await self._picker.show(info)
+        except Exception:
+            # A picker failure must never disturb reconnecting.
+            logger.debug("Relay picker failed", exc_info=True)
 
     async def _refresh_peer_cache(self, relay: str) -> None:
         # Best-effort: remember verified federation peers so recovery has hints if every relay dies.
@@ -797,12 +1060,25 @@ class VestaConnection:
                 if self._on_events_batch:
                     self._on_events_batch(m)
             case AckMessage() as m:
+                if m.event_id == NIL_EVENT_ID:
+                    # Registration acknowledgement, not an event.
+                    if self._registration is not None and not self._registration.done():
+                        self._registration.set_result(None)
+                    return
                 self.update_sequence(m.channel_id, m.sequence)
                 if self._local_store is not None:
                     asyncio.create_task(self._cache_event_on_ack(m))
                 if self._on_ack:
                     self._on_ack(m)
             case ErrorMessage() as m:
+                if self._registration is not None and not self._registration.done():
+                    if m.code == "DUPLICATE_APP":
+                        self._registration.set_result(None)
+                    else:
+                        self._registration.set_exception(RuntimeError(f"{m.code}: {m.message}"))
+                    return
+                if self._probation_fail is not None and m.code in NAMESPACE_ERROR_CODES:
+                    self._probation_fail(f"{m.code}: {m.message}")
                 if self._on_error:
                     self._on_error(m)
                 self._handle_possible_limit(m)
@@ -863,14 +1139,12 @@ class VestaConnection:
         for entry in pending:
             self._pending_publishes[entry.event.id] = entry.event
             try:
-                await self._ws.send(
-                    json.dumps(
-                        {
-                            "type": "PUBLISH",
-                            "channelId": entry.event.channel_id,
-                            "event": entry.event.to_dict(),
-                        }
-                    )
+                await self._send_mapped(
+                    {
+                        "type": "PUBLISH",
+                        "channelId": entry.event.channel_id,
+                        "event": entry.event.to_dict(),
+                    }
                 )
                 await self._local_store.mark_outbox_sent(entry.event.id)
             except Exception:

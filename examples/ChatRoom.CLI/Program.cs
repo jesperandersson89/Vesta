@@ -299,19 +299,6 @@ connection.OnReconnected += () =>
     _ = PublishJoinAsync();
 };
 
-// Headless recovery state machine; ConsoleRelayPicker is one view over it.
-using RelayRecoverySession recovery = new(connection);
-
-connection.OnRelaysExhausted += (RelaysExhaustedInfo info) =>
-{
-    PrintAboveInput(() =>
-    {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"  [NO RELAY] Can't reach any relay after {info.Passes} passes. Type /relay to pick another one.");
-        Console.ResetColor();
-    });
-};
-
 async Task PublishJoinAsync()
 {
     JsonElement joinPayload = JsonDocument.Parse(
@@ -367,22 +354,12 @@ try
 }
 catch (RelaysExhaustedException ex)
 {
-    // Nothing reachable on the first try: offer the relay picker instead of silently going offline.
+    // The SDK opens its own relay picker (a local web page) when no relay is reachable.
     Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine("Failed to connect to any relay.");
+    Console.WriteLine($"Failed to connect to any relay ({ex.Info.Attempts.Count} tried).");
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine("Running in offline mode — will try to reconnect on next message.\n");
     Console.ResetColor();
-    recovery.ReportExhausted(ex.Info);
-    isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
-    if (isConnected)
-    {
-        await PublishJoinAsync();
-    }
-    else
-    {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("Running in offline mode — will try to reconnect on next message.\n");
-        Console.ResetColor();
-    }
 }
 catch (Exception ex)
 {
@@ -407,8 +384,6 @@ async Task HandleCommandAsync(string input)
                 Console.ForegroundColor = ConsoleColor.DarkCyan;
                 Console.WriteLine("  Commands:");
                 Console.WriteLine("    /relays                            show the current relay candidate list");
-                Console.WriteLine("    /relay                             open the relay picker (retry, discover, enter a URL)");
-                Console.WriteLine("    /relay use <ws-url>                set a local relay override and switch to it");
                 Console.WriteLine("    /relay clear                       clear the local override (back to manifest/defaults)");
                 Console.WriteLine("    /discover                          find OTHER relays that host this app (federation)");
                 Console.WriteLine("    /discover all                      browse every relay the current relay knows about");
@@ -450,29 +425,12 @@ async Task HandleCommandAsync(string input)
                     Console.ResetColor();
                 });
             }
-            else if (parts.Length >= 3 && parts[1].Equals("use", StringComparison.OrdinalIgnoreCase)
-                && Uri.TryCreate(parts[2], UriKind.Absolute, out Uri? relayUri))
-            {
-                bool ok = await connection.SetUserRelayOverrideAsync(relayUri);
-                PrintAboveInput(() =>
-                {
-                    Console.ForegroundColor = ConsoleColor.DarkCyan;
-                    Console.WriteLine(ok
-                        ? $"  Override set — now using {relayUri}."
-                        : $"  Override saved, but could not connect to {relayUri}.");
-                    Console.ResetColor();
-                });
-            }
-            else if (parts.Length == 1)
-            {
-                isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
-            }
             else
             {
                 PrintAboveInput(() =>
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("  Usage: /relay | /relay use <ws-url> | /relay clear");
+                    Console.WriteLine("  Usage: /relay clear");
                     Console.ResetColor();
                 });
             }
@@ -568,8 +526,10 @@ async Task PublishManifestAsync(string[] parts)
 // recovery path for when your home relay is dying but the owner never published a fresh
 // manifest: relays gossip signed self-descriptors, so any one of them can point you at peers.
 // Discovered relays are SHOW-ONLY — we verify each descriptor's signature and that the
-// advertised owner matches this app's trust anchor, but the user still adopts one manually
-// with `/relay use <ws-url>` (owner-signed manifests stay the only automatic failover tier).
+// advertised owner matches this app's trust anchor. The user doesn't adopt one directly here;
+// owner-signed manifests stay the only automatic failover tier, and if those are ever exhausted
+// the SDK's built-in relay-recovery picker (docs/relay-recovery.md) opens with these same
+// discovered relays as candidates.
 async Task DiscoverRelaysAsync(string[] parts)
 {
     bool browseAll = parts.Length >= 2 && parts[1].Equals("all", StringComparison.OrdinalIgnoreCase);
@@ -604,8 +564,8 @@ async Task DiscoverRelaysAsync(string[] parts)
         else
         {
             Console.WriteLine(browseAll
-                ? $"  Relays known to the mesh ({found.Count}) — adopt one with /relay use <ws-url>:"
-                : $"  Relays hosting '{appId}' ({found.Count}) — adopt one with /relay use <ws-url>:");
+                ? $"  Relays known to the mesh ({found.Count}):"
+                : $"  Relays hosting '{appId}' ({found.Count}):");
             foreach (DiscoveredRelay r in found)
             {
                 string flag = r.HostsRequestedApp ? "hosts app" : "unknown";

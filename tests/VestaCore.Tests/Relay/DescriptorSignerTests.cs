@@ -114,4 +114,26 @@ public class DescriptorSignerTests
         Assert.False(descriptor.IsExpired(within));
         Assert.True(descriptor.IsExpired(after));
     }
+
+    [Fact]
+    public void Verify_WithAcceptsUnregisteredApps_TrueAndFlagIsSigned()
+    {
+        using VestaIdentity relay = VestaIdentity.Generate();
+        ServerDescriptor signed = DescriptorSigner.Sign(CreateDescriptor() with { AcceptsUnregisteredApps = true }, relay);
+
+        Assert.True(DescriptorSigner.Verify(signed));
+        Assert.False(DescriptorSigner.Verify(signed with { AcceptsUnregisteredApps = false }));
+        Assert.False(DescriptorSigner.Verify(signed with { AcceptsUnregisteredApps = null }));
+    }
+
+    [Fact]
+    public void Verify_WithoutAcceptsUnregisteredApps_LegacyDescriptorStillVerifies()
+    {
+        using VestaIdentity relay = VestaIdentity.Generate();
+        ServerDescriptor signed = DescriptorSigner.Sign(CreateDescriptor(), relay);
+
+        Assert.Null(signed.AcceptsUnregisteredApps);
+        Assert.True(DescriptorSigner.Verify(signed));
+        Assert.False(DescriptorSigner.Verify(signed with { AcceptsUnregisteredApps = true }));
+    }
 }

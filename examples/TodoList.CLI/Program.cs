@@ -184,17 +184,6 @@ connection.OnReconnected += () =>
     PrintPrompt();
 };
 
-// Headless recovery state machine; ConsoleRelayPicker is one view over it.
-using RelayRecoverySession recovery = new(connection);
-
-connection.OnRelaysExhausted += (RelaysExhaustedInfo info) =>
-{
-    Console.ForegroundColor = ConsoleColor.Yellow;
-    Console.WriteLine($"\n  [NO RELAY] Can't reach any relay after {info.Passes} passes. Type 'relay' to pick another one.");
-    Console.ResetColor();
-    PrintPrompt();
-};
-
 connection.OnLimited += (VestaLimitNotice notice) =>
 {
     Console.ForegroundColor = ConsoleColor.Red;
@@ -219,18 +208,11 @@ try
 }
 catch (RelaysExhaustedException ex)
 {
-    // Nothing reachable on the first try: offer the relay picker instead of silently going offline.
+    // The SDK opens its own relay picker (a local web page) when no relay is reachable.
     Console.ForegroundColor = ConsoleColor.Yellow;
-    Console.WriteLine("Could not connect to any relay.");
+    Console.WriteLine($"Could not connect to any relay ({ex.Info.Attempts.Count} tried).");
+    Console.WriteLine("Running in offline mode — changes will sync when server is available.");
     Console.ResetColor();
-    recovery.ReportExhausted(ex.Info);
-    isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
-    if (!isConnected)
-    {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("Running in offline mode — changes will sync when server is available.");
-        Console.ResetColor();
-    }
 }
 catch (Exception ex)
 {
@@ -292,10 +274,6 @@ while (true)
 
         case "help" or "?":
             PrintHelp();
-            break;
-
-        case "relay" or "/relay":
-            isConnected = await ConsoleRelayPicker.RunAsync(recovery, Console.In, Console.Out);
             break;
 
         case "/pair":
@@ -674,7 +652,6 @@ void PrintHelp()
     Console.WriteLine("    /join <code>         Join a device group using a pairing code from another device");
     Console.WriteLine("    /link <public-key>   Vouch for a device that ran /join (run on an already-paired device)");
     Console.WriteLine("    /devices             List devices trusted as members of this account's device group");
-    Console.WriteLine("    relay                Pick a different relay when the current one is unreachable");
     Console.WriteLine("    help                 Show this help");
     Console.WriteLine("    quit                 Exit");
     Console.ResetColor();

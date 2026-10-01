@@ -2,7 +2,11 @@
 
 __version__ = "0.1.4"
 
-from vesta_client.connection import VestaConnection
+from vesta_client.connection import (
+    VestaConnection,
+    set_relay_picker_enabled,
+    set_relay_picker_factory,
+)
 from vesta_client.events import create_event
 from vesta_client.federation import (
     DiscoverableApp,
@@ -71,21 +75,26 @@ from vesta_client.relay import (
     RelayDirectory,
     RelayEndpoint,
     RelayManifest,
+    RelayOverride,
     RelayOverrideStore,
     RelaysExhaustedError,
     RelaysExhaustedInfo,
     VestaAppConfig,
     build_manifest_signing_input,
     manifest_channel_for,
+    parse_relay_override,
     resolve_relay_candidates,
     sign_manifest,
     verify_manifest,
 )
-from vesta_client.relay_picker import UNVERIFIED_RELAY_WARNING, run_console_relay_picker
+from vesta_client.relay_picker import PickerLauncher, WebRelayPicker, open_system_browser
 from vesta_client.relay_recovery import (
+    RelayAdoptOptions,
+    RelayAdoptResult,
     RelayChoice,
     RelayRecoverySession,
     RelayRecoverySnapshot,
+    is_valid_app_id,
     normalize_relay_url,
 )
 from vesta_client.signing import build_signing_input, sign_event
@@ -142,23 +151,31 @@ __all__ = [
     "PROTOCOL_CHANNEL_PREFIX",
     "PairingPayload",
     "PeerCacheStore",
+    "PickerLauncher",
     "ProjectionCheckpoint",
     "ProjectionSnapshot",
     "ProjectionStore",
     "RELAY_MANIFEST_EVENT_TYPE",
+    "RelayAdoptOptions",
+    "RelayAdoptResult",
     "RelayAttempt",
     "RelayChoice",
     "RelayDirectory",
     "RelayEndpoint",
     "RelayManifest",
+    "RelayOverride",
     "RelayOverrideStore",
     "RelayRecoverySession",
     "RelayRecoverySnapshot",
     "RelaysExhaustedError",
     "RelaysExhaustedInfo",
-    "UNVERIFIED_RELAY_WARNING",
+    "WebRelayPicker",
+    "is_valid_app_id",
     "normalize_relay_url",
-    "run_console_relay_picker",
+    "open_system_browser",
+    "parse_relay_override",
+    "set_relay_picker_enabled",
+    "set_relay_picker_factory",
     "SequencedEvent",
     "ServerDescriptor",
     "ServerMessage",

@@ -53,10 +53,11 @@ Type a message and press Enter to send it. Slash commands:
 | --- | --- |
 | `/help` | List commands |
 | `/relays` | Show the current relay candidate list and adopted manifest |
-| `/relay` | Open the relay picker (retry, discover other relays, enter a URL). Also opens automatically when no relay is reachable at startup |
-| `/relay use <ws-url>` | Set a local relay override and switch to it |
-| `/relay clear` | Clear the local override |
+| `/relay clear` | Clear the local relay override (back to manifest/defaults) |
 | `/discover` | Find other relays hosting this app (federation) |
 | `/discover all` | Browse every relay the current relay knows about |
 | `/publish-manifest <url> [url...]` | Sign & publish an owner relay manifest |
 | `/register` | Register this app id with the relay (see `--register` above) |
+
+If no relay is reachable, the SDK opens its own relay picker (a local web page) automatically —
+there's no in-app command for it.

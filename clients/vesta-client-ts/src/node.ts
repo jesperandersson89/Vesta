@@ -15,8 +15,23 @@ import type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 import type { SequencedEvent, VestaEvent } from "./types.js";
 import type { ProjectionSnapshot } from "./projections/index.js";
 import type { ProjectionStore } from "./projection-store.js";
-import type { ManifestStore, PeerCacheStore, RelayManifest, RelayOverrideStore } from "./relay.js";
+import { parseRelayOverride } from "./relay.js";
+import type {
+    ManifestStore,
+    PeerCacheStore,
+    RelayManifest,
+    RelayOverride,
+    RelayOverrideStore,
+} from "./relay.js";
 import type { DiscoveredRelay } from "./federation.js";
+import { setRelayPickerFactory } from "./connection.js";
+import { NodeWebRelayPicker } from "./node-relay-picker.js";
+
+export { NodeWebRelayPicker, openSystemBrowser } from "./node-relay-picker.js";
+export type { PickerLauncher } from "./node-relay-picker.js";
+
+// Importing the Node entry point wires the built-in loopback web picker into every VestaConnection.
+setRelayPickerFactory((host, config) => new NodeWebRelayPicker(host, config));
 
 function ensureDirFor(path: string): void {
     mkdirSync(dirname(path), { recursive: true });
@@ -47,12 +62,16 @@ export function defaultVestaDir(): string {
 export class FileRelayOverrideStore implements RelayOverrideStore {
     constructor(private readonly path: string) {}
 
-    getOverride(): string | null {
-        return readJson<{ url: string }>(this.path)?.url ?? null;
+    getOverride(): RelayOverride | null {
+        return parseRelayOverride(readJson<unknown>(this.path));
     }
 
-    setOverride(url: string): void {
-        writeJson(this.path, { url });
+    setOverride(override: RelayOverride): void {
+        writeJson(this.path, {
+            relay: override.relay,
+            appId: override.appId ?? null,
+            registerApp: override.registerApp ?? false,
+        });
     }
 
     clearOverride(): void {

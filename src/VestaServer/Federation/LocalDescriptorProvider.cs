@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using VestaCore.Identity;
 using VestaCore.Relay;
 using VestaCore.Utilities;
+using VestaServer.Connections;
 using VestaServer.Storage;
 
 namespace VestaServer.Federation;
@@ -15,9 +16,11 @@ public sealed class LocalDescriptorProvider(
     IAppStore appStore,
     IOptions<DiscoveryOptions> options,
     VestaIdentity relayIdentity,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IOptions<ProtocolOptions>? protocolOptions = null)
 {
     private readonly DiscoveryOptions _options = options.Value;
+    private readonly ProtocolOptions _protocol = protocolOptions?.Value ?? new ProtocolOptions();
 
     /// <summary>The base64url-encoded Ed25519 public key identifying this relay.</summary>
     public string RelayPublicKey { get; } = Base64Url.Encode(relayIdentity.PublicKey);
@@ -35,6 +38,7 @@ public sealed class LocalDescriptorProvider(
             RelayPublicKey = RelayPublicKey,
             Urls = [.. _options.PublicUrls],
             Apps = discoverable,
+            AcceptsUnregisteredApps = !_protocol.RequireAppRegistration && _protocol.AllowedApps.Count == 0,
             IssuedAt = timeProvider.GetUtcNow(),
             TtlSeconds = _options.DescriptorTtlSeconds,
         };

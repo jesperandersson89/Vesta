@@ -1,6 +1,6 @@
 """
-Relay-recovery tests: exhaustion detection on the connection, the headless
-RelayRecoverySession state machine, and the console picker.
+Relay-recovery tests: exhaustion detection on the connection and the headless
+RelayRecoverySession state machine.
 
 Mirrors tests/VestaClient.Tests/RelayRecoveryTests.cs and
 clients/vesta-client-ts/tests/relay-recovery.test.mjs.
@@ -21,8 +21,10 @@ from vesta_client import (
     FilePeerCacheStore,
     InMemoryPeerCacheStore,
     InMemoryRelayOverrideStore,
+    RelayAdoptResult,
     RelayAttempt,
     RelayDirectory,
+    RelayOverride,
     RelayRecoverySession,
     RelaysExhaustedError,
     RelaysExhaustedInfo,
@@ -30,7 +32,6 @@ from vesta_client import (
     VestaConnection,
     VestaIdentity,
     normalize_relay_url,
-    run_console_relay_picker,
 )
 from vesta_client.federation import (
     DiscoverableApp,
@@ -85,9 +86,16 @@ class FakeHost:
     async def reconnect(self) -> bool:
         return self.connect_succeeds
 
-    async def adopt_relay(self, url: str) -> bool:
-        self.adopted.append(url)
-        return self.connect_succeeds
+    @property
+    def active_relay(self) -> str:
+        return self.relays[0]
+
+    async def adopt_relay(self, override: RelayOverride) -> RelayAdoptResult:
+        self.adopted.append(override.relay)
+        return RelayAdoptResult(
+            connected=self.connect_succeeds,
+            failure_reason=None if self.connect_succeeds else "connection refused",
+        )
 
     async def clear_relay_override(self) -> bool:
         return True
@@ -257,22 +265,6 @@ class RelayRecoveryTests(unittest.IsolatedAsyncioTestCase):
         host.emit("reconnected", None)
         self.assertEqual(session.snapshot.phase, "healthy")
         self.assertFalse(session.snapshot.background_retrying)
-
-    async def test_console_picker_declining_unverified_relay_does_not_adopt(self) -> None:
-        session, host = self._session(responses=self._discovery())
-        host.emit("relays_exhausted", _exhausted())
-        await session.discover()
-        stranger: int = [c.url for c in session.snapshot.choices].index("wss://stranger.example/ws") + 1
-        inputs = iter([str(stranger), "n", "q"])
-        output: list[str] = []
-
-        async def read_line() -> str | None:
-            return next(inputs, None)
-
-        recovered = await run_console_relay_picker(session, read_line, output.append)
-        self.assertFalse(recovered)
-        self.assertEqual(host.adopted, [])
-        self.assertIn("not verified", "".join(output))
 
     def test_normalize_relay_url(self) -> None:
         self.assertEqual(normalize_relay_url("https://typed.example"), "wss://typed.example/")

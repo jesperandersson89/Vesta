@@ -82,7 +82,9 @@ The group's `groupId` is cached in `~/.vesta/todo-{credentials-hash}-group.json`
 | `rename <index> <title>` | Rename an item |
 | `remove <index>` / `rm <index>` | Remove an item |
 | `list` / `ls` | Show all items |
-| `relay` | Open the relay picker (retry, discover other relays, enter a URL). Also opens automatically when no relay is reachable at startup |
 | `help` / `?` | Show command help |
 | `quit` / `exit` / `q` | Exit |
 | `/pair`, `/join`, `/link`, `/devices` | Device-group pairing — see above |
+
+If no relay is reachable, the SDK opens its own relay picker (a local web page) automatically —
+there's no in-app command for it.

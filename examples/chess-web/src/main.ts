@@ -17,15 +17,12 @@
 import { Chess, type Square } from "chess.js";
 import {
     createEvent,
-    FederationClient,
     LocalStorageManifestStore,
     LocalStorageRelayOverrideStore,
     RelayDirectory,
     VestaConnection,
-    type DiscoveredRelay,
     type EventMessage,
     type EventsBatchMessage,
-    type RelayManifest,
     type SequencedEvent,
     type VestaAppConfig,
     type VestaLimitNotice,
@@ -84,20 +81,6 @@ const usernameInput = $<HTMLInputElement>("username");
 const connectBtn = $<HTMLButtonElement>("connect-btn");
 const logoutBtn = $<HTMLButtonElement>("logout-btn");
 
-// Relay-independence panel
-const relayPanel = $("relay-panel");
-const relayActiveEl = $("relay-active");
-const relaySelect = $<HTMLSelectElement>("relay-select");
-const relaySwitchBtn = $<HTMLButtonElement>("relay-switch-btn");
-const relayOverrideInput = $<HTMLInputElement>("relay-override");
-const relayOverrideBtn = $<HTMLButtonElement>("relay-override-btn");
-const relayOverrideClearBtn = $<HTMLButtonElement>("relay-override-clear");
-const relayManifestEl = $("relay-manifest");
-const relayDiscoverBtn = $<HTMLButtonElement>("relay-discover-btn");
-const relayDiscoverAllBtn = $<HTMLButtonElement>("relay-discover-all-btn");
-const relayDiscoveredListEl = $<HTMLUListElement>("relay-discovered-list");
-const relayLimitedEl = $("relay-limited");
-
 // ─── State ─────────────────────────────────────────────────────────────────
 
 const identity = loadOrCreateBrowserIdentity();
@@ -141,7 +124,6 @@ const declinedInvites = new Set<string>();
 let currentMatchId: string | null = null;
 let connection: VestaConnection | null = null;
 let relayDirectory: RelayDirectory | null = null;
-let appConfig: VestaAppConfig | null = null;
 let username: string = usernameInput.value;
 let presenceTimer: number | null = null;
 let pruneTimer: number | null = null;
@@ -491,23 +473,6 @@ function setConnectedUi(connected: boolean): void {
     const controls = document.getElementById("connect-controls");
     if (controls) controls.classList.toggle("hidden", connected);
     logoutBtn.classList.toggle("hidden", !connected);
-    relayPanel.classList.toggle("hidden", !connected);
-    if (connected) updateRelayPanel();
-}
-
-// Refresh the relay panel from the live connection: active relay + candidate list.
-function updateRelayPanel(): void {
-    if (!connection) return;
-    relayActiveEl.textContent = connection.activeRelay;
-    const current = connection.activeRelay;
-    relaySelect.innerHTML = "";
-    for (const url of connection.relays) {
-        const opt = document.createElement("option");
-        opt.value = url;
-        opt.textContent = url;
-        if (url === current) opt.selected = true;
-        relaySelect.appendChild(opt);
-    }
 }
 
 // ─── Local actions ─────────────────────────────────────────────────────────
@@ -814,28 +779,24 @@ async function connect(): Promise<void> {
         return;
     }
 
-    // When an app-owner key is configured, build a relay directory so the client
-    // discovers + verifies owner-signed manifests and persists a per-user override.
-    if (OWNER_PUBLIC_KEY) {
-        const config: VestaAppConfig = {
-            appId: APP_ID,
-            ownerPublicKey: OWNER_PUBLIC_KEY,
-            defaultRelays: relays,
-        };
-        appConfig = config;
-        relayDirectory = new RelayDirectory(
-            config,
-            new LocalStorageRelayOverrideStore("vesta-chess-relay-override"),
-            new LocalStorageManifestStore("vesta-chess-relay-manifest"),
-        );
-    } else {
-        appConfig = null;
-        relayDirectory = null;
-    }
+    // Always build a relay directory so the user can persist a relay override. Without a
+    // configured app-owner key, this demo's own identity stands in as the owner: no signed
+    // manifest will verify, but the per-user override still works. Federation discovery
+    // needs a real owner key.
+    const config: VestaAppConfig = {
+        appId: APP_ID,
+        ownerPublicKey: OWNER_PUBLIC_KEY || identity.publicKeyB64,
+        defaultRelays: relays,
+    };
+    relayDirectory = new RelayDirectory(
+        config,
+        new LocalStorageRelayOverrideStore("vesta-chess-relay-override"),
+        new LocalStorageManifestStore("vesta-chess-relay-manifest"),
+    );
 
     // Resolve the final candidate order (override > manifest > defaults) when a
     // directory exists; otherwise just use the typed list.
-    const candidates = relayDirectory?.resolveCandidates() ?? relays;
+    const candidates = relayDirectory.resolveCandidates();
 
     connection = new VestaConnection({
         relays: candidates,
@@ -844,24 +805,22 @@ async function connect(): Promise<void> {
         channels: [LOBBY],
         createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
         autoReconnect: true,
-        ...(relayDirectory ? { relayDirectory } : {}),
-    });
-
-    connection.on("relaySwitched", () => updateRelayPanel());
-    connection.on("manifestApplied", (manifest: RelayManifest) => {
-        relayManifestEl.textContent =
-            `Adopted owner-signed manifest v${manifest.version} ` +
-            `(${manifest.relays.length} relay(s), issued ${manifest.issuedAt}).`;
-        updateRelayPanel();
+        relayDirectory,
     });
 
     connection.on("limited", (notice: VestaLimitNotice) => {
         const kind = notice.isTransient ? "transient — will retry" : "permanent — not retried";
-        relayLimitedEl.textContent = `[LIMITED] ${notice.code}: ${notice.message} (${kind})`;
-        relayLimitedEl.classList.remove("hidden");
+        console.warn(`[LIMITED] ${notice.code}: ${notice.message} (${kind})`);
+    });
+
+    connection.on("relayAttemptFailed", (attempt) => {
+        connStatusEl.textContent = "offline — can't reach relay, retrying…";
+        connStatusEl.title = `${attempt.relay}: ${attempt.reason}`;
+        // The SDK opens its own relay picker (a loopback overlay) when every relay is exhausted.
     });
 
     connection.on("connected", (welcome: WelcomeMessage) => {
+        connStatusEl.title = "";
         connStatusEl.textContent = "online";
         connStatusEl.classList.replace("offline", "online");
         setConnectedUi(true);
@@ -893,7 +852,7 @@ async function connect(): Promise<void> {
     });
 
     connection.on("disconnected", () => {
-        connStatusEl.textContent = "offline";
+        connStatusEl.textContent = "offline — reconnecting…";
         connStatusEl.classList.replace("online", "offline");
         setConnectedUi(false);
         // Flip every remote player to offline; pruning will catch up once reconnected.
@@ -927,93 +886,6 @@ connectBtn.addEventListener("click", () => {
         console.error(err);
         matchMessageEl.textContent = `Connection failed: ${err.message ?? err}`;
     });
-});
-
-// Relay panel: switch the active relay, and set/clear the per-user override.
-relaySwitchBtn.addEventListener("click", () => {
-    if (!connection) return;
-    const target = relaySelect.value;
-    if (target && target !== connection.activeRelay) {
-        connection.switchRelay(target);
-    }
-});
-
-relayOverrideBtn.addEventListener("click", () => {
-    const url = relayOverrideInput.value.trim();
-    if (!url) return;
-    if (!relayDirectory) {
-        relayManifestEl.textContent =
-            "Relay override needs an app-owner key (VITE_VESTA_OWNER_PUBLIC_KEY) configured.";
-        return;
-    }
-    relayDirectory.setUserOverride(url);
-    relayManifestEl.textContent = `Override set: ${url} (reconnecting…)`;
-    if (connection) connection.updateRelayCandidates(relayDirectory.resolveCandidates());
-    connection?.switchRelay(url);
-    relayOverrideInput.value = "";
-});
-
-relayOverrideClearBtn.addEventListener("click", () => {
-    if (!relayDirectory) return;
-    relayDirectory.clearUserOverride();
-    relayManifestEl.textContent = "Override cleared.";
-    if (connection) {
-        connection.updateRelayCandidates(relayDirectory.resolveCandidates());
-        updateRelayPanel();
-    }
-});
-
-// Federation discovery: ask the active relay which other relays host this app (or browse
-// the whole mesh). Discovered relays are SHOW-ONLY — the user adopts one manually via the
-// override input above; owner-signed manifest relays remain the only automatic failover tier.
-function renderDiscoveredRelays(relays: DiscoveredRelay[]): void {
-    relayDiscoveredListEl.innerHTML = "";
-    if (relays.length === 0) {
-        const li = document.createElement("li");
-        li.textContent = "No relays found.";
-        relayDiscoveredListEl.appendChild(li);
-        return;
-    }
-    for (const relay of relays) {
-        const li = document.createElement("li");
-        const url = relay.urls[0] ?? "(no url)";
-        const flag = relay.hostsRequestedApp ? "hosts app" : "unknown";
-        const useBtn = document.createElement("button");
-        useBtn.textContent = "Use";
-        useBtn.addEventListener("click", () => {
-            relayOverrideInput.value = url;
-            relayOverrideBtn.click();
-        });
-        li.textContent = `${url} [${flag}] `;
-        li.appendChild(useBtn);
-        relayDiscoveredListEl.appendChild(li);
-    }
-}
-
-async function discoverRelays(browseAll: boolean): Promise<void> {
-    if (!appConfig || !connection) {
-        relayManifestEl.textContent =
-            "Discovery needs an app-owner key (VITE_VESTA_OWNER_PUBLIC_KEY) configured.";
-        return;
-    }
-    const federationBase = FederationClient.toFederationBaseUrl(connection.activeRelay);
-    if (!federationBase) {
-        relayManifestEl.textContent = "No reachable relay to query for discovery.";
-        return;
-    }
-    const federation = new FederationClient(appConfig);
-    const found = browseAll
-        ? await federation.listAllRelays(federationBase)
-        : await federation.discoverRelaysForApp(federationBase);
-    renderDiscoveredRelays(found);
-}
-
-relayDiscoverBtn.addEventListener("click", () => {
-    discoverRelays(false).catch((err) => console.error(err));
-});
-
-relayDiscoverAllBtn.addEventListener("click", () => {
-    discoverRelays(true).catch((err) => console.error(err));
 });
 
 logoutBtn.addEventListener("click", () => {

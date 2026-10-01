@@ -100,6 +100,11 @@ public static class DescriptorSigner
             ["urls"] = descriptor.Urls.ToList()
         };
 
+        if (descriptor.AcceptsUnregisteredApps is bool acceptsUnregistered)
+        {
+            signingFields["acceptsUnregisteredApps"] = acceptsUnregistered;
+        }
+
         string json = JsonSerializer.Serialize(signingFields);
         JsonCanonicalizer canonicalizer = new(json);
         string canonicalJson = canonicalizer.GetEncodedString();

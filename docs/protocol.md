@@ -181,12 +181,17 @@ discoverable apps it hosts:
   ],
   "issuedAt": "2025-01-01T00:00:00Z",
   "ttlSeconds": 300,                         // peers evict the descriptor once this expires
+  "acceptsUnregisteredApps": true,           // optional: true = open mode, false = registration enforced, omitted = not advertised
   "signature": "<base64url>"                 // Ed25519 over the RFC 8785 (JCS) canonicalization of all other fields
 }
 ```
 
 The descriptor is **self-signed**: the relay declares its own `relayPublicKey` and signs with the
 matching key, so a descriptor relayed through untrusted peers cannot be altered in flight.
+`acceptsUnregisteredApps` mirrors the relay's own `!RequireAppRegistration && AllowedApps.Count == 0`
+open-mode check; it is included in the signing input only when present, so older relays omit it
+without breaking signature verification. [Relay recovery](relay-recovery.md#adopting-under-a-different-namespace)
+surfaces it on each `RelayChoice` to tell a user whether registering a namespace is likely needed.
 
 ### HTTP surface
 
