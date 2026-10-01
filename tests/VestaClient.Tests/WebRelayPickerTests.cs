@@ -1,4 +1,5 @@
 using System.Net;
+using VestaClient.Federation;
 using VestaClient.Relay;
 using VestaCore.Identity;
 
@@ -32,6 +33,13 @@ public sealed class WebRelayPickerTests : IDisposable
         public void SetOverride(RelayOverride relayOverride) => _override = relayOverride;
 
         public void ClearOverride() => _override = null;
+    }
+
+    // Fails instantly so discovery settles without touching DNS/network (slow on CI runners).
+    private sealed class OfflineHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => throw new HttpRequestException("offline");
     }
 
     private sealed class StubHost(RelayDirectory directory) : IRelayRecoveryHost
@@ -78,11 +86,14 @@ public sealed class WebRelayPickerTests : IDisposable
         VestaAppConfig config = Config();
         StubHost host = new(new RelayDirectory(config, new StubOverrideStore()));
         List<Uri> launched = [];
+        HttpClient offline = new(new OfflineHandler());
+        _disposables.Add(offline);
+        RelayRecoverySession session = new(host, new FederationClient(config, offline));
         WebRelayPicker picker = new(host, config, url =>
         {
             launched.Add(url);
             return true;
-        });
+        }, session);
         HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false });
         _disposables.Add(picker);
         _disposables.Add(http);
