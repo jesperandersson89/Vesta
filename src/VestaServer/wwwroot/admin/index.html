@@ -477,9 +477,13 @@
             async function viewChannel(id) {
                 const detail = document.getElementById("channelDetail");
                 detail.innerHTML = `<p class="muted">Loading ${id}…</p>`;
-                const c = await api(
-                    "/admin/channels/" + encodeURIComponent(id),
-                );
+                let c;
+                try {
+                    c = await api("/admin/channels/" + encodeURIComponent(id));
+                } catch (e) {
+                    detail.innerHTML = `<p class="error">${e.message}</p>`;
+                    return;
+                }
                 detail.innerHTML = `
         <div class="card">
           <h2>${c.id}</h2>
@@ -525,7 +529,7 @@
               <tr>
                 <td><code>${a.id}</code></td>
                 <td class="muted"><code>${a.ownerClientId.slice(0, 16)}…</code></td>
-                <td>${a.storageBytes.toLocaleString()} B</td>
+                <td>${a.storageBytes == null ? "—" : a.storageBytes.toLocaleString() + " B"}</td>
                 <td class="muted">${new Date(a.createdAt).toLocaleDateString()}</td>
                 <td><button class="ghost" data-view-app="${encodeURIComponent(a.id)}">View / edit quotas</button></td>
               </tr>`,
@@ -548,15 +552,21 @@
             async function viewApp(id) {
                 const detail = document.getElementById("appDetail");
                 detail.innerHTML = `<p class="muted">Loading…</p>`;
-                const a = await api("/admin/apps/" + encodeURIComponent(id));
-                const usage = await api("/admin/apps/" + encodeURIComponent(id) + "/usage");
+                let a, usage;
+                try {
+                    a = await api("/admin/apps/" + encodeURIComponent(id));
+                    usage = await api("/admin/apps/" + encodeURIComponent(id) + "/usage");
+                } catch (e) {
+                    detail.innerHTML = `<p class="error">${e.message}</p>`;
+                    return;
+                }
                 const q = a.quotas;
                 detail.innerHTML = `
         <div class="card">
           <h2>${a.id}</h2>
           <div class="muted">Owner <code>${a.ownerClientId}</code> · created ${new Date(a.createdAt).toLocaleString()}</div>
           <div class="grid grid-3" style="margin-top:12px">
-            <div><div class="muted">Storage used</div><div style="font-size:18px">${a.storageBytes.toLocaleString()} B</div></div>
+            <div><div class="muted">Storage used</div><div style="font-size:18px">${a.storageBytes == null ? "not measured yet" : a.storageBytes.toLocaleString() + " B"}</div></div>
             <div><div class="muted">Messages this period</div><div style="font-size:18px">${(usage.messages ?? 0).toLocaleString()} <span class="muted" style="font-size:12px">since ${usage.periodStart}</span></div></div>
             <div><div class="muted">Channels</div><div style="font-size:18px">${a.channelCount}</div></div>
           </div>
