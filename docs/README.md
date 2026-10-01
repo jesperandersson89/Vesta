@@ -12,6 +12,7 @@ Reference docs for the Vesta protocol, SDK, and server. For high-level architect
 | [relay-recovery.md](relay-recovery.md)             | App devs, SDK implementers | What the user sees when every relay is down: the headless recovery session, peer cache, trust rules |
 | [operating-a-relay.md](operating-a-relay.md)       | Relay operators only | Running the relay image for *other people's* apps. Not needed to build an app                 |
 | [server-configuration.md](server-configuration.md) | Relay operators only | Environment variables, storage backends, ACL modes, background services                       |
+| [archive/](archive/)                               | Maintainers      | Superseded planning documents kept for history (full rationale behind decisions in `PLANNING.md`) |
 
 ## Status
 

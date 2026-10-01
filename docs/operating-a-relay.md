@@ -2,7 +2,7 @@
 
 > **Who is this for? Relay operators only — probably not you.**
 >
-> If you are **building an app** with Vesta, you do **not** deploy a relay. You install a client SDK and point it at a relay URL that *someone else operates* — for example an [Atrium](../PLANNING.md#managed-vs-self-hosted-connection-parity) managed endpoint. While developing, you can run a throwaway local relay with `docker compose up` (see [Local development relay](#local-development-relay)); that is a dev tool, not a hosting recipe.
+> If you are **building an app** with Vesta, you do **not** deploy a relay. You install a client SDK and point it at a relay URL that *someone else operates* — for example an [Atrium](../PLANNING.md#boundaries) managed endpoint. While developing, you can run a throwaway local relay with `docker compose up` (see [Local development relay](#local-development-relay)); that is a dev tool, not a hosting recipe.
 >
 > This page is for the rare case where you are the **operator**: a company, community, or service that runs a relay *for other people's apps to connect to* and takes on uptime, backups, TLS, quotas, and abuse handling. If that isn't you, stop here and go to the [README](../README.md).
 

@@ -84,7 +84,7 @@ pip install vesta-client
 
 Vesta apps connect to a **relay** (the server). **You do not deploy a relay to build an app** — relays are run by *operators*, and your app just needs a relay URL plus your identity:
 
-- **Production:** use a relay someone operates, e.g. an [Atrium](PLANNING.md#managed-vs-self-hosted-connection-parity) managed endpoint.
+- **Production:** use a relay someone operates, e.g. an [Atrium](PLANNING.md#boundaries) managed endpoint.
 - **Development:** run a throwaway local relay (needs Docker):
 
   ```bash
