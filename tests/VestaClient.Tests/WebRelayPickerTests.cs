@@ -145,7 +145,9 @@ public sealed class WebRelayPickerTests : IDisposable
 
         HttpResponseMessage response = await http.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // Windows (http.sys) reaches our handler and answers 400; Linux's managed listener matches
+        // prefixes on Host and answers 404. Either way the page is not served.
+        Assert.True(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound, $"Unexpected {response.StatusCode}");
     }
 
     [Fact]
