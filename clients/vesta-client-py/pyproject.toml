@@ -1,6 +1,6 @@
 [project]
 name = "vesta-client"
-version = "0.1.4"
+dynamic = ["version"]
 description = "Python client library for the Vesta protocol"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,9 @@ Issues = "https://github.com/jesperandersson89/Vesta/issues"
 [build-system]
 requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "vesta_client/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["vesta_client"]
