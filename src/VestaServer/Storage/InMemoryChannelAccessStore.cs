@@ -141,6 +141,34 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.FromResult<IReadOnlyList<ChannelMember>>(members);
   }
 
+  public Task<int> DeleteChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default)
+  {
+    string prefix = appId + "/";
+    int count = 0;
+    foreach (KeyValuePair<string, ChannelInfo> kv in _channels)
+    {
+      if (kv.Key != appId && !kv.Key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+      if (kv.Value.DeletedAt is not null) continue;
+      kv.Value.DeletedAt = deletedAt;
+      count++;
+    }
+    return Task.FromResult(count);
+  }
+
+  public Task<int> RestoreChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default)
+  {
+    string prefix = appId + "/";
+    int count = 0;
+    foreach (KeyValuePair<string, ChannelInfo> kv in _channels)
+    {
+      if (kv.Key != appId && !kv.Key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+      if (kv.Value.DeletedAt != deletedAt) continue;
+      kv.Value.DeletedAt = null;
+      count++;
+    }
+    return Task.FromResult(count);
+  }
+
   /// <summary>
   /// Records an implicit channel creation (public) when an event is appended to a previously unknown channel.
   /// Idempotent.

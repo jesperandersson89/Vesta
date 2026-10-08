@@ -58,7 +58,10 @@ All keys are ordinary ASP.NET Core configuration; in containers set them as envi
 | `Protocol__RequireSignedEvents=true` | Reject unsigned events. |
 | `Protocol__RequireAppRegistration=true` | Every channel namespace must belong to a registered app (or pin `Protocol__AllowedApps__0=...` for a closed relay). |
 | `Discovery__SigningKey` | Only if `Discovery__Enabled=true`. Without it the relay generates a key under `/app/.vesta/`, which is lost when the container is replaced. |
-| `EventCleanup__Enabled`, `AppQuotaPruner__Enabled`, `ChannelDeletionPruner__Enabled` | Turn on the background sweeps you rely on. |
+| `EventCleanup__Enabled`, `AppQuotaPruner__Enabled`, `ChannelDeletionPruner__Enabled`, `AppDeletionPruner__Enabled` | Turn on the background sweeps you rely on. `AppQuotaPruner` also drives quota alerts and the usage history; `AppDeletionPruner` permanently purges apps an operator deleted (after `AppDeletionPruner__GracePeriod`, default 7 days). |
+| `ForwardedHeaders__Enabled=true` | Only if the relay is reachable exclusively through your TLS-terminating proxy: lets the `/admin/auth/*` rate limit see real client IPs instead of the proxy's. |
+
+The admin GUI is served at `/admin/` and the admin API under `/admin/*`; both carry bearer tokens, so expose them over HTTPS only (or keep them off the public internet entirely).
 
 ## Deploying
 

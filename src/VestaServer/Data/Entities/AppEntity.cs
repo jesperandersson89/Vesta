@@ -18,6 +18,15 @@ public sealed class AppEntity
   /// </summary>
   public bool Discoverable { get; set; }
 
+  /// <summary>Soft-delete tombstone set by the admin API; the purge job hard-deletes the app after a grace period.</summary>
+  public DateTimeOffset? DeletedAt { get; set; }
+
+  /// <summary>Set while an operator has paused the app: PUBLISH and CREATE_CHANNEL answer <c>APP_PAUSED</c>.</summary>
+  public DateTimeOffset? PausedAt { get; set; }
+
+  /// <summary>Operator cap on the app's total publishes per minute (all clients); null = unthrottled.</summary>
+  public int? ThrottlePerMinute { get; set; }
+
   // === Reserved for TODO #9b (per-app quotas & rate limits) ===
   // Nullable means "no limit". Server does not enforce these yet.
   public int? MaxChannels { get; set; }

@@ -27,6 +27,9 @@ public interface IAppStorageAccountant
   /// app has no cached value yet.
   /// </summary>
   void Add(string appId, long bytes);
+
+  /// <summary>Drops any cached value for the app (called when the app is purged).</summary>
+  void Remove(string appId);
 }
 
 /// <summary>
@@ -44,4 +47,7 @@ public sealed class InMemoryAppStorageAccountant : IAppStorageAccountant
 
   public void Add(string appId, long bytes)
       => _bytes.AddOrUpdate(appId, _ => bytes, (_, existing) => existing + bytes);
+
+  public void Remove(string appId)
+      => _bytes.TryRemove(appId, out _);
 }

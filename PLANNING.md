@@ -71,6 +71,19 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
 - **Apps:** `AppId` = one slug segment, max 64. `REGISTER_APP` + `Protocol:RequireAppRegistration`
   gates everything per app (`UNKNOWN_APP`). Six quotas in `AppQuotas` enforced hot-path +
   `AppQuotaPrunerService`; errors `QUOTA_EXCEEDED` / `RATE_LIMITED`.
+- **App lifecycle (admin API):** apps are *soft-deleted* (`apps.deleted_at`) with their channels
+  stamped with the same timestamp; restore undoes exactly that cascade. `AppDeletionPrunerService`
+  purges after a grace period (default 7 d, opt-in); the id stays reserved until purge. Rename is
+  deliberately absent: `AppId` is the immutable channel namespace. Quota alerts (`app_alerts`) are
+  evaluated by the relay inside the quota sweep (80 % / 100 %); the relay never notifies — consumers
+  (Atrium) poll `/admin/alerts`. Export is streamed JSON Lines (manifest + events); every mutating
+  admin call lands in the durable `admin_audit` table. See `docs/server-configuration.md`.
+- **Traffic control (admin API):** deleting an app also disconnects its subscribers (`UNKNOWN_APP`
+  notice + close 1008; the SDK is one-app-per-connection). *Pause* (`paused_at`) refuses PUBLISH /
+  CREATE_CHANNEL with `APP_PAUSED` — a transient limit in all three SDKs, so outboxes keep events
+  until resume; reads keep working. *Throttle* (`throttle_per_minute`) is one shared per-app token
+  bucket answering `RATE_LIMITED`, deliberately separate from `AppQuotas` so tier tooling (Atrium)
+  never overwrites operator actions.
 - **Metadata flags** (unsigned, in `metadata`): `ttlSeconds` (expires_at, excluded from
   catch-up, swept by `ExpiredEventCleanupService`), `volatile` (relayed, never stored),
   `replace`. See [docs/events.md](docs/events.md).
@@ -109,12 +122,15 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
 **Done:** TTL/metadata, projections (+ snapshots), ACL, signature verification, app registration
 + quotas, outbox/idempotency audit, channel delete + pruner, `/admin/*` HTTP API + GUI (challenge
 → Ed25519 sign → bearer; `Admin:BootstrapPublicKeys`), device groups Phase 1, relay
-independence, federation, relay recovery, SDK publishing, relay container image, CI.
+independence, federation, relay recovery, SDK publishing, relay container image, CI, **admin v2**
+(per-app dashboard, app soft-delete/restore/purge, JSON Lines export, quota alerts, audit log,
+rate-limited `/admin/auth/*`, self-contained GUI with no CDN dependency).
 
 **Open:** #13 client READMEs (TS/Py getting-started), #14 observability (metrics, structured
 logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store).
 **Deferred:** device-group phases 2–6; relay Layer C (re-seed empty relay from client logs);
-owner-only-write hardening on `{appId}/vesta/relays`.
+owner-only-write hardening on `{appId}/vesta/relays`; admin scoped keys (read-only vs full),
+client-side importer for the export format.
 
 ## Releasing
 
@@ -149,7 +165,7 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 180 Core + 112 Client + 123 Server; TS 101; Py 111.
+- Expected test totals (all green): C# 180 Core + 113 Client + 179 Server (38 of them need Docker); TS 102; Py 112.
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via
@@ -160,6 +176,11 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   (`asyncio.Queue`) + `wait_until` helper.
 - Server integration tests need Docker (Testcontainers Postgres). Relay needs Postgres
   LISTEN/NOTIFY — never swap the store for Azure SQL; Azure Flexible Server caps at major 16.
+- The admin GUI (`wwwroot/admin/`) is no-build plain CSS/JS under a strict CSP (`script-src 'self'`,
+  no inline styles/handlers): set widths via JS (`data-pct`), never `style=` attributes. The
+  vendored `noble-ed25519-2.1.0.js` is ESM saved as `.js` — to run it in Node copy it to `.mjs`.
+  Editing assets with PowerShell 5.1 `Get-Content`/`Set-Content` without `-Encoding UTF8` double-encodes
+  non-ASCII (`…`, `—`, `→`); use the edit tools.
 - After a release, NuGet/npm indexing lags minutes: `dotnet restore --no-cache`; an
   `examples.yml` run right after may fail `ETARGET` — re-dispatch.
 - `docker-compose.yml` is dev-only (open mode, host port 5150). Operator keypair:

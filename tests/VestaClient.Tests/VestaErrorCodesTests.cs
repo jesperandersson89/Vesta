@@ -18,6 +18,16 @@ public sealed class VestaErrorCodesTests
         Assert.False(c.IsEventFatal);
     }
 
+    [Fact]
+    public void Classify_AppPaused_IsTransientLimit_NotFatal()
+    {
+        VestaErrorCodes.Classification c = VestaErrorCodes.Classify(VestaErrorCodes.AppPaused);
+
+        Assert.True(c.IsLimit);
+        Assert.True(c.IsTransient);
+        Assert.False(c.IsEventFatal);
+    }
+
     [Theory]
     [InlineData("QUOTA_EXCEEDED")]
     [InlineData("MESSAGE_QUOTA_EXCEEDED")]

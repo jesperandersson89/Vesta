@@ -14,6 +14,9 @@ public sealed class AdminApiOptions
 
   /// <summary>How long a verified bearer token remains valid. Default 1 h.</summary>
   public TimeSpan TokenTtl { get; set; } = TimeSpan.FromHours(1);
+
+  /// <summary>Max requests per client IP per minute to <c>/admin/auth/*</c>. 0 disables the limit. Default 20.</summary>
+  public int AuthRateLimitPerMinute { get; set; } = 20;
 }
 
 /// <summary>

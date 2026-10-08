@@ -26,6 +26,9 @@ public interface IAppUsageAccountant
 
   /// <summary>Atomically increments the cached message count for the current period, seeding it to 1 if uncached.</summary>
   void IncrementMessages(string appId);
+
+  /// <summary>Drops any cached count for the app (called when the app is purged).</summary>
+  void Remove(string appId);
 }
 
 /// <summary>Default in-memory implementation. Singleton-scoped; resets its cache whenever the calendar month rolls over.</summary>
@@ -71,6 +74,14 @@ public sealed class InMemoryAppUsageAccountant(TimeProvider timeProvider) : IApp
     {
       RollOverIfNeeded();
       _messages[appId] = _messages.TryGetValue(appId, out long value) ? value + 1 : 1;
+    }
+  }
+
+  public void Remove(string appId)
+  {
+    lock (_lock)
+    {
+      _messages.Remove(appId);
     }
   }
 

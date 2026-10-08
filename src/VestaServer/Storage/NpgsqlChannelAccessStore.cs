@@ -201,6 +201,26 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     return result;
   }
 
+  public async Task<int> DeleteChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default)
+  {
+    const string sql = "UPDATE channels SET deleted_at = $3 WHERE (id = $1 OR id LIKE $2) AND deleted_at IS NULL";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
+    cmd.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = deletedAt });
+    return await cmd.ExecuteNonQueryAsync(cancellationToken);
+  }
+
+  public async Task<int> RestoreChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default)
+  {
+    const string sql = "UPDATE channels SET deleted_at = NULL WHERE (id = $1 OR id LIKE $2) AND deleted_at = $3";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
+    cmd.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = deletedAt });
+    return await cmd.ExecuteNonQueryAsync(cancellationToken);
+  }
+
   private static async Task InsertAccessAsync(
       NpgsqlConnection connection,
       NpgsqlTransaction tx,

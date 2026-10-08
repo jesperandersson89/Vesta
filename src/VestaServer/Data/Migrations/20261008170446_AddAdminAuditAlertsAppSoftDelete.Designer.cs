@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using VestaServer.Data;
@@ -11,9 +12,11 @@ using VestaServer.Data;
 namespace VestaServer.Data.Migrations
 {
     [DbContext(typeof(VestaDbContext))]
-    partial class VestaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261008170446_AddAdminAuditAlertsAppSoftDelete")]
+    partial class AddAdminAuditAlertsAppSoftDelete
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -173,10 +176,6 @@ namespace VestaServer.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("owner_client_id");
 
-                    b.Property<DateTimeOffset?>("PausedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("paused_at");
-
                     b.Property<int?>("PublishRatePerMinute")
                         .HasColumnType("integer")
                         .HasColumnName("publish_rate_per_minute");
@@ -184,10 +183,6 @@ namespace VestaServer.Data.Migrations
                     b.Property<int?>("RetentionDays")
                         .HasColumnType("integer")
                         .HasColumnName("retention_days");
-
-                    b.Property<int?>("ThrottlePerMinute")
-                        .HasColumnType("integer")
-                        .HasColumnName("throttle_per_minute");
 
                     b.Property<long?>("TotalStorageBytes")
                         .HasColumnType("bigint")

@@ -16,6 +16,13 @@ test("classifyErrorCode: RATE_LIMITED is a transient limit, not event-fatal", ()
     assert.equal(c.isEventFatal, false);
 });
 
+test("classifyErrorCode: APP_PAUSED is a transient limit, not event-fatal", () => {
+    const c = classifyErrorCode("APP_PAUSED");
+    assert.equal(c.isLimit, true);
+    assert.equal(c.isTransient, true);
+    assert.equal(c.isEventFatal, false);
+});
+
 test("classifyErrorCode: QUOTA_EXCEEDED is a fatal limit", () => {
     const c = classifyErrorCode("QUOTA_EXCEEDED");
     assert.equal(c.isLimit, true);

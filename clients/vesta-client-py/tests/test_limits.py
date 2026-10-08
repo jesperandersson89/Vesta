@@ -34,6 +34,12 @@ class ClassifyErrorCodeTests(unittest.TestCase):
         self.assertTrue(c.is_transient)
         self.assertFalse(c.is_event_fatal)
 
+    def test_app_paused_is_transient_limit_not_event_fatal(self) -> None:
+        c = classify_error_code("APP_PAUSED")
+        self.assertTrue(c.is_limit)
+        self.assertTrue(c.is_transient)
+        self.assertFalse(c.is_event_fatal)
+
     def test_quota_exceeded_is_fatal_limit(self) -> None:
         c = classify_error_code("QUOTA_EXCEEDED")
         self.assertTrue(c.is_limit)

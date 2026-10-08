@@ -118,7 +118,7 @@ There is no password / JWT layer. The trust root is the same Ed25519 keypair use
 
 ## Admin HTTP API
 
-The server exposes a small HTTP surface under `/admin/*` for operator tooling and the bundled web GUI (served from `/`). Every key in the bootstrap allow-list can authenticate.
+The server exposes a small HTTP surface under `/admin/*` for operator tooling and the bundled web GUI (served from `/admin/`). Every key in the bootstrap allow-list can authenticate and has full access — there are no scopes yet. Every mutating call is recorded in the [audit log](#audit-log).
 
 ### Auth flow
 
@@ -129,12 +129,16 @@ The server exposes a small HTTP surface under `/admin/*` for operator tooling an
 
 Tokens are kept in-process; a server restart invalidates everything. Multi-host deployments need a shared backend (tracked under TODO #15).
 
+`/admin/auth/*` is rate limited per client IP (fixed one-minute window, `429` when exceeded). Admin tokens are bearer tokens: terminate TLS in front of the relay and never expose `/admin/*` over plain HTTP. Behind a TLS-terminating proxy every request shares the proxy's IP unless you opt in to `X-Forwarded-For` handling with `ForwardedHeaders:Enabled=true` — only do that when the relay is reachable exclusively through your trusted proxy, because it trusts the header from any sender.
+
 ```jsonc
 {
     "AdminApi": {
         "ChallengeTtl": "00:01:00",
         "TokenTtl": "01:00:00",
+        "AuthRateLimitPerMinute": 20, // per IP; 0 disables
     },
+    "ForwardedHeaders": { "Enabled": false },
 }
 ```
 
@@ -147,16 +151,68 @@ Tokens are kept in-process; a server restart invalidates everything. Multi-host 
 | `GET`    | `/admin/channels`         | List channels. Query: `?app=<prefix>` filter, `?includeDeleted=true\|false` (default true).     |
 | `GET`    | `/admin/channels/{id}`    | Channel detail: visibility, timestamps, event count / payload bytes / latest sequence, members. |
 | `DELETE` | `/admin/channels/{id}`    | Soft-delete a channel (same effect as the protocol `DELETE_CHANNEL` message).                   |
-| `GET`    | `/admin/apps`             | List registered apps with quotas and current storage usage.                                     |
-| `GET`    | `/admin/apps/{id}`        | App detail including channel count and storage rollup.                                          |
+| `GET`    | `/admin/apps`             | List active apps with quotas, current storage usage, `deletedAt` and `activeAlerts`. `?includeDeleted=true` also lists soft-deleted apps. |
+| `GET`    | `/admin/apps/{id}`        | App detail including channel count, storage rollup, `deletedAt` and `activeConnections` (open connections subscribed to the app; best-effort). |
 | `GET`    | `/admin/apps/{id}/usage`  | Current-period usage rollup: `{ id, periodStart, messages, storageBytes, channelCount, quotas }`. |
-| `PATCH`  | `/admin/apps/{id}/quotas` | Replace the app's `AppQuotas` body.                                                             |
+| `GET`    | `/admin/apps/{id}/usage/history` | `?months=12` (1–36) → `[{ periodStart, messages }]`, oldest first, from `app_usage`. In-memory mode only has the current period. |
+| `GET`    | `/admin/apps/{id}/channels` | Every channel of the app (including deleted) with `eventCount`, `payloadBytes`, `latestSequence`, busiest first. |
+| `GET`    | `/admin/apps/{id}/alerts` | The app's quota alerts (`?active=true` hides resolved). |
+| `GET`    | `/admin/apps/{id}/export` | Streams the app's data as [JSON Lines](#json-lines-export-format). Works for soft-deleted apps. |
+| `DELETE` | `/admin/apps/{id}`        | Soft-delete the app and its channels and disconnect its subscribers (`204`; `404` if unknown). Idempotent. See [App deletion](#app-deletion). |
+| `POST`   | `/admin/apps/{id}/restore` | Undo a soft-delete (`200`; `409` if the app is not deleted). |
+| `POST`   | `/admin/apps/{id}/pause`  | Refuse all publishes / channel creation with `APP_PAUSED` (`200 { id, pausedAt }`). See [Pause and throttle](#pause-and-throttle). |
+| `POST`   | `/admin/apps/{id}/resume` | Lift a pause (`200 { id, pausedAt: null }`). |
+| `PATCH`  | `/admin/apps/{id}/throttle` | `{ "perMinute": int \| null }` — cap total publishes per minute for the app; `null` removes it (`400` for ≤ 0). |
+| `PATCH`  | `/admin/apps/{id}/quotas` | Replace the app's `AppQuotas` body. `409` for a deleted app (same for `owner` and `discoverable`). |
+| `PATCH`  | `/admin/apps/{id}/discoverable` | `{ "discoverable": bool }` — federation opt-in. |
 | `PATCH`  | `/admin/apps/{id}/owner`  | Operator-assisted rebind of the app's recognized owner to a new client id (key rotation / recovery from a lost identity). |
-| `GET`    | `/admin/metrics`          | `{ activeConnections, totalApps, totalChannels }`.                                              |
+| `GET`    | `/admin/alerts`           | Quota alerts across apps. `?active=true` (default) hides resolved ones, `?app=<id>` filters. |
+| `POST`   | `/admin/alerts/{id}/ack`  | Mark an alert acknowledged (`204`); it stays open until usage drops. |
+| `GET`    | `/admin/audit`            | Newest-first audit entries. `?limit=` (1–500, default 100), `?target=<exact target>`. |
+| `GET`    | `/admin/config`           | Effective grace periods, pruner flags, token TTL and alert thresholds (used by the GUI). |
+| `GET`    | `/admin/metrics`          | `{ activeConnections, totalApps, totalChannels, deletedApps, pausedApps, activeAlerts }`.       |
+
+### App deletion
+
+`DELETE /admin/apps/{id}` stamps `apps.deleted_at` and soft-deletes every channel under the app with the **same timestamp**. From then on the app is gone for clients: `ExistsAsync` is false (so registration-gated relays answer `UNKNOWN_APP`) and its channels answer `CHANNEL_DELETED`. Open WebSocket connections subscribed to the app are **closed**: each first receives `ERROR { code: "UNKNOWN_APP" }` and then a close frame (status 1008, "App deleted"); a peer that does not finish the close handshake within 5 s is aborted. The SDK binds one app per connection, so the whole socket is closed; a connection is considered part of the app when it has at least one subscription to one of its channels (a client that only publishes is simply refused on its next publish). The number of closed connections is recorded in the `app.delete` audit entry. Open quota alerts are resolved. The id stays reserved — `REGISTER_APP` answers `DUPLICATE_APP` — until the app is purged.
+
+`POST /admin/apps/{id}/restore` clears the tombstone and restores only the channels carrying the app's timestamp, so channels an operator deleted individually *before* the app stay deleted.
+
+The [`AppDeletionPruner`](#appdeletionpruner-postgres-only) purges the data permanently after a grace period.
+
+### Pause and throttle
+
+Two operator-level traffic controls, independent of the tier-style [quotas](#app-quotas--rate-limits) so a platform that rewrites quotas does not clobber them:
+
+- **Pause** (`POST /admin/apps/{id}/pause`, `.../resume`) — every `PUBLISH` and `CREATE_CHANNEL` is refused with `ERROR { code: "APP_PAUSED" }` (stamped with `eventId` / `channelId`). Reads, `SUBSCRIBE`, `FETCH` and connections are untouched, so clients stay online and read-only. SDKs treat `APP_PAUSED` as a transient limit: it surfaces through `OnLimited` / `limited` / `on_limited` and unsent events stay in the outbox and are delivered after resume. Pausing is idempotent and keeps the original `pausedAt`.
+- **Throttle** (`PATCH /admin/apps/{id}/throttle` with `{ "perMinute": 600 }`, `null` removes it) — caps the app's **total** publishes per minute across all clients (token bucket, one shared bucket per app; the per-client `publish_rate_per_minute` quota still applies on top). Excess publishes get `ERROR { code: "RATE_LIMITED" }`. In-process like the other rate limits, so it is per relay instance.
+
+Both persist in the `apps` table (`paused_at`, `throttle_per_minute`), are returned as `pausedAt` / `throttlePerMinute` by `GET /admin/apps[/{id}]`, are audited (`app.pause`, `app.resume`, `app.throttle`), and return `409` for a soft-deleted app. `GET /admin/metrics` reports `pausedApps`.
+
+### JSON Lines export format
+
+`GET /admin/apps/{id}/export` responds with `application/x-ndjson` and `Content-Disposition: attachment; filename="{appId}-{yyyyMMddTHHmmss}Z.jsonl"`. One JSON object per line:
+
+1. A single **manifest** line: `{ "type": "manifest", "version": 1, "exportedAt": "...", "app": { id, ownerClientId, createdAt, quotas, discoverable, deletedAt }, "channels": [{ id, visibility, createdAt, deletedAt, members: [{ clientId, role }] }] }`.
+2. Then one **event** line per stored event, channel by channel (manifest order) in ascending sequence: `{ "type": "event", "sequence": 1, "receivedAt": "...", "event": { ...VestaEvent... } }`. The `event` object is the signed client event exactly as stored, so signatures remain verifiable.
+
+Events past their TTL are excluded (same visibility as a client catch-up). The response is streamed page by page; the GUI buffers it in the browser, so use `curl` with a bearer token for very large apps. Each export is audited as `app.export`.
+
+### Audit log
+
+Every mutating admin action (`auth.login`, `channel.delete`, `app.quotas`, `app.discoverable`, `app.owner`, `app.delete`, `app.restore`, `app.pause`, `app.resume`, `app.throttle`, `app.export`, `alert.ack`) and the purge job (`app.purge`, actor `system`) is appended to the `admin_audit` table: time, acting admin's public key (hex), action, target and a small JSON `details` object. In-memory mode keeps the last 1000 entries. Entries are never edited or deleted by the relay.
 
 ### Web GUI
 
-The static SPA at `/` (served from `wwwroot/admin/index.html`) provides a minimal RabbitMQ-style dashboard: overview metrics, channel browser with soft-delete, app list with editable quotas. The login screen takes a base64url-encoded 32-byte Ed25519 seed and performs the challenge / sign / verify dance entirely in the browser — the seed never leaves the page. Token + expiry are cached in `sessionStorage`.
+The static SPA at `/admin/` (served from `wwwroot/admin/`, no build step, all assets vendored — it makes no third-party requests and ships a strict Content-Security-Policy) provides:
+
+- **Overview** — connections, apps, live channels, active alerts.
+- **Apps** — list (with a *show deleted* toggle) and a per-app **dashboard**: active connections, messages / storage / channel utilisation against quotas, a 12-month message chart, top channels, editable limits (blank = no limit), a **Traffic control** card (pause / resume publishing, throttle), owner rebind, discovery toggle, **Export data**, and a *danger zone* with type-to-confirm delete and one-click restore.
+- **Channels** — browser with detail, members and soft-delete.
+- **Alerts** — open quota alerts with acknowledge.
+- **Audit** — the 200 most recent admin actions.
+
+The login screen takes a base64url-encoded 32-byte Ed25519 seed and performs the challenge / sign / verify dance entirely in the browser — the seed never leaves the page. Token + expiry are cached in `sessionStorage`. Signing uses the vendored `@noble/ed25519` 2.1.0 (MIT) and WebCrypto, so the page needs a secure context (HTTPS or `localhost`). Fonts (Inter, JetBrains Mono) are bundled under SIL OFL 1.1; licenses sit next to the files in `wwwroot/admin/fonts/` and `wwwroot/admin/vendor/`.
 
 ## `AppQuotaPruner` (Postgres only)
 
@@ -178,7 +234,39 @@ Each sweep iterates every row in `apps` and, per quota:
 - `retention_days` → `DELETE FROM events WHERE channel_id IN (<app namespace>) AND received_at < now() - make_interval(days => $)`.
 - `max_events_per_channel` → keeps the most recent N events per channel under the app via `ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY sequence DESC)`.
 - `total_storage_bytes` → `SUM(pg_column_size(payload))` written to the in-process accountant.
-- `max_messages_per_month` → `COUNT(*)` over events received since the current calendar-month period start, written to the in-process accountant **and** upserted into `app_usage` for durability across restarts.
+- `max_messages_per_month` → `COUNT(*)` over events received since the current calendar-month period start, written to the in-process accountant **and** upserted into `app_usage` for durability across restarts. This runs for **every** app (not only those with the quota) so the admin usage history is complete.
+
+After measuring, each sweep also evaluates [quota alerts](#appalerts) for the app.
+
+## `AppAlerts`
+
+When the `AppQuotaPruner` is enabled, each sweep compares an app's measured usage with its quotas and records an alert in `app_alerts` whenever a threshold is crossed. Metrics: `messages` (vs `max_messages_per_month`), `storage` (vs `total_storage_bytes`), `channels` (vs `max_channels`). Apps without the corresponding quota raise nothing.
+
+```jsonc
+{
+    "AppAlerts": {
+        "ThresholdsPercent": [80, 100], // default
+    },
+}
+```
+
+An alert is open until usage drops below the threshold (for example after a quota increase or a month rollover — message alerts belong to one usage period) and is then resolved automatically; at most one open alert exists per (app, metric, threshold). Acknowledging (`POST /admin/alerts/{id}/ack`) only marks it as seen. The relay does not send notifications: operators and platforms such as Atrium poll `GET /admin/alerts` and notify however they like.
+
+## `AppDeletionPruner` (Postgres only)
+
+The `AppDeletionPrunerService` permanently purges apps soft-deleted via [`DELETE /admin/apps/{id}`](#app-deletion) once the grace period has passed. For each eligible app, in one transaction: events, `client_positions`, `channel_access`, `channel_sequences`, `channels`, `app_usage`, `app_alerts`, then the `apps` row; the in-process accountants are cleared and an `app.purge` audit entry is written. The app id can then be registered again.
+
+```jsonc
+{
+    "AppDeletionPruner": {
+        "Enabled": false, // opt-in
+        "Interval": "00:05:00", // TimeSpan; default 5 min
+        "GracePeriod": "7.00:00:00", // TimeSpan; default 7 days
+    },
+}
+```
+
+With `Enabled=false` (the default) deleted apps are blocked for clients but their data stays on disk. The [`ChannelDeletionPruner`](#channeldeletionpruner-postgres-only) skips channels belonging to a soft-deleted app, so the app's own grace period governs and a restore within it is lossless. **Purging is irreversible** — export first.
 
 ## `ChannelDeletionPruner` (Postgres only)
 

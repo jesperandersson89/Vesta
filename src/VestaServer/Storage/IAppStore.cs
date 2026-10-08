@@ -32,12 +32,18 @@ public sealed record AppQuotas(
 /// <param name="CreatedAt">When the app was registered.</param>
 /// <param name="Quotas">Per-app limits (see <see cref="AppQuotas"/>).</param>
 /// <param name="Discoverable">Whether the app owner has opted this app into server-to-server discovery (federation). When true and the host relay has discovery enabled, the relay advertises this app in its signed <c>ServerDescriptor</c>.</param>
+/// <param name="DeletedAt">Soft-delete tombstone stamped by the admin API; <c>null</c> for active apps. Deleted apps are hidden from <see cref="IAppStore.ExistsAsync"/> and <see cref="IAppStore.ListAsync"/>.</param>
+/// <param name="PausedAt">Set by an operator to reject every PUBLISH and CREATE_CHANNEL for the app with <c>APP_PAUSED</c>; reads keep working. <c>null</c> when running normally.</param>
+/// <param name="ThrottlePerMinute">Operator-imposed cap on the app's total publishes per minute (all clients combined), enforced as <c>RATE_LIMITED</c>. Independent of <see cref="AppQuotas.PublishRatePerMinute"/>; <c>null</c> means unthrottled.</param>
 public sealed record AppInfo(
     string Id,
     string OwnerClientId,
     DateTimeOffset CreatedAt,
     AppQuotas Quotas,
-    bool Discoverable = false);
+    bool Discoverable = false,
+    DateTimeOffset? DeletedAt = null,
+    DateTimeOffset? PausedAt = null,
+    int? ThrottlePerMinute = null);
 
 /// <summary>
 /// Server-side abstraction for app namespace registration.
@@ -48,12 +54,13 @@ public sealed record AppInfo(
 public interface IAppStore
 {
   /// <summary>
-  /// Returns the app, or <c>null</c> if it is not registered.
+  /// Returns the app (including soft-deleted ones, so admins can inspect and restore them),
+  /// or <c>null</c> if it is not registered.
   /// </summary>
   Task<AppInfo?> GetAsync(string appId, CancellationToken cancellationToken = default);
 
   /// <summary>
-  /// Returns true if the app exists.
+  /// Returns true if the app exists and is not soft-deleted.
   /// </summary>
   Task<bool> ExistsAsync(string appId, CancellationToken cancellationToken = default);
 
@@ -86,10 +93,37 @@ public interface IAppStore
   Task<bool> SetQuotasAsync(string appId, AppQuotas quotas, CancellationToken cancellationToken = default);
 
   /// <summary>
-  /// List all registered apps. Used by background quota enforcement (pruner,
-  /// accounting). Order is unspecified.
+  /// List active (non-deleted) apps. Used by background quota enforcement (pruner,
+  /// accounting) and federation. Order is unspecified.
   /// </summary>
   Task<IReadOnlyList<AppInfo>> ListAsync(CancellationToken cancellationToken = default);
+
+  /// <summary>List every app including soft-deleted ones (admin API only).</summary>
+  Task<IReadOnlyList<AppInfo>> ListAllAsync(CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Soft-delete an app. Idempotent: an already-deleted app keeps its original timestamp, which
+  /// is returned. Returns <c>null</c> if the app does not exist. The id stays reserved until
+  /// the purge job hard-deletes the row.
+  /// </summary>
+  Task<DateTimeOffset?> DeleteAsync(string appId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Clear the soft-delete tombstone. Returns false if the app does not exist or is not deleted.
+  /// </summary>
+  Task<bool> RestoreAsync(string appId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Pause (<paramref name="paused"/> = true) or resume the app. Pausing is idempotent and keeps the
+  /// original timestamp. Returns false if the app does not exist.
+  /// </summary>
+  Task<bool> SetPausedAsync(string appId, bool paused, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Set (or clear with <c>null</c>) the operator throttle in publishes per minute. Returns false if
+  /// the app does not exist.
+  /// </summary>
+  Task<bool> SetThrottleAsync(string appId, int? perMinute, CancellationToken cancellationToken = default);
 }
 
 public sealed class AppAlreadyRegisteredException(string appId)

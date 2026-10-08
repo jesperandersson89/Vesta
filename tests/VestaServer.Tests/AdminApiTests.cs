@@ -31,6 +31,7 @@ public class AdminApiTests : IClassFixture<AdminApiTests.Fixture>
       {
         builder.UseSetting("UseInMemoryStore", "true");
         builder.UseSetting("Admin:BootstrapPublicKeys:0", Base64Url.Encode(admin.PublicKey));
+        builder.UseSetting("AdminApi:AuthRateLimitPerMinute", "0");
       });
     }
 
@@ -53,6 +54,23 @@ public class AdminApiTests : IClassFixture<AdminApiTests.Fixture>
     JsonElement body = await resp.Content.ReadFromJsonAsync<JsonElement>();
     Assert.False(string.IsNullOrEmpty(body.GetProperty("nonce").GetString()));
     Assert.True(body.GetProperty("expiresAt").GetDateTimeOffset() > DateTimeOffset.UtcNow);
+  }
+
+  [Fact]
+  public async Task Challenge_ExceedingRateLimit_Returns429()
+  {
+    using WebApplicationFactory<Program> limited = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    {
+      builder.UseSetting("UseInMemoryStore", "true");
+      builder.UseSetting("AdminApi:AuthRateLimitPerMinute", "3");
+    });
+    HttpClient client = limited.CreateClient();
+
+    for (int i = 0; i < 3; i++)
+      Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/admin/auth/challenge", content: null)).StatusCode);
+
+    HttpResponseMessage blocked = await client.PostAsync("/admin/auth/challenge", content: null);
+    Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
   }
 
   [Fact]

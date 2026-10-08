@@ -127,6 +127,53 @@ public sealed class AppQuotaPrunerServiceTests : IAsyncLifetime
     Assert.Null(_accountant.Get("noquotaapp"));
   }
 
+  [Fact]
+  public async Task SweepOnce_AppWithoutQuotas_StillRecordsMessageUsage()
+  {
+    await _appStore.RegisterAsync("usageonlyapp", "owner");
+    for (int i = 0; i < 4; i++)
+      await _eventStore.AppendAsync(CreateEvent("usageonlyapp/log"));
+
+    await _pruner.SweepOnceAsync(CancellationToken.None);
+
+    Assert.Equal(4, _usageAccountant.GetMessages("usageonlyapp"));
+    Assert.Equal(4, await new NpgsqlAppUsageHistory(_dataSource).GetAsync("usageonlyapp", 12)
+        .ContinueWith(t => t.Result.Single().Messages));
+  }
+
+  [Fact]
+  public async Task SweepOnce_MessageQuotaCrossed_RaisesAndLaterResolvesAlert()
+  {
+    NpgsqlAppAlertStore alerts = new(_dataSource);
+    AppQuotaPrunerService pruner = new(
+        _dataSource,
+        _appStore,
+        _accountant,
+        _usageAccountant,
+        Options.Create(new AppQuotaPrunerOptions { Enabled = true }),
+        NullLogger<AppQuotaPrunerService>.Instance,
+        alerts,
+        new NpgsqlChannelAccessStore(_dataSource),
+        Options.Create(new AppAlertOptions { ThresholdsPercent = [80, 100] }));
+
+    await _appStore.RegisterAsync("alertedapp", "owner");
+    await _appStore.SetQuotasAsync("alertedapp", new AppQuotas(MaxMessagesPerMonth: 5));
+    for (int i = 0; i < 4; i++)
+      await _eventStore.AppendAsync(CreateEvent("alertedapp/log"));
+
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    AppAlert at80 = Assert.Single(await alerts.ListAsync("alertedapp", activeOnly: true));
+    Assert.Equal(80, at80.ThresholdPercent);
+
+    await _eventStore.AppendAsync(CreateEvent("alertedapp/log"));
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    Assert.Equal([80, 100], (await alerts.ListAsync("alertedapp", activeOnly: true)).Select(a => a.ThresholdPercent).Order());
+
+    await _appStore.SetQuotasAsync("alertedapp", new AppQuotas(MaxMessagesPerMonth: 1000));
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    Assert.Empty(await alerts.ListAsync("alertedapp", activeOnly: true));
+  }
+
   private async Task BackdateAsync(Guid eventId, TimeSpan offset)
   {
     await using NpgsqlCommand cmd = _dataSource.CreateCommand(

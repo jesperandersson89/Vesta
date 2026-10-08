@@ -28,6 +28,8 @@ class VestaErrorCodes:
     UNKNOWN_APP = "UNKNOWN_APP"
     ACCESS_DENIED = "ACCESS_DENIED"
     APP_NOT_ALLOWED = "APP_NOT_ALLOWED"
+    # The operator paused the app: publishes are refused until it is resumed.
+    APP_PAUSED = "APP_PAUSED"
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ _FATAL_PROTOCOL_CODES = (
 
 def classify_error_code(code: str) -> ErrorClassification:
     """Classify a server error code into limit / retry semantics."""
-    if code == VestaErrorCodes.RATE_LIMITED:
+    if code in (VestaErrorCodes.RATE_LIMITED, VestaErrorCodes.APP_PAUSED):
         return ErrorClassification(is_limit=True, is_transient=True, is_event_fatal=False)
     if code in _FATAL_LIMIT_CODES:
         return ErrorClassification(is_limit=True, is_transient=False, is_event_fatal=True)

@@ -102,6 +102,41 @@ public sealed class ClientConnection : IDisposable
 
     public bool IsOpen => _socket.State == WebSocketState.Open;
 
+    /// <summary>
+    /// Operator-initiated disconnect: sends <paramref name="notice"/>, starts the close handshake
+    /// without waiting on the peer (the receive loop is still running on this socket), and aborts
+    /// the socket if the peer has not finished closing within <paramref name="grace"/>.
+    /// </summary>
+    public async Task DisconnectAsync(ProtocolMessage notice, string reason, TimeSpan grace)
+    {
+        try
+        {
+            using CancellationTokenSource timeout = new(grace);
+            await SendAsync(notice, timeout.Token);
+            if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await _socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, reason, timeout.Token);
+        }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // Peer already gone or too slow; the abort below finishes the job.
+        }
+
+        _ = AbortAfterAsync(grace);
+    }
+
+    private async Task AbortAfterAsync(TimeSpan grace)
+    {
+        await Task.Delay(grace);
+        try
+        {
+            if (_socket.State is not (WebSocketState.Closed or WebSocketState.Aborted))
+                _socket.Abort();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     public void Dispose()
     {
         _sendLock.Dispose();

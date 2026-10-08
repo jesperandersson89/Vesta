@@ -16,6 +16,8 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
     public DbSet<ChannelAccessEntity> ChannelAccess => Set<ChannelAccessEntity>();
     public DbSet<AppEntity> Apps => Set<AppEntity>();
     public DbSet<AppUsageEntity> AppUsage => Set<AppUsageEntity>();
+    public DbSet<AdminAuditEntity> AdminAudit => Set<AdminAuditEntity>();
+    public DbSet<AppAlertEntity> AppAlerts => Set<AppAlertEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -95,6 +97,9 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
 
             entity.Property(e => e.Discoverable).HasColumnName("discoverable").HasDefaultValue(false);
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.PausedAt).HasColumnName("paused_at");
+            entity.Property(e => e.ThrottlePerMinute).HasColumnName("throttle_per_minute");
 
             // Reserved for TODO #9b — all nullable, server does not enforce yet.
             entity.Property(e => e.MaxChannels).HasColumnName("max_channels");
@@ -106,6 +111,44 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.MaxMessagesPerMonth).HasColumnName("max_messages_per_month");
 
             entity.HasIndex(e => e.OwnerClientId).HasDatabaseName("IX_apps_owner_client_id");
+            entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_apps_deleted_at");
+        });
+
+        // === admin_audit ===
+        modelBuilder.Entity<AdminAuditEntity>(entity =>
+        {
+            entity.ToTable("admin_audit");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(e => e.At).HasColumnName("at").HasDefaultValueSql("now()");
+            entity.Property(e => e.AdminPublicKey).HasColumnName("admin_public_key").IsRequired();
+            entity.Property(e => e.Action).HasColumnName("action").IsRequired();
+            entity.Property(e => e.Target).HasColumnName("target");
+            entity.Property(e => e.Details).HasColumnName("details").HasColumnType("jsonb");
+            entity.HasIndex(e => e.At).HasDatabaseName("IX_admin_audit_at");
+            entity.HasIndex(e => e.Target).HasDatabaseName("IX_admin_audit_target");
+        });
+
+        // === app_alerts ===
+        modelBuilder.Entity<AppAlertEntity>(entity =>
+        {
+            entity.ToTable("app_alerts");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(e => e.AppId).HasColumnName("app_id").HasMaxLength(64).IsRequired();
+            entity.Property(e => e.Metric).HasColumnName("metric").IsRequired();
+            entity.Property(e => e.ThresholdPercent).HasColumnName("threshold_pct");
+            entity.Property(e => e.Observed).HasColumnName("observed");
+            entity.Property(e => e.LimitValue).HasColumnName("limit_value");
+            entity.Property(e => e.PeriodStart).HasColumnName("period_start").HasColumnType("date");
+            entity.Property(e => e.RaisedAt).HasColumnName("raised_at").HasDefaultValueSql("now()");
+            entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
+            entity.Property(e => e.AcknowledgedAt).HasColumnName("acknowledged_at");
+            entity.HasIndex(e => new { e.AppId, e.Metric, e.ThresholdPercent })
+                .IsUnique()
+                .HasFilter("resolved_at IS NULL")
+                .HasDatabaseName("UX_app_alerts_open");
+            entity.HasIndex(e => e.AppId).HasDatabaseName("IX_app_alerts_app_id");
         });
 
         // === app_usage ===

@@ -118,6 +118,20 @@ public interface IChannelAccessStore
   Task<IReadOnlyList<ChannelMember>> ListMembersAsync(
       string channelId,
       CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Admin-only: soft-delete every still-active channel belonging to the app, stamping them with
+  /// <paramref name="deletedAt"/> (the app's own tombstone) so <see cref="RestoreChannelsByAppAsync"/>
+  /// can undo exactly this cascade. Returns the number of channels newly deleted.
+  /// </summary>
+  Task<int> DeleteChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Admin-only: clear the tombstone on channels of the app whose <c>deleted_at</c> equals
+  /// <paramref name="deletedAt"/>; channels deleted independently (different timestamp) stay deleted.
+  /// Returns the number of channels restored.
+  /// </summary>
+  Task<int> RestoreChannelsByAppAsync(string appId, DateTimeOffset deletedAt, CancellationToken cancellationToken = default);
 }
 
 public sealed class ChannelAlreadyExistsException(string channelId)

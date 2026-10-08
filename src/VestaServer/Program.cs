@@ -1,5 +1,7 @@
 using System.Net.WebSockets;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -32,6 +34,9 @@ if (useInMemory)
     builder.Services.AddSingleton<IChannelAccessStore, InMemoryChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, InMemoryAppStore>();
     builder.Services.AddSingleton<IChannelStatsService, InMemoryChannelStatsService>();
+    builder.Services.AddSingleton<IAdminAuditStore, InMemoryAdminAuditStore>();
+    builder.Services.AddSingleton<IAppAlertStore, InMemoryAppAlertStore>();
+    builder.Services.AddSingleton<IAppUsageHistory, InMemoryAppUsageHistory>();
 
     builder.Services.AddHealthChecks()
         .AddCheck("in-memory-store", () => HealthCheckResult.Healthy("Using in-memory store"), tags: ["ready"]);
@@ -49,6 +54,9 @@ else if (!string.IsNullOrEmpty(connectionString))
     builder.Services.AddSingleton<IChannelAccessStore, NpgsqlChannelAccessStore>();
     builder.Services.AddSingleton<IAppStore, NpgsqlAppStore>();
     builder.Services.AddSingleton<IChannelStatsService, NpgsqlChannelStatsService>();
+    builder.Services.AddSingleton<IAdminAuditStore, NpgsqlAdminAuditStore>();
+    builder.Services.AddSingleton<IAppAlertStore, NpgsqlAppAlertStore>();
+    builder.Services.AddSingleton<IAppUsageHistory, NpgsqlAppUsageHistory>();
 
     builder.Services.AddHealthChecks()
         .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
@@ -66,6 +74,10 @@ else if (!string.IsNullOrEmpty(connectionString))
     // once their grace period elapses. Opt-in via ChannelDeletionPruner:Enabled.
     builder.Services.Configure<ChannelDeletionPrunerOptions>(builder.Configuration.GetSection("ChannelDeletionPruner"));
     builder.Services.AddHostedService<ChannelDeletionPrunerService>();
+
+    // Background sweep that irreversibly purges soft-deleted apps (admin DELETE /admin/apps/{id})
+    // once their grace period elapses. Opt-in via AppDeletionPruner:Enabled.
+    builder.Services.AddHostedService<AppDeletionPrunerService>();
 }
 else
 {
@@ -81,6 +93,10 @@ builder.Services.AddSingleton<IAppStorageAccountant, InMemoryAppStorageAccountan
 builder.Services.AddSingleton<IAppUsageAccountant, InMemoryAppUsageAccountant>();
 builder.Services.AddTransient<ProtocolHandler>();
 
+// Bound in every mode so GET /admin/config reports the effective values.
+builder.Services.Configure<AppDeletionPrunerOptions>(builder.Configuration.GetSection("AppDeletionPruner"));
+builder.Services.Configure<AppAlertOptions>(builder.Configuration.GetSection("AppAlerts"));
+
 // Protocol options (e.g. require all events to be signed).
 builder.Services.Configure<ProtocolOptions>(builder.Configuration.GetSection("Protocol"));
 
@@ -91,6 +107,36 @@ builder.Services.AddSingleton<IAdminStore, ConfigAdminStore>();
 // Admin HTTP API (challenge → bearer token).
 builder.Services.Configure<AdminApiOptions>(builder.Configuration.GetSection("AdminApi"));
 builder.Services.AddSingleton<AdminAuthService>();
+
+// Per-IP limit on /admin/auth/* (challenge + verify are unauthenticated).
+int adminAuthLimit = builder.Configuration.GetValue<int>("AdminApi:AuthRateLimitPerMinute", 20);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy(AdminEndpoints.AuthRateLimitPolicy, httpContext =>
+        adminAuthLimit <= 0
+            ? RateLimitPartition.GetNoLimiter("unlimited")
+            : RateLimitPartition.GetFixedWindowLimiter(
+                httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = adminAuthLimit,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                }));
+});
+
+// Opt-in: trust X-Forwarded-For from the TLS-terminating proxy so the limiter sees real client IPs.
+bool forwardedHeaders = builder.Configuration.GetValue<bool>("ForwardedHeaders:Enabled", false);
+if (forwardedHeaders)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    });
+}
 
 // Opt-in server-to-server discovery (federation). Default off: no endpoints, no gossip.
 DiscoveryOptions discovery = builder.Configuration.GetSection("Discovery").Get<DiscoveryOptions>() ?? new DiscoveryOptions();
@@ -126,6 +172,12 @@ if (!useInMemory && !string.IsNullOrEmpty(connectionString))
     await AppUsageSeeder.SeedAsync(dataSource, usageAccountant);
 }
 
+if (forwardedHeaders)
+{
+    app.UseForwardedHeaders();
+}
+
+app.UseRateLimiter();
 app.UseWebSockets();
 
 // Liveness: process is up, no dependency checks. Readiness: storage is actually reachable.

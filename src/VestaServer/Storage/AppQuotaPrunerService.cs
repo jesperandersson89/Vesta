@@ -35,9 +35,13 @@ public sealed class AppQuotaPrunerService(
     IAppStorageAccountant accountant,
     IAppUsageAccountant usageAccountant,
     IOptions<AppQuotaPrunerOptions> options,
-    ILogger<AppQuotaPrunerService> logger) : BackgroundService
+    ILogger<AppQuotaPrunerService> logger,
+    IAppAlertStore? alertStore = null,
+    IChannelAccessStore? channelStore = null,
+    IOptions<AppAlertOptions>? alertOptions = null) : BackgroundService
 {
   private readonly AppQuotaPrunerOptions _options = options.Value;
+  private readonly int[] _alertThresholds = alertOptions?.Value.ThresholdsPercent ?? [80, 100];
 
   protected override async Task ExecuteAsync(CancellationToken stoppingToken)
   {
@@ -101,16 +105,34 @@ public sealed class AppQuotaPrunerService(
         accountant.Set(app.Id, bytes);
       }
 
-      // Refresh the durable message-count rollup for the current period so
-      // EnforcePublishQuotas can check max_messages_per_month on the hot path.
-      if (app.Quotas.MaxMessagesPerMonth is not null)
-      {
-        DateOnly periodStart = usageAccountant.CurrentPeriod;
-        long messages = await MeasureMessagesThisPeriodAsync(app.Id, periodStart, cancellationToken);
-        usageAccountant.SetMessages(app.Id, messages);
-        await UpsertUsageRowAsync(app.Id, periodStart, messages, cancellationToken);
-      }
+      // Refresh the durable message-count rollup for the current period. Measured for every app
+      // (not just those with a quota) so the admin usage history is complete.
+      DateOnly periodStart = usageAccountant.CurrentPeriod;
+      long messages = await MeasureMessagesThisPeriodAsync(app.Id, periodStart, cancellationToken);
+      usageAccountant.SetMessages(app.Id, messages);
+      await UpsertUsageRowAsync(app.Id, periodStart, messages, cancellationToken);
+
+      await EvaluateAlertsAsync(app, periodStart, cancellationToken);
     }
+  }
+
+  private async Task EvaluateAlertsAsync(AppInfo app, DateOnly periodStart, CancellationToken cancellationToken)
+  {
+    if (alertStore is null)
+      return;
+
+    int? channelCount = app.Quotas.MaxChannels is null || channelStore is null
+        ? null
+        : await channelStore.CountChannelsByAppAsync(app.Id, cancellationToken);
+
+    IReadOnlyList<AppAlertCrossing> crossings = AppAlertEvaluator.Evaluate(
+        app.Quotas,
+        usageAccountant.GetMessages(app.Id),
+        periodStart,
+        accountant.Get(app.Id),
+        channelCount,
+        _alertThresholds);
+    await alertStore.SyncAsync(app.Id, crossings, cancellationToken);
   }
 
   /// <summary>

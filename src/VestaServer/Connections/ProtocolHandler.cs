@@ -62,6 +62,9 @@ public sealed class ProtocolHandler(
     IAdminStore? adminStore = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
+
+    // Real client ids are base64url, so "*" can never collide with a per-client bucket.
+    private const string AppThrottleBucketKey = "*throttle";
     private readonly ProtocolOptions _options = protocolOptions?.Value ?? new ProtocolOptions();
 
     /// <summary>
@@ -825,6 +828,18 @@ public sealed class ProtocolHandler(
         if (app is null)
             return true; // unknown apps are either rejected upstream or grandfathered
 
+        if (app.PausedAt is not null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "APP_PAUSED",
+                    $"App '{appId}' is paused by the operator",
+                    publish.Event.Id,
+                    publish.ChannelId),
+                cancellationToken);
+            return false;
+        }
+
         AppQuotas quotas = app.Quotas;
 
         int? estimatedSize = null;
@@ -884,6 +899,19 @@ public sealed class ProtocolHandler(
             // Cold cache: allow — the next pruner sweep will populate it.
         }
 
+        if (rateLimiter is not null && app.ThrottlePerMinute is int throttle &&
+            !rateLimiter.TryAcquire(appId, AppThrottleBucketKey, throttle))
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "RATE_LIMITED",
+                    $"App '{appId}' is throttled by the operator ({throttle}/min across all clients)",
+                    publish.Event.Id,
+                    publish.ChannelId),
+                cancellationToken);
+            return false;
+        }
+
         if (rateLimiter is not null &&
             quotas.PublishRatePerMinute is int rate &&
             !string.IsNullOrEmpty(connection.ClientId))
@@ -921,7 +949,18 @@ public sealed class ProtocolHandler(
             return true;
 
         AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
-        if (app is null || app.Quotas.MaxChannels is not int max)
+        if (app is null)
+            return true;
+
+        if (app.PausedAt is not null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("APP_PAUSED", $"App '{appId}' is paused by the operator", null, channelId),
+                cancellationToken);
+            return false;
+        }
+
+        if (app.Quotas.MaxChannels is not int max)
             return true;
 
         int current = await accessStore.CountChannelsByAppAsync(appId, cancellationToken);

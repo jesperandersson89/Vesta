@@ -26,6 +26,8 @@ export const VestaErrorCodes = {
     UnknownApp: "UNKNOWN_APP",
     AccessDenied: "ACCESS_DENIED",
     AppNotAllowed: "APP_NOT_ALLOWED",
+    /** The operator paused the app: publishes are refused until it is resumed. */
+    AppPaused: "APP_PAUSED",
 } as const;
 
 /** The outcome of classifying a server error code. */
@@ -42,6 +44,7 @@ export interface ErrorClassification {
 export function classifyErrorCode(code: string): ErrorClassification {
     switch (code) {
         case VestaErrorCodes.RateLimited:
+        case VestaErrorCodes.AppPaused:
             return { isLimit: true, isTransient: true, isEventFatal: false };
         case VestaErrorCodes.QuotaExceeded:
         case VestaErrorCodes.MessageQuotaExceeded:

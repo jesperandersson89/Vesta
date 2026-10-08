@@ -108,10 +108,16 @@ public sealed class ChannelDeletionPrunerService(
   private async Task<IReadOnlyList<string>> ListEligibleAsync(CancellationToken cancellationToken)
   {
     // GracePeriod stored as TimeSpan; convert to seconds for make_interval.
+    // Channels of a soft-deleted app are left to the app deletion pruner so the app stays restorable.
     const string sql = """
-            SELECT id FROM channels
-            WHERE deleted_at IS NOT NULL
-              AND deleted_at < now() - make_interval(secs => $1)
+            SELECT c.id FROM channels c
+            WHERE c.deleted_at IS NOT NULL
+              AND c.deleted_at < now() - make_interval(secs => $1)
+              AND NOT EXISTS (
+                SELECT 1 FROM apps a
+                WHERE a.deleted_at IS NOT NULL
+                  AND (c.id = a.id OR c.id LIKE a.id || '/%')
+              )
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
     cmd.Parameters.Add(new NpgsqlParameter<double> { TypedValue = _options.GracePeriod.TotalSeconds });

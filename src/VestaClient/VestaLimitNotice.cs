@@ -38,6 +38,9 @@ public static class VestaErrorCodes
     public const string AccessDenied = "ACCESS_DENIED";
     public const string AppNotAllowed = "APP_NOT_ALLOWED";
 
+    /// <summary>The operator paused the app: publishes are refused until it is resumed.</summary>
+    public const string AppPaused = "APP_PAUSED";
+
     /// <summary>
     /// The outcome of classifying a server error code.
     /// </summary>
@@ -55,6 +58,7 @@ public static class VestaErrorCodes
     {
         // Limits the app should hear about.
         RateLimited => new Classification(IsLimit: true, IsTransient: true, IsEventFatal: false),
+        AppPaused => new Classification(IsLimit: true, IsTransient: true, IsEventFatal: false),
         QuotaExceeded => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         MessageQuotaExceeded => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         UnknownApp => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
