@@ -6,6 +6,8 @@ in a plain Node.js CLI (TypeScript).
 
 ## Run
 
+Requires Node.js 22+ (the SDK uses the built-in `WebSocket`).
+
 ```powershell
 cd examples/clipboard-ts
 npm install
@@ -34,9 +36,9 @@ You'll be prompted for a display name. Optional environment variables / args:
 - **Projection snapshot**: `~/.vesta/clipboard-{room}-{name}-snapshots.json` — the `LwwMap` of
   per-user clipboard entries is restored on startup and saved on Ctrl+C, so the UI shows the last
   known state instantly instead of waiting for a full channel replay.
-- **Relay override / manifest cache**: `~/.vesta/relays/{appId}.{override,manifest}.json` (via
-  `FileRelayOverrideStore` / `FileManifestStore`), matching the C# examples'
-  `RelayDirectory.CreateDefault` layout.
+- **Relay override / manifest cache**: `~/.vesta/relays/{appId}.{override,manifest}.json` — the SDK
+  creates these itself from the `appConfig` passed to `VestaConnection` (importing
+  `vesta-client/node` selects the file-backed stores), the same layout as the C# and Python examples.
 
 ## Offline behavior
 
@@ -59,6 +61,6 @@ Projected with `LwwMap<string, ClipboardEntry>` keyed by client id (see `clipboa
 
 If every configured relay fails, the app keeps running against its local cache while the SDK
 opens its own relay picker — a loopback web page in your system browser — automatically; no app
-UI is wired up for it. The choice is remembered via `FileRelayOverrideStore` (see above) across
+UI is wired up for it. The choice is remembered under `~/.vesta/relays/` (see above) across
 runs. A `limited` event (quota / rate-limit / registration refusal) is surfaced as a red
 `[LIMITED]` line in the footer via `connection.on("limited", ...)`.

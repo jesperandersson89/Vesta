@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Shared clipboard synced via Vesta protocol",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "tsx src/main.ts",
     "build": "tsc",
@@ -10,12 +13,10 @@
   },
   "dependencies": {
     "clipboardy": "^4.0.0",
-    "vesta-client": "^0.1.6",
-    "ws": "^8.18.0"
+    "vesta-client": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
     "tsx": "^4.22.4",
     "typescript": "^5.7.0"
   }

@@ -15,20 +15,7 @@
  */
 
 import { Chess, type Square } from "chess.js";
-import {
-    createEvent,
-    LocalStorageManifestStore,
-    LocalStorageRelayOverrideStore,
-    RelayDirectory,
-    VestaConnection,
-    type EventMessage,
-    type EventsBatchMessage,
-    type SequencedEvent,
-    type VestaAppConfig,
-    type VestaLimitNotice,
-    type VestaSocket,
-    type WelcomeMessage,
-} from "vesta-client";
+import { createEvent, VestaConnection, type VestaEvent } from "vesta-client";
 
 import { BoardView } from "./board.js";
 import {
@@ -123,7 +110,6 @@ const activeMatches = new Map<string, ActiveMatch>();
 const declinedInvites = new Set<string>();
 let currentMatchId: string | null = null;
 let connection: VestaConnection | null = null;
-let relayDirectory: RelayDirectory | null = null;
 let username: string = usernameInput.value;
 let presenceTimer: number | null = null;
 let pruneTimer: number | null = null;
@@ -612,9 +598,7 @@ function resign(): void {
 
 // ─── Inbound events ────────────────────────────────────────────────────────
 
-function handleLobbyEvent(
-    ev: SequencedEvent["event"] | EventMessage["event"],
-): void {
+function handleLobbyEvent(ev: VestaEvent): void {
     const payload = ev.payload as Record<string, unknown>;
     const fromClientId = ev.clientId ?? "";
 
@@ -680,10 +664,7 @@ function handleLobbyEvent(
     }
 }
 
-function handleMatchEvent(
-    channelId: string,
-    ev: SequencedEvent["event"] | EventMessage["event"],
-): void {
+function handleMatchEvent(channelId: string, ev: VestaEvent): void {
     const matchId = channelId.slice("chess/match/".length);
     const m = activeMatches.get(matchId);
     const payload = ev.payload as Record<string, unknown>;
@@ -779,36 +760,19 @@ async function connect(): Promise<void> {
         return;
     }
 
-    // Always build a relay directory so the user can persist a relay override. Without a
-    // configured app-owner key, this demo's own identity stands in as the owner: no signed
-    // manifest will verify, but the per-user override still works. Federation discovery
-    // needs a real owner key.
-    const config: VestaAppConfig = {
-        appId: APP_ID,
-        ownerPublicKey: OWNER_PUBLIC_KEY || identity.publicKeyB64,
-        defaultRelays: relays,
-    };
-    relayDirectory = new RelayDirectory(
-        config,
-        new LocalStorageRelayOverrideStore("vesta-chess-relay-override"),
-        new LocalStorageManifestStore("vesta-chess-relay-manifest"),
-    );
-
-    // Resolve the final candidate order (override > manifest > defaults) when a
-    // directory exists; otherwise just use the typed list.
-    const candidates = relayDirectory.resolveCandidates();
-
+    // Without a configured app-owner key this demo's own identity stands in as the owner: no signed
+    // manifest will verify, but the per-user relay override still works (persisted in localStorage).
     connection = new VestaConnection({
-        relays: candidates,
-        clientId: identity.clientId,
-        publicKey: identity.publicKeyB64,
+        appConfig: {
+            appId: APP_ID,
+            ownerPublicKey: OWNER_PUBLIC_KEY || identity.publicKeyB64,
+            defaultRelays: relays,
+        },
+        identity,
         channels: [LOBBY],
-        createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
-        autoReconnect: true,
-        relayDirectory,
     });
 
-    connection.on("limited", (notice: VestaLimitNotice) => {
+    connection.on("limited", (notice) => {
         const kind = notice.isTransient ? "transient — will retry" : "permanent — not retried";
         console.warn(`[LIMITED] ${notice.code}: ${notice.message} (${kind})`);
     });
@@ -819,7 +783,7 @@ async function connect(): Promise<void> {
         // The SDK opens its own relay picker (a loopback overlay) when every relay is exhausted.
     });
 
-    connection.on("connected", (welcome: WelcomeMessage) => {
+    connection.on("connected", (welcome) => {
         connStatusEl.title = "";
         connStatusEl.textContent = "online";
         connStatusEl.classList.replace("offline", "online");
@@ -862,13 +826,13 @@ async function connect(): Promise<void> {
         renderLobby();
     });
 
-    connection.on("event", (msg: EventMessage) => {
+    connection.on("event", (msg) => {
         if (msg.channelId === LOBBY) handleLobbyEvent(msg.event);
         else if (msg.channelId.startsWith("chess/match/"))
             handleMatchEvent(msg.channelId, msg.event);
     });
 
-    connection.on("eventsBatch", (msg: EventsBatchMessage) => {
+    connection.on("eventsBatch", (msg) => {
         for (const se of msg.events) {
             if (msg.channelId === LOBBY) handleLobbyEvent(se.event);
             else if (msg.channelId.startsWith("chess/match/"))

@@ -1,12 +1,6 @@
 using System.Text.Json;
 using Presence.CLI;
-using VestaClient;
-using VestaClient.Relay;
-using VestaClient.Storage;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Projections;
-using VestaCore.Protocol;
+using Vesta;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 const int HeartbeatIntervalSeconds = 5;
@@ -47,13 +41,10 @@ string snapshotDbPath = Path.Combine(vestaDir, $"presence-{appName}-{username}-s
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
 
-// Every app declares a relay-independence trust anchor. VESTA_APP_OWNER_KEY (base64url)
-// overrides it; with no env set we use this client's own public key. The relay comes from
-// VESTA_RELAY_URL / the positional arg as the compiled-in default.
-byte[] presenceOwnerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") is { Length: > 0 } ownerEnv
-    ? VestaCore.Utilities.Base64Url.Decode(ownerEnv.Trim())
-    : identity.PublicKey;
-VestaAppConfig appConfig = new(appId, presenceOwnerKey, [new Uri(serverUrl)]);
+// The relay-independence trust anchor: VESTA_APP_OWNER_KEY (base64url) if set, otherwise this
+// client's own public key. The relay comes from VESTA_RELAY_URL / the positional arg.
+string ownerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") ?? Base64Url.Encode(identity.PublicKey);
+VestaAppConfig appConfig = new(appId, ownerKey, serverUrl);
 
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
 using SqliteProjectionStore snapshotStore = new($"Data Source={snapshotDbPath}");
@@ -76,7 +67,7 @@ string? lastLimitNotice = null;
 // ─── Connection ──────────────────────────────────────────────────────────────
 bool isConnected = false;
 
-await using VestaConnection connection = new(clientId, appConfig, localStore, identity)
+await using VestaConnection connection = new(identity, appConfig, localStore)
 {
     AutoReconnect = true
 };

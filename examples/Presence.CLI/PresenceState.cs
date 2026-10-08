@@ -1,6 +1,5 @@
 using System.Text.Json;
-using VestaCore.Events;
-using VestaCore.Projections;
+using Vesta;
 
 namespace Presence.CLI;
 
@@ -12,7 +11,7 @@ namespace Presence.CLI;
 //   app.presence.heartbeat  payload: { username }   metadata: { ttlSeconds }
 //   app.presence.bye        payload: { username }
 //
-// Conflict resolution: LWW per clientId via VestaCore.Projections.LwwMap.
+// Conflict resolution: LWW per clientId via LwwMap.
 //   - heartbeat → Set(clientId, snapshot)
 //   - bye       → Remove(clientId)  (user disappears from the list)
 //   - "online"  → derived view: now - lastSeen <= ttlSeconds.

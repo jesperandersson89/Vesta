@@ -33,7 +33,6 @@ Snapshot:    ~/.vesta/collab-edit-{room}-{username}-snapshots.db (LwwRegister pr
 import asyncio
 import os
 import queue
-import re
 import sys
 import threading
 import tkinter as tk
@@ -42,22 +41,22 @@ from pathlib import Path
 from tkinter import scrolledtext
 
 from vesta_client import (
-    FileManifestStore,
-    FileRelayOverrideStore,
     LwwRegister,
-    RelayDirectory,
+    RelaysExhaustedError,
     SequencedEvent,
+    SqliteClientEventStore,
+    SqliteProjectionStore,
     VestaAppConfig,
     VestaConnection,
     VestaEvent,
     VestaIdentity,
     VestaLimitNotice,
     create_event,
+    load_identity_file,
     load_or_create_identity,
+    restore_projection,
+    save_projection,
 )
-from vesta_client.relay import FilePeerCacheStore, RelaysExhaustedError
-from vesta_client.projection_store import SqliteProjectionStore, restore_projection, save_projection
-from vesta_client.storage import SqliteClientEventStore
 
 # ── Configuration ────────────────────────────────────────────────────────────
 DEFAULT_SERVER = "ws://localhost:5150/ws"
@@ -320,33 +319,19 @@ class App:
 
 
 # ── WebSocket background task ─────────────────────────────────────────────────
-def build_relay_directory(app_id: str, owner_public_key: str, default_relay: str) -> RelayDirectory:
-    """Relay directory with the user override persisted under ~/.vesta/relays/."""
-    safe_id = re.sub(r'[<>:"/\\|?*]', "_", app_id)
-    base = VESTA_DIR / "relays"
-    return RelayDirectory(
-        VestaAppConfig(app_id=app_id, owner_public_key=owner_public_key, default_relays=[default_relay]),
-        FileRelayOverrideStore(base / f"{safe_id}.override.json"),
-        FileManifestStore(base / f"{safe_id}.manifest.json"),
-        FilePeerCacheStore(base / f"{safe_id}.peers.json"),
-    )
-
-
 async def vesta_loop(app: App, loop: asyncio.AbstractEventLoop, local_store: SqliteClientEventStore):
     app_id: str = app.channel.split("/", 1)[0]
-    directory = build_relay_directory(
-        app_id,
-        os.environ.get("VESTA_APP_OWNER_KEY") or app.identity.public_key_b64,
-        app.server_url,
-    )
+    # The relay-independence trust anchor is VESTA_APP_OWNER_KEY if set, else this client's own key.
+    # The SDK keeps the relay override and manifest cache under ~/.vesta/relays/.
     conn = VestaConnection(
-        server_url=app.server_url,
-        client_id=app.client_id,
+        app_config=VestaAppConfig(
+            app_id=app_id,
+            owner_public_key=os.environ.get("VESTA_APP_OWNER_KEY") or app.identity.public_key_b64,
+            default_relays=[app.server_url],
+        ),
+        identity=app.identity,
         channels=[app.channel],
-        relays=directory.resolve_candidates(),
-        public_key=app.identity.public_key_b64,
         local_store=local_store,
-        relay_directory=directory,
     )
 
     def on_connected(welcome):
@@ -453,23 +438,6 @@ def prompt_username() -> str | None:
     return result[0]
 
 
-def resolve_identity(prefix: str) -> VestaIdentity:
-    """Load an identity from VESTA_IDENTITY_FILE (e.g. the ``{appId}.identity.json``
-    downloaded from Atrium) when set, otherwise use a local persistent identity."""
-    import base64
-    import json
-    import os
-
-    path = os.environ.get("VESTA_IDENTITY_FILE")
-    if path:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        raw = data["privateKey"]
-        raw += "=" * (-len(raw) % 4)  # restore base64url padding
-        return VestaIdentity.from_private_key(base64.urlsafe_b64decode(raw))
-    return load_or_create_identity(prefix)
-
-
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import os
@@ -488,7 +456,13 @@ if __name__ == "__main__":
     if not username:
         sys.exit(0)
 
-    identity = resolve_identity(f"collab-edit-{room}-{username}")
+    # VESTA_IDENTITY_FILE: an identity downloaded from Atrium (the app-owner key).
+    identity_file = os.environ.get("VESTA_IDENTITY_FILE")
+    identity = (
+        load_identity_file(identity_file)
+        if identity_file
+        else load_or_create_identity(f"collab-edit-{room}-{username}")
+    )
 
     VESTA_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"collab-edit-{room}-{username}"

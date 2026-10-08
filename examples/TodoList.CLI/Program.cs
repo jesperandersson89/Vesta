@@ -1,13 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using VestaClient;
-using VestaClient.Relay;
-using VestaClient.Storage;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Protocol;
 using TodoList.CLI;
+using Vesta;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -98,13 +93,10 @@ string groupFilePath = Path.Combine(vestaDir, $"todo-{channelSuffix}-group.json"
 VestaIdentity identity = VestaIdentity.LoadOrCreate(identityPath);
 string clientId = identity.ClientId;
 
-// Every app declares a relay-independence trust anchor. VESTA_APP_OWNER_KEY (base64url)
-// overrides it; with no env set we use this client's own public key. The relay comes from
-// VESTA_RELAY_URL / the positional arg as the compiled-in default.
-byte[] todoOwnerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") is { Length: > 0 } ownerEnv
-    ? VestaCore.Utilities.Base64Url.Decode(ownerEnv.Trim())
-    : identity.PublicKey;
-VestaAppConfig appConfig = new(appId, todoOwnerKey, [new Uri(serverUrl)]);
+// The relay-independence trust anchor: VESTA_APP_OWNER_KEY (base64url) if set, otherwise this
+// client's own public key. The relay comes from VESTA_RELAY_URL / the positional arg.
+string ownerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") ?? Base64Url.Encode(identity.PublicKey);
+VestaAppConfig appConfig = new(appId, ownerKey, serverUrl);
 
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
 
@@ -122,7 +114,7 @@ if (lastSeq > 0)
 bool isConnected = false;
 object displayLock = new();
 
-await using VestaConnection connection = new(clientId, appConfig, localStore, identity)
+await using VestaConnection connection = new(identity, appConfig, localStore)
 {
     AutoReconnect = true
 };
@@ -482,7 +474,7 @@ async Task PairAsync()
         Console.ResetColor();
     }
 
-    PairingPayload payload = new(groupId, VestaCore.Utilities.Base64Url.Encode(identity.PublicKey), serverUrl);
+    PairingPayload payload = new(groupId, Base64Url.Encode(identity.PublicKey), serverUrl);
     Console.ForegroundColor = ConsoleColor.DarkCyan;
     Console.WriteLine("  Pairing code (paste into /join on the OTHER device):");
     Console.WriteLine($"    {payload.ToBase64()}");
@@ -510,7 +502,7 @@ async Task JoinAsync(string pairingCode)
     Console.ForegroundColor = ConsoleColor.DarkCyan;
     Console.WriteLine($"  Announced this device to group '{payload.GroupId}'. Not yet trusted.");
     Console.WriteLine("  On an ALREADY-PAIRED device, run:");
-    Console.WriteLine($"    /link {VestaCore.Utilities.Base64Url.Encode(identity.PublicKey)}");
+    Console.WriteLine($"    /link {Base64Url.Encode(identity.PublicKey)}");
     Console.ResetColor();
 }
 
@@ -528,7 +520,7 @@ async Task LinkAsync(string targetPublicKeyBase64Url)
     byte[] targetPublicKey;
     try
     {
-        targetPublicKey = VestaCore.Utilities.Base64Url.Decode(targetPublicKeyBase64Url);
+        targetPublicKey = Base64Url.Decode(targetPublicKeyBase64Url);
     }
     catch (FormatException)
     {

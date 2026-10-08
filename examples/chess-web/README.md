@@ -41,8 +41,8 @@ The SDK handles relay independence itself — no app UI is wired up for it:
   verification — an accepted manifest silently republishes the candidate list.
 - **Built-in relay picker**: if every relay becomes unreachable, `VestaConnection` mounts its
   own `<vesta-relay-picker>` overlay automatically — manual URL entry, "Find other relays"
-  (federation discovery), and "Clear saved relay" all live there. The user's choice persists via
-  `LocalStorageRelayOverrideStore` (`localStorage`), taking precedence over the manifest and
+  (federation discovery), and "Clear saved relay" all live there. The user's choice persists in
+  `localStorage`, taking precedence over the manifest and
   defaults on future visits.
 - **Limit notices**: a `QUOTA_EXCEEDED` / `RATE_LIMITED` / etc. response from the relay is logged
   via `connection.on("limited", ...)` (see the browser console).

@@ -45,7 +45,7 @@ Channel: `{appId}/{room}`
 | `app.presence.heartbeat` | `{ "username": string, "status": "online" }` | `{ "ttlSeconds": 15 }` | `Replace: true` — last-writer-wins per client id. Sent every 5s. |
 | `app.presence.bye` | `{ "username": string }` | — | Sent on graceful shutdown (Ctrl+C). |
 
-Presence state is projected with `VestaCore.Projections.LwwMap<string, Heartbeat>` (see
+Presence state is projected with `LwwMap<string, Heartbeat>` (see
 `PresenceState.cs`): a heartbeat is a `Set`, a `bye` is a `Remove` (tombstone).
 
 ## Commands

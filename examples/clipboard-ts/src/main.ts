@@ -11,6 +11,7 @@
  *
  * Run:  npx tsx src/main.ts [ws://host:port/ws] [room-name]
  * Env:  VESTA_RELAY_URL, VESTA_APP_ID, VESTA_IDENTITY_FILE (for Atrium-managed relays)
+ * Needs Node.js 22+ (built-in WebSocket).
  *
  * If every relay is unreachable, the SDK opens its own relay picker (a loopback browser
  * page) automatically — no app UI needed. The choice is remembered under ~/.vesta/relays/.
@@ -20,32 +21,18 @@ import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import clipboardy from "clipboardy";
-import WebSocket from "ws";
 import {
-    classifyErrorCode,
     LwwMap,
     LwwMapUpdate,
-    RelayDirectory,
     VestaConnection,
-    VestaIdentity,
     createEvent,
+    loadIdentityFile,
     loadOrCreateIdentity,
     restoreProjection,
     saveProjection,
-    type VestaAppConfig,
     type VestaEvent,
-    type VestaLimitNotice,
-    type EventMessage,
-    type EventsBatchMessage,
-    type VestaSocket,
 } from "vesta-client";
-import {
-    FileClientEventStore,
-    FileManifestStore,
-    FileProjectionStore,
-    FileRelayOverrideStore,
-    defaultRelayStorePaths,
-} from "vesta-client/node";
+import { FileClientEventStore, FileProjectionStore } from "vesta-client/node";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const DEFAULT_SERVER = "ws://localhost:5150/ws";
@@ -172,20 +159,6 @@ function renderUI(
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
-/**
- * Load an identity from VESTA_IDENTITY_FILE (e.g. the `{appId}.identity.json`
- * downloaded from Atrium) when set, otherwise fall back to a local persistent
- * identity stored under ~/.vesta.
- */
-async function resolveIdentity(prefix: string): Promise<VestaIdentity> {
-    const file = process.env.VESTA_IDENTITY_FILE;
-    if (file) {
-        const { readFileSync } = await import("node:fs");
-        return VestaIdentity.fromJSON(JSON.parse(readFileSync(file, "utf-8")));
-    }
-    return loadOrCreateIdentity(prefix);
-}
-
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
     const relayUrls = (process.env.VESTA_RELAY_URL ?? args[0] ?? DEFAULT_SERVER)
@@ -205,22 +178,19 @@ async function main(): Promise<void> {
 
     // VESTA_IDENTITY_FILE lets you load an identity downloaded from Atrium
     // (the app-owner key) instead of a per-room/user key generated locally.
-    const identity = await resolveIdentity(`clipboard-${room}-${username}`);
+    const identityFile = process.env.VESTA_IDENTITY_FILE;
+    const identity = identityFile
+        ? await loadIdentityFile(identityFile)
+        : await loadOrCreateIdentity(`clipboard-${room}-${username}`);
     const clientId = identity.clientId;
 
-    // Relay independence: the app's trust anchor + Node file-backed override/manifest
-    // stores (~/.vesta/relays/), matching the C# examples' RelayDirectory.CreateDefault.
-    // VESTA_APP_OWNER_KEY overrides the anchor; with no env set this client's own key
-    // is the anchor, so the demo is self-signing.
-    const ownerPublicKey = process.env.VESTA_APP_OWNER_KEY ?? identity.publicKeyB64;
-    const appConfig: VestaAppConfig = { appId, ownerPublicKey, defaultRelays: relayUrls };
-    const { overridePath, manifestPath } = defaultRelayStorePaths(appId);
-    const relayDirectory = new RelayDirectory(
-        appConfig,
-        new FileRelayOverrideStore(overridePath),
-        new FileManifestStore(manifestPath),
-    );
-
+    // The relay-independence trust anchor: VESTA_APP_OWNER_KEY if set, otherwise this client's own
+    // key, so the demo is self-signing. Relay overrides and manifests persist under ~/.vesta/relays/.
+    const appConfig = {
+        appId,
+        ownerPublicKey: process.env.VESTA_APP_OWNER_KEY ?? identity.publicKeyB64,
+        defaultRelays: relayUrls,
+    };
     // Local event cache + offline outbox, and a projection snapshot for fast cold start.
     const vestaDir = join(homedir(), ".vesta");
     const localStore = new FileClientEventStore(join(vestaDir, `clipboard-${room}-${username}-cache.json`));
@@ -265,15 +235,7 @@ async function main(): Promise<void> {
     }
 
     // ── Vesta connection ─────────────────────────────────────────────────────
-    const connection = new VestaConnection({
-        relays: relayDirectory.resolveCandidates(),
-        clientId,
-        publicKey: identity.publicKeyB64,
-        channels: [channel],
-        createSocket: (url) => new WebSocket(url) as unknown as VestaSocket,
-        localStore,
-        relayDirectory,
-    });
+    const connection = new VestaConnection({ appConfig, identity, channels: [channel], localStore });
 
     connection.on("relayAttemptFailed", (attempt) => {
         relayProblem = `${attempt.relay} (${attempt.reason})`;
@@ -298,12 +260,12 @@ async function main(): Promise<void> {
 
     connection.on("disconnected", () => redraw());
 
-    connection.on("limited", (notice: VestaLimitNotice) => {
+    connection.on("limited", (notice) => {
         lastLimitNotice = `${notice.code}: ${notice.message}`;
         redraw();
     });
 
-    connection.on("event", (msg: EventMessage) => {
+    connection.on("event", (msg) => {
         if (msg.event.clientId === clientId) return;
         state.apply({
             event: msg.event,
@@ -318,7 +280,7 @@ async function main(): Promise<void> {
         redraw();
     });
 
-    connection.on("eventsBatch", (msg: EventsBatchMessage) => {
+    connection.on("eventsBatch", (msg) => {
         let changed = false;
         for (const se of msg.events) {
             if (se.event.clientId === clientId) continue;

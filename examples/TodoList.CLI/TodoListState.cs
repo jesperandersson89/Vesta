@@ -1,5 +1,5 @@
 using System.Text.Json;
-using VestaCore.Events;
+using Vesta;
 
 namespace TodoList.CLI;
 

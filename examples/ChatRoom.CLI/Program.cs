@@ -1,15 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
-using VestaClient;
-using VestaClient.Federation;
-using VestaClient.Relay;
-using VestaClient.Storage;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Protocol;
-using VestaCore.Relay;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
+using Vesta;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 // Relay URLs: VESTA_RELAY_URL (e.g. your Atrium-managed relay) > positional arg > local default.
@@ -18,11 +9,8 @@ using VestaCore.Utilities;
 string relayConfig = Environment.GetEnvironmentVariable("VESTA_RELAY_URL")
     ?? (args.Length > 0 ? args[0] : "ws://localhost:5150/ws");
 
-List<Uri> relays = relayConfig
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-    .Select(u => new Uri(u))
-    .ToList();
-string serverUrl = relays[0].ToString();
+string[] relays = relayConfig.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+string serverUrl = relays[0];
 
 // App namespace = the first channel segment. Set VESTA_APP_ID to the app id you
 // provisioned in Atrium so every channel is scoped under it. Defaults to "chat".
@@ -68,21 +56,8 @@ Console.ResetColor();
 // relay without the relay's cooperation. VESTA_APP_OWNER_KEY (base64url) overrides it; with
 // no env set we use THIS client's own public key so the demo is self-signing — you can publish
 // a manifest with /publish-manifest and watch it get adopted.
-byte[] ownerPublicKey;
-string? ownerKeyEnv = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY");
-bool weHoldOwnerKey;
-if (!string.IsNullOrWhiteSpace(ownerKeyEnv))
-{
-    ownerPublicKey = Base64Url.Decode(ownerKeyEnv.Trim());
-    weHoldOwnerKey = ownerPublicKey.AsSpan().SequenceEqual(identity.PublicKey);
-}
-else
-{
-    ownerPublicKey = identity.PublicKey;
-    weHoldOwnerKey = true;
-}
-
-VestaAppConfig appConfig = new(appId, ownerPublicKey, relays);
+string ownerKey = Environment.GetEnvironmentVariable("VESTA_APP_OWNER_KEY") ?? Base64Url.Encode(identity.PublicKey);
+VestaAppConfig appConfig = new(appId, ownerKey, relays);
 
 // ─── Local Store (SQLite) ────────────────────────────────────────────────────
 using SqliteClientEventStore localStore = new($"Data Source={dbPath}");
@@ -148,7 +123,7 @@ void PrintAboveInput(Action printAction)
 }
 
 // ─── Connect ─────────────────────────────────────────────────────────────────
-await using VestaConnection connection = new(clientId, appConfig, localStore, identity)
+await using VestaConnection connection = new(identity, appConfig, localStore)
 {
     AutoReconnect = true
 };
@@ -461,27 +436,11 @@ async Task HandleCommandAsync(string input)
 
 async Task PublishManifestAsync(string[] parts)
 {
-    if (!weHoldOwnerKey)
-    {
-        PrintAboveInput(() =>
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("  Cannot publish: this client does not hold the app-owner signing key.");
-            Console.WriteLine("  (VESTA_APP_OWNER_KEY points at a different key than this identity.)");
-            Console.ResetColor();
-        });
-        return;
-    }
-
-    List<RelayEndpoint> endpoints = new();
-    for (int i = 1; i < parts.Length; i++)
-    {
-        if (Uri.TryCreate(parts[i], UriKind.Absolute, out _))
-        {
-            endpoints.Add(new RelayEndpoint(parts[i], i - 1));
-        }
-    }
-    if (endpoints.Count == 0)
+    List<Uri> urls = parts.Skip(1)
+        .Where(p => Uri.TryCreate(p, UriKind.Absolute, out _))
+        .Select(p => new Uri(p))
+        .ToList();
+    if (urls.Count == 0)
     {
         PrintAboveInput(() =>
         {
@@ -492,31 +451,21 @@ async Task PublishManifestAsync(string[] parts)
         return;
     }
 
-    int nextVersion = (connection.RelayDirectory.CurrentManifest?.Version ?? 0) + 1;
-    RelayManifest manifest = new()
+    string message;
+    try
     {
-        AppId = appId,
-        Version = nextVersion,
-        IssuedAt = DateTimeOffset.UtcNow,
-        Relays = endpoints,
-        OwnerPublicKey = string.Empty
-    };
-    RelayManifest signed = ManifestSigner.Sign(manifest, identity);
+        RelayManifest manifest = await connection.PublishRelayManifestAsync(urls);
+        message = $"  Published owner manifest v{manifest.Version} with {urls.Count} relay(s).";
+    }
+    catch (InvalidOperationException ex)
+    {
+        message = $"  Cannot publish: {ex.Message}";
+    }
 
-    JsonElement manifestPayload = JsonSerializer.SerializeToElement(signed, VestaJsonOptions.Default);
-    VestaEvent manifestEvent = new(
-        Id: Guid.NewGuid(),
-        ChannelId: RelayManifest.ChannelFor(appId),
-        Timestamp: DateTimeOffset.UtcNow,
-        ClientId: clientId,
-        EventType: RelayManifest.EventType,
-        Payload: manifestPayload);
-
-    await connection.PublishAsync(manifestEvent);
     PrintAboveInput(() =>
     {
         Console.ForegroundColor = ConsoleColor.DarkCyan;
-        Console.WriteLine($"  Published owner manifest v{nextVersion} with {endpoints.Count} relay(s).");
+        Console.WriteLine(message);
         Console.ResetColor();
     });
 }
@@ -534,9 +483,12 @@ async Task DiscoverRelaysAsync(string[] parts)
 {
     bool browseAll = parts.Length >= 2 && parts[1].Equals("all", StringComparison.OrdinalIgnoreCase);
 
-    // Use whichever relay we can currently reach as the federation entry point.
-    Uri? entryRelay = connection.ActiveRelay ?? connection.Relays.FirstOrDefault();
-    if (entryRelay is null || !FederationClient.ToFederationBaseUrl(entryRelay, out Uri? federationBase) || federationBase is null)
+    IReadOnlyList<DiscoveredRelay> found;
+    try
+    {
+        found = await connection.DiscoverRelaysAsync(browseAll);
+    }
+    catch (InvalidOperationException)
     {
         PrintAboveInput(() =>
         {
@@ -547,18 +499,13 @@ async Task DiscoverRelaysAsync(string[] parts)
         return;
     }
 
-    FederationClient federation = new(appConfig);
-    IReadOnlyList<DiscoveredRelay> found = browseAll
-        ? await federation.ListAllRelaysAsync(federationBase)
-        : await federation.DiscoverRelaysForAppAsync(federationBase);
-
     PrintAboveInput(() =>
     {
         Console.ForegroundColor = ConsoleColor.DarkCyan;
         if (found.Count == 0)
         {
             Console.WriteLine(browseAll
-                ? $"  No relays known to {federationBase.Host} (is discovery enabled there?)."
+                ? $"  No relays known to {connection.ActiveRelay?.Host} (is discovery enabled there?)."
                 : $"  No other relays found hosting '{appId}'. Try /discover all to browse the mesh.");
         }
         else
