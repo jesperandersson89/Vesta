@@ -151,7 +151,7 @@ client-side importer for the export format.
   `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` verifies, publishes NuGet
   (`VestaProtocol.Core`, `VestaProtocol.Client`), npm + PyPI (`vesta-client`) via OIDC trusted
   publishing (environment `release`, repo var `NUGET_USER`), then a GitHub Release. Idempotent —
-  safe to re-run. npm publish is **staged**; approve on npmjs.com.
+  safe to re-run. npm publishes directly via the trusted publisher — no manual approval on npmjs.com.
 - **Relay image** is a separate tag line: `server-vX.Y.Z` → `release-server.yml` →
   `ghcr.io/jesperandersson89/vesta-server:X.Y.Z` (+`:latest`); `main` pushes get `:sha-<short>`.
 - Only `VestaCore`/`VestaClient` pack (`IsPackable=false` default). Examples pin the published
