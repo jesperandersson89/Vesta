@@ -1,4 +1,4 @@
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Tracks how far a projection has been processed within a channel, so it can be persisted

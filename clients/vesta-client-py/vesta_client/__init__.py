@@ -1,6 +1,6 @@
 """Vesta protocol client library for Python."""
 
-__version__ = "0.1.6"
+__version__ = "0.2.0"
 
 from vesta_client.connection import (
     VestaConnection,
@@ -19,6 +19,7 @@ from vesta_client.federation import (
 from vesta_client.identity import (
     VestaIdentity,
     load_identity_extra,
+    load_identity_file,
     load_or_create_identity,
     save_identity_extra,
 )
@@ -202,6 +203,7 @@ __all__ = [
     "generate_group_id",
     "is_protocol_channel",
     "load_identity_extra",
+    "load_identity_file",
     "load_or_create_identity",
     "manifest_channel_for",
     "resolve_relay_candidates",

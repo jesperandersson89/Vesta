@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace VestaCore.Events;
+namespace Vesta;
 
 /// <summary>
 /// Helpers for reading well-known fields out of <see cref="VestaEvent.Metadata"/>.

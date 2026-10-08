@@ -3,9 +3,7 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
-using VestaCore.Protocol;
-using VestaCore.Relay;
-using VestaCore.Serialization;
+using Vesta;
 
 namespace VestaServer.Tests;
 

@@ -1,4 +1,4 @@
-namespace VestaCore.Protocol;
+namespace Vesta;
 
 /// <summary>
 /// CLIENT → SERVER: Initial handshake. Identifies the client and declares

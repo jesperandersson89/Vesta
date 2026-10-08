@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace VestaCore.Protocol;
+namespace Vesta;
 
 /// <summary>
 /// Base type for all Vesta protocol messages sent over WebSocket.

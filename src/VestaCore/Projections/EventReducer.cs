@@ -1,6 +1,5 @@
-using VestaCore.Events;
 
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Base class for projections that fold a channel's event stream into a typed state object.

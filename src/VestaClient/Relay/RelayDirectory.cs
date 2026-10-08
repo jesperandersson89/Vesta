@@ -1,6 +1,5 @@
-using VestaCore.Relay;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// The client-side policy that turns an app's <see cref="VestaAppConfig"/>, the user's local

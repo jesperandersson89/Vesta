@@ -31,8 +31,8 @@ identity); any relay can be swapped for another and the app runs unchanged.
   workflows, no cloud creds, and it never references Atrium internals.
 - **Atrium** (`vesta_atrium`, proprietary, sibling folder) is the managed-cloud control plane. It
   consumes `VestaProtocol.Core` from NuGet and the relay image from GHCR, and talks to the relay
-  only via `/admin/*`. Changing `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`,
-  `VestaCore.Channels.AppId`, the `/admin/*` JSON, or the image contract (port 8080, non-root,
+  only via `/admin/*`. Changing `VestaIdentity`, `Base64Url`,
+  `AppId` (all in namespace `Vesta`), the `/admin/*` JSON, or the image contract (port 8080, non-root,
   `ConnectionStrings__Vesta`, `/health`, `/health/ready`) is a **cross-repo breaking change**.
 - Relays are for **operators only**; app developers connect to one, never deploy one.
 
@@ -96,7 +96,7 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
 
 ## SDK primitives
 
-- Projections (`VestaCore.Projections` + TS/Py mirrors): `EventReducer<T>`, `AppendOnlyLog<T>`,
+- Projections (namespace `Vesta` + TS/Py mirrors): `EventReducer<T>`, `AppendOnlyLog<T>`,
   `LwwRegister<T>`, `LwwMap<K,V>`, `ProjectionCheckpoint`, snapshots via `IProjectionStore`.
   `Apply(SequencedEvent)` advances `LastSequence`; `ApplyLocal(VestaEvent)` does not.
   [docs/projections.md](docs/projections.md).
@@ -105,10 +105,20 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
   Peer-equality trust; private keys never move. Phases 2–6 (revocation, rotation, cross-app,
   recovery, delegation) deferred; **server-mediated key transfer is rejected** (see archive).
 - Relay independence (#20): `VestaConnection` **requires** `VestaAppConfig { AppId,
-  OwnerPublicKey, DefaultRelays }`; `RelayDirectory.CreateDefault` caches under
+  OwnerPublicKey, DefaultRelays }` (C# also accepts `(appId, ownerKeyBase64Url, params string[] relays)`);
+  `RelayDirectory.CreateDefault` / `createDefault` / `create_default` caches under
   `~/.vesta/relays/`; owner-signed `RelayManifest` (`vesta.relay-manifest` events) adopted only
   for newer `version`; order = user override > manifest/escape fallbacks > app defaults.
-  Default-on in C# only; TS/Py attach the directory explicitly (`vesta-client/node` subpath).
+  Default-on in all three SDKs: pass `appConfig`/`app_config` (+ `identity`) and the connection
+  builds the directory, derives the client id and resolves relays itself. TS needs `vesta-client/node`
+  imported to get file-backed stores (browsers fall back to `localStorage`, else in memory).
+  `DiscoverRelaysAsync` and `PublishRelayManifestAsync` (`discoverRelays`/`publishRelayManifest`,
+  `discover_relays`/`publish_relay_manifest`) wrap federation discovery and owner manifest publishing.
+- **One namespace (0.2.0):** every public C# type in `VestaProtocol.Core` and
+  `VestaProtocol.Client` is in `namespace Vesta;` (folders unchanged) so an app needs a single
+  `using Vesta;`, matching `from "vesta-client"` / `from vesta_client import`. Package ids unchanged.
+- **TS runtime (0.2.0):** `createSocket` is optional and defaults to the global `WebSocket`; engines
+  `node >=22`, the `ws` peer dependency is gone (pass `createSocket` to use another implementation).
 - Federation (#21): gossip pull over `/federation/{descriptor,peers,apps/{appId}}`, self-signed
   `ServerDescriptor`; dual opt-in (`Discovery:Enabled` + per-app `discoverable` column, never
   parsed from payloads). Discovered relays are **show-only**; `FederationClient` drops any whose
@@ -152,7 +162,8 @@ client-side importer for the export format.
 
 ## Conventions
 
-net10.0, nullable, implicit usings, **no `var`**, file-scoped namespaces, no `#region`, records
+net10.0, nullable, implicit usings, **no `var`**, file-scoped namespaces (one public namespace,
+`Vesta`, for both SDK assemblies), no `#region`, records
 for immutable data, switch expressions, `Async` suffix, tests `Method_Scenario_Expected`.
 Port client-visible behaviour to **all three SDKs** (say so explicitly if C#-only). Sweep
 examples when `VestaCore`/`VestaClient` surfaces change. Never hand-write EF migrations
@@ -165,7 +176,7 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 180 Core + 113 Client + 179 Server (38 of them need Docker); TS 102; Py 112.
+- Expected test totals (all green): C# 180 Core + 118 Client + 179 Server (38 of them need Docker); TS 109; Py 121.
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via

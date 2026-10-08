@@ -4,10 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
-using VestaCore.Channels;
-using VestaCore.Protocol;
-using VestaCore.Storage;
-using VestaCore.Utilities;
+using Vesta;
 using VestaServer.Connections;
 using VestaServer.Storage;
 

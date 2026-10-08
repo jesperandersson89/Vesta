@@ -1,11 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using VestaClient.Storage;
-using VestaCore.Events;
-using VestaCore.Protocol;
-using VestaCore.Serialization;
 
-namespace VestaClient;
+namespace Vesta;
 
 /// <summary>
 /// A test-friendly Vesta client that works with any <see cref="WebSocket"/> instance,

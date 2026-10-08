@@ -1,6 +1,5 @@
-using VestaCore.Events;
 
-namespace VestaCore.Storage;
+namespace Vesta;
 
 /// <summary>
 /// Storage abstraction for the event log.

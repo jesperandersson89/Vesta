@@ -1,11 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Protocol;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
+using Vesta;
 
 namespace VestaServer.Tests;
 

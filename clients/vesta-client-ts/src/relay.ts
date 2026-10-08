@@ -325,6 +325,27 @@ export class LocalStorageManifestStore implements ManifestStore {
 
 // ─── RelayDirectory ──────────────────────────────────────────────────────────
 
+type RelayDirectoryFactory = (config: VestaAppConfig) => RelayDirectory;
+
+let defaultRelayDirectoryFactory: RelayDirectoryFactory | null = null;
+
+// Some runtimes expose a `localStorage` getter that throws when it is not configured.
+function hasLocalStorage(): boolean {
+    try {
+        return typeof globalThis.localStorage?.getItem === "function";
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Register how `RelayDirectory.createDefault` persists state. `vesta-client/node` calls this on
+ * import to use file-backed stores under `~/.vesta/relays/`.
+ */
+export function setDefaultRelayDirectoryFactory(factory: RelayDirectoryFactory | null): void {
+    defaultRelayDirectoryFactory = factory;
+}
+
 /**
  * Turns an app config, the user override, and the latest owner-signed manifest into an
  * ordered relay candidate list — and decides whether to trust an incoming manifest.
@@ -332,6 +353,30 @@ export class LocalStorageManifestStore implements ManifestStore {
 export class RelayDirectory {
     private current: RelayManifest | null = null;
     private pendingOverride: RelayOverride | null = null;
+
+    /**
+     * A directory with the platform's default persistence: file-backed under `~/.vesta/relays/`
+     * once `vesta-client/node` is imported, otherwise `localStorage` in browsers, else in memory.
+     */
+    static createDefault(config: VestaAppConfig): RelayDirectory {
+        if (defaultRelayDirectoryFactory) return defaultRelayDirectoryFactory(config);
+
+        if (hasLocalStorage()) {
+            const key = (kind: string): string => `vesta.relays.${config.appId}.${kind}`;
+            return new RelayDirectory(
+                config,
+                new LocalStorageRelayOverrideStore(key("override")),
+                new LocalStorageManifestStore(key("manifest")),
+                new LocalStoragePeerCacheStore(key("peers")),
+            );
+        }
+        return new RelayDirectory(
+            config,
+            new InMemoryRelayOverrideStore(),
+            new InMemoryManifestStore(),
+            new InMemoryPeerCacheStore(),
+        );
+    }
 
     constructor(
         private readonly appConfig: VestaAppConfig,

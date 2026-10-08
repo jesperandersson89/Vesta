@@ -1,10 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
-using VestaCore.Events;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
 
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// Constructs the three identity-channel event types — <c>announce</c>,
@@ -43,7 +40,7 @@ public static class IdentityLinkBuilder
     /// <para>
     /// Returns 32 lowercase hex chars (128 bits of entropy). Hex is used rather than
     /// base64url because the latter's <c>_</c> character is not permitted in channel
-    /// IDs (see <see cref="Channels.ChannelId"/>).
+    /// IDs (see <see cref="ChannelId"/>).
     /// </para>
     /// </summary>
     public static string GenerateGroupId()

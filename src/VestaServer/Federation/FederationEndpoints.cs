@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using VestaCore.Channels;
-using VestaCore.Relay;
+using Vesta;
 
 namespace VestaServer.Federation;
 

@@ -1,10 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using Org.Webpki.JsonCanonicalizer;
-using VestaCore.Identity;
-using VestaCore.Utilities;
 
-namespace VestaCore.Relay;
+namespace Vesta;
 
 /// <summary>
 /// Signs and verifies <see cref="RelayManifest"/> records using Ed25519 and RFC 8785 (JCS)

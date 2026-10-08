@@ -1,4 +1,4 @@
-using VestaClient;
+using Vesta;
 
 namespace VestaClient.Tests;
 

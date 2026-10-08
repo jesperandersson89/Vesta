@@ -33,7 +33,7 @@ which a session created before `connect()` picks up automatically.
 
 ## Session API
 
-| Concept  | C# (`VestaClient.Relay`)                   | TypeScript                        | Python                               |
+| Concept  | C# (`Vesta`)                               | TypeScript                        | Python                               |
 | -------- | ------------------------------------------ | --------------------------------- | ------------------------------------ |
 | Session  | `new RelayRecoverySession(connection)`     | `new RelayRecoverySession(conn)`  | `RelayRecoverySession(conn)`         |
 | State    | `Snapshot`, `OnChanged`                    | `snapshot`, `onChange(fn)`        | `snapshot`, `on_change(fn)`          |

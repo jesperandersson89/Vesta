@@ -1,4 +1,4 @@
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// A captured snapshot of a projection's state at a specific server-assigned sequence.

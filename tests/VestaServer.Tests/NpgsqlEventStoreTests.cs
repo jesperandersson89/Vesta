@@ -2,7 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Testcontainers.PostgreSql;
-using VestaCore.Events;
+using Vesta;
 using VestaServer.Data;
 using VestaServer.Storage;
 

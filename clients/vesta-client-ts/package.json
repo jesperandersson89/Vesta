@@ -1,6 +1,6 @@
 {
   "name": "vesta-client",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "TypeScript client library for the Vesta protocol",
   "type": "module",
   "main": "dist/index.js",
@@ -46,7 +46,7 @@
     "url": "https://github.com/jesperandersson89/Vesta/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "sideEffects": false,
   "publishConfig": {
@@ -58,17 +58,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
     "rimraf": "^6.0.0",
-    "typescript": "^5.7.0",
-    "ws": "^8.0.0"
-  },
-  "peerDependencies": {
-    "ws": "^8.0.0"
-  },
-  "peerDependenciesMeta": {
-    "ws": {
-      "optional": true
-    }
+    "typescript": "^5.7.0"
   }
 }

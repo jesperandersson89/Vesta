@@ -15,13 +15,14 @@ import type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 import type { SequencedEvent, VestaEvent } from "./types.js";
 import type { ProjectionSnapshot } from "./projections/index.js";
 import type { ProjectionStore } from "./projection-store.js";
-import { parseRelayOverride } from "./relay.js";
+import { parseRelayOverride, RelayDirectory, setDefaultRelayDirectoryFactory } from "./relay.js";
 import type {
     ManifestStore,
     PeerCacheStore,
     RelayManifest,
     RelayOverride,
     RelayOverrideStore,
+    VestaAppConfig,
 } from "./relay.js";
 import type { DiscoveredRelay } from "./federation.js";
 import { setRelayPickerFactory } from "./connection.js";
@@ -121,6 +122,18 @@ export function defaultRelayStorePaths(appId: string): { overridePath: string; m
         peersPath: join(dir, `${safeAppId}.peers.json`),
     };
 }
+
+// Importing the Node entry point makes `RelayDirectory.createDefault` (and so every VestaConnection
+// built from an `appConfig`) persist overrides/manifests under `~/.vesta/relays/`.
+setDefaultRelayDirectoryFactory((config: VestaAppConfig) => {
+    const paths = defaultRelayStorePaths(config.appId);
+    return new RelayDirectory(
+        config,
+        new FileRelayOverrideStore(paths.overridePath),
+        new FileManifestStore(paths.manifestPath),
+        new FilePeerCacheStore(paths.peersPath),
+    );
+});
 
 // ─── Projection store ────────────────────────────────────────────────────────
 

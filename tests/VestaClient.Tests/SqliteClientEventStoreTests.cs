@@ -1,6 +1,5 @@
 using System.Text.Json;
-using VestaClient.Storage;
-using VestaCore.Events;
+using Vesta;
 
 namespace VestaClient.Tests;
 

@@ -1,7 +1,5 @@
-using VestaClient.Federation;
-using VestaCore.Channels;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>The slice of <see cref="VestaConnection"/> a <see cref="RelayRecoverySession"/> drives.</summary>
 public interface IRelayRecoveryHost

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>VestaProtocol.Core</PackageId>
+    <RootNamespace>Vesta</RootNamespace>
     <Description>Shared protocol types, event/identity primitives, and conflict-resolution helpers for the Vesta protocol.</Description>
     <PackageTags>vesta;protocol;event-sourcing;crdt</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

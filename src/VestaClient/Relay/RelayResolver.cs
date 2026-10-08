@@ -1,4 +1,4 @@
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// Merges the possible sources of relay endpoints into a single ordered, de-duplicated

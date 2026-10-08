@@ -1,6 +1,5 @@
-using VestaCore.Projections;
 
-namespace VestaClient.Storage;
+namespace Vesta;
 
 /// <summary>
 /// Persistent store for <see cref="ProjectionSnapshot"/>s so projections can resume

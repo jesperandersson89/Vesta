@@ -1,6 +1,5 @@
-using VestaCore.Events;
 
-namespace VestaCore.Protocol;
+namespace Vesta;
 
 /// <summary>
 /// CLIENT → SERVER: Publish a new event to a channel.

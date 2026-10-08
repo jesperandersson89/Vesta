@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// The user's chosen relay plus the per-relay inputs the app needs to live there.

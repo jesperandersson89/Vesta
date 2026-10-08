@@ -3,8 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
-using VestaCore.Identity;
-using VestaCore.Utilities;
+using Vesta;
 
 namespace VestaServer.Tests;
 

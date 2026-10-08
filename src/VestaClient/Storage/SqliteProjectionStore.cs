@@ -1,7 +1,6 @@
 using Microsoft.Data.Sqlite;
-using VestaCore.Projections;
 
-namespace VestaClient.Storage;
+namespace Vesta;
 
 /// <summary>
 /// SQLite-backed <see cref="IProjectionStore"/>. Snapshots are stored in a single table

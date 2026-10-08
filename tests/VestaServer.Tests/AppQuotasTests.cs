@@ -2,9 +2,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
-using VestaCore.Events;
-using VestaCore.Protocol;
-using VestaCore.Serialization;
+using Vesta;
 using VestaServer.Storage;
 
 namespace VestaServer.Tests;

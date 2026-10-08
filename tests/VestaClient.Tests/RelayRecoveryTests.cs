@@ -1,9 +1,6 @@
 using System.Net;
 using System.Text.Json;
-using VestaClient.Federation;
-using VestaClient.Relay;
-using VestaCore.Identity;
-using VestaCore.Relay;
+using Vesta;
 
 namespace VestaClient.Tests;
 

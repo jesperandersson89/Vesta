@@ -1,9 +1,8 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using NSec.Cryptography;
-using VestaCore.Utilities;
 
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// Represents a Vesta client identity — an Ed25519 keypair.

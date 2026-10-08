@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Options;
-using VestaCore.Identity;
-using VestaCore.Relay;
-using VestaCore.Utilities;
+using Vesta;
 using VestaServer.Connections;
 using VestaServer.Storage;
 

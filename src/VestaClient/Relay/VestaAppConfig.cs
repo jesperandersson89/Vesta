@@ -1,4 +1,4 @@
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// The app-level configuration an app compiles in to participate in relay-independent
@@ -20,4 +20,17 @@ public sealed record VestaAppConfig(
     string AppId,
     byte[] OwnerPublicKey,
     IReadOnlyList<Uri> DefaultRelays,
-    IReadOnlyList<Uri>? DiscoverySeeds = null);
+    IReadOnlyList<Uri>? DiscoverySeeds = null)
+{
+    /// <summary>
+    /// Convenience constructor taking the owner's public key as base64url and the relays as URL
+    /// strings — the same shape the TypeScript and Python SDKs use.
+    /// </summary>
+    public VestaAppConfig(string appId, string ownerPublicKeyBase64Url, params string[] defaultRelays)
+        : this(
+            appId,
+            Base64Url.Decode(ownerPublicKeyBase64Url.Trim()),
+            defaultRelays.Select(url => new Uri(url.Trim())).ToList())
+    {
+    }
+}

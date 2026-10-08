@@ -1,5 +1,5 @@
 using Npgsql;
-using VestaCore.Storage;
+using Vesta;
 
 namespace VestaServer.Storage;
 
@@ -47,13 +47,13 @@ public sealed class InMemoryChannelStatsService(IEventStore eventStore, IChannel
 
   public async Task<ChannelStats> GetStatsAsync(string channelId, CancellationToken cancellationToken = default)
   {
-    IReadOnlyList<VestaCore.Events.SequencedEvent> events =
+    IReadOnlyList<SequencedEvent> events =
         await eventStore.GetEventsAsync(channelId, fromSequence: 0, limit: int.MaxValue, cancellationToken);
     if (events.Count == 0)
       return new ChannelStats(0, 0, 0);
 
     long bytes = 0;
-    foreach (VestaCore.Events.SequencedEvent se in events)
+    foreach (SequencedEvent se in events)
       bytes += System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(se.Event.Payload).LongLength;
 
     return new ChannelStats(events.Count, bytes, events[^1].Sequence);

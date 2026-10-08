@@ -1,4 +1,4 @@
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// The current materialized state of a device group — the set of public keys

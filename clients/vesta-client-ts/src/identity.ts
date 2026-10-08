@@ -72,6 +72,15 @@ export class VestaIdentity {
 // ─── Node-only persistence helper ─────────────────────────────────────────
 
 /**
+ * Load an identity from a JSON file — e.g. the `{appId}.identity.json` downloaded from Atrium.
+ * Node-only.
+ */
+export async function loadIdentityFile(path: string): Promise<VestaIdentity> {
+    const { readFileSync } = await import("node:fs");
+    return VestaIdentity.fromJSON(JSON.parse(readFileSync(path, "utf-8")) as SerializedIdentity);
+}
+
+/**
  * Load (or generate + save) an identity from `~/.vesta/{prefix}-identity.json`.
  * Node-only — for browser usage, persist via localStorage manually.
  */

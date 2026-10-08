@@ -1,4 +1,4 @@
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// The payload shape carried by <c>vesta.identity.link</c> and
@@ -11,7 +11,7 @@ namespace VestaCore.Identity;
 /// be considered a member.
 /// </para>
 /// <para>
-/// The event's signature (over the enclosing <see cref="Events.VestaEvent"/>)
+/// The event's signature (over the enclosing <see cref="VestaEvent"/>)
 /// proves which device made the claim. The <see cref="TargetClientId"/> is
 /// included for convenience and is verifiable by re-deriving it from
 /// <see cref="TargetPublicKey"/>.

@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using VestaCore.Relay;
+using Vesta;
 
 namespace VestaServer.Federation;
 

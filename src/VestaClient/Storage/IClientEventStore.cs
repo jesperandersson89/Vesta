@@ -1,6 +1,5 @@
-using VestaCore.Events;
 
-namespace VestaClient.Storage;
+namespace Vesta;
 
 /// <summary>
 /// Client-side local storage abstraction.

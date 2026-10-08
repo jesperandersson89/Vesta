@@ -1,8 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using VestaCore.Events;
 
-namespace VestaClient.Storage;
+namespace Vesta;
 
 /// <summary>
 /// SQLite implementation of <see cref="IClientEventStore"/>.

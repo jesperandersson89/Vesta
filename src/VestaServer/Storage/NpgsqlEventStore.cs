@@ -1,8 +1,7 @@
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
-using VestaCore.Events;
-using VestaCore.Storage;
+using Vesta;
 
 namespace VestaServer.Storage;
 

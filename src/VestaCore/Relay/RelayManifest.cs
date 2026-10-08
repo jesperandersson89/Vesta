@@ -1,4 +1,4 @@
-namespace VestaCore.Relay;
+namespace Vesta;
 
 /// <summary>
 /// A single relay endpoint advertised by a <see cref="RelayManifest"/>.

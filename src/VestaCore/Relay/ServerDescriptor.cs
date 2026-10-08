@@ -1,4 +1,4 @@
-namespace VestaCore.Relay;
+namespace Vesta;
 
 /// <summary>
 /// An app a relay advertises as discoverable. Only apps whose owner has opted in (the per-app

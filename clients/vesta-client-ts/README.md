@@ -8,51 +8,40 @@ TypeScript client library for the [Vesta protocol](../../PLANNING.md).
 npm install vesta-client
 ```
 
-## Usage (Node.js)
+Requires Node.js 22+ (for the built-in global `WebSocket`) or any modern browser.
+
+## Usage
 
 ```typescript
-import WebSocket from "ws";
-import { VestaConnection, createEvent } from "vesta-client";
+import { VestaConnection, VestaIdentity, createEvent } from "vesta-client";
+
+const identity = VestaIdentity.generate();
 
 const connection = new VestaConnection({
-  serverUrl: "ws://localhost:5150/ws",
-  clientId: "my-client-id",
+  appConfig: {
+    appId: "myapp",
+    ownerPublicKey: identity.publicKeyB64,
+    defaultRelays: ["ws://localhost:5150/ws"],
+  },
+  identity,
   channels: ["myapp/chat"],
-  createSocket: (url) => new WebSocket(url) as unknown as import("vesta-client").VestaSocket,
 });
 
-connection.on("connected", (welcome) => {
-  console.log("Connected to", welcome.serverId);
-});
-
-connection.on("event", (msg) => {
-  console.log("Event:", msg.event.eventType, msg.event.payload);
-});
+connection.on("connected", (welcome) => console.log("Connected to", welcome.serverId));
+connection.on("event", (msg) => console.log("Event:", msg.event.eventType, msg.event.payload));
 
 connection.connect();
 
-// Publish
-const event = createEvent("myapp/chat", "my-client-id", "app.chat.message", {
-  text: "Hello!",
-  username: "alice",
-});
-connection.publish(event);
+connection.publish(createEvent("myapp/chat", identity, "app.chat.message", { text: "Hello!" }));
 ```
 
-## Usage (Browser)
+The connection builds a default `RelayDirectory` from `appConfig`, resolves its relays,
+derives `clientId` from the identity and uses the global `WebSocket`. In Node.js, also
+`import "vesta-client/node"` (or any of its stores) to persist relay overrides and manifests under
+`~/.vesta/relays/`; browsers use `localStorage` automatically.
 
-```typescript
-import { VestaConnection, createEvent } from "vesta-client";
-
-const connection = new VestaConnection({
-  serverUrl: "ws://localhost:5150/ws",
-  clientId: "my-client-id",
-  channels: ["myapp/chat"],
-  createSocket: (url) => new WebSocket(url),
-});
-
-connection.connect();
-```
+To use a different WebSocket implementation (e.g. the `ws` package), pass `createSocket`:
+`createSocket: (url) => new WebSocket(url)`.
 
 ## API
 
@@ -64,10 +53,12 @@ The main class for managing a WebSocket connection to a Vesta server.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `serverUrl` | `string` | — | WebSocket URL |
-| `clientId` | `string` | — | Unique client identifier |
+| `appConfig` | `VestaAppConfig` | — | App id, owner public key and default relays. Builds a default `RelayDirectory` and resolves relays from it. |
+| `serverUrl` | `string` | — | WebSocket URL (alternative to `appConfig`) |
+| `relays` | `string[]` | — | Explicit ordered relay list (overrides `serverUrl` / `appConfig` defaults) |
+| `clientId` | `string` | `identity.clientId` | Unique client identifier |
 | `channels` | `string[]` | — | Channels to subscribe on connect |
-| `createSocket` | `(url: string) => VestaSocket` | — | WebSocket factory |
+| `createSocket` | `(url: string) => VestaSocket` | global `WebSocket` | WebSocket factory |
 | `autoReconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
 | `initialReconnectDelay` | `number` | `1000` | Initial backoff in ms |
 | `maxReconnectDelay` | `number` | `30000` | Max backoff in ms |
@@ -91,6 +82,8 @@ The main class for managing a WebSocket connection to a Vesta server.
 - `registerApp(appId)` — Register an app namespace (needed when the relay runs with `Protocol:RequireAppRegistration=true`)
 - `setUserRelayOverride(url)` / `clearUserRelayOverride()` — Persist or clear the user's manual relay choice (requires `relayDirectory`)
 - `switchRelay(url)` — Switch to a specific relay from the current candidate list and reconnect
+- `discoverRelays({ all? })` — Ask a reachable relay which relays host this app (or, with `all`, every relay it knows); show-only
+- `publishRelayManifest(relays)` — Sign and publish an owner relay manifest (the connection's `identity` must be the app owner)
 
 **Device group helpers** (require `identity` in constructor options):
 
@@ -169,26 +162,24 @@ A reducer that hasn't opted in throws `SnapshotNotSupportedError` — override `
 ### Relay independence
 
 `RelayDirectory` resolves an ordered relay candidate list from a user override, the latest
-verified owner-signed manifest, and the app's compiled-in defaults (`VestaAppConfig`). Attach one
-to get manifest verification/adoption and `setUserRelayOverride()` / `clearUserRelayOverride()`:
+verified owner-signed manifest, and the app's compiled-in defaults (`VestaAppConfig`). Passing
+`appConfig` to `VestaConnection` attaches one for you (`RelayDirectory.createDefault(appConfig)`),
+which gives manifest verification/adoption and `setUserRelayOverride()` / `clearUserRelayOverride()`.
+
+Persistence follows the platform: file-backed under `~/.vesta/relays/` once `vesta-client/node` is
+imported (the same layout as the C# client), `localStorage` in browsers, otherwise in memory. To
+control it, build the directory yourself and pass `relayDirectory`:
 
 ```typescript
 import { RelayDirectory, InMemoryManifestStore, InMemoryRelayOverrideStore } from "vesta-client";
 
-const appConfig = { appId: "myapp", ownerPublicKey: "...", defaultRelays: ["wss://relay.example/ws"] };
 const relayDirectory = new RelayDirectory(appConfig, new InMemoryRelayOverrideStore(), new InMemoryManifestStore());
 
-const connection = new VestaConnection({
-  relays: relayDirectory.resolveCandidates(),
-  relayDirectory,
-  // ...
-});
+const connection = new VestaConnection({ relayDirectory, identity, channels });
 ```
 
-For Node.js CLI apps, `FileRelayOverrideStore` / `FileManifestStore` from `vesta-client/node`
-persist the override and manifest cache under `~/.vesta/relays/`, matching the C# client's
-`RelayDirectory.CreateDefault` layout. For browsers, use `LocalStorageRelayOverrideStore` /
-`LocalStorageManifestStore` from the package root.
+The store classes are `FileRelayOverrideStore` / `FileManifestStore` (from `vesta-client/node`) and
+`LocalStorageRelayOverrideStore` / `LocalStorageManifestStore` (package root).
 
 ### Federation (server-to-server discovery)
 

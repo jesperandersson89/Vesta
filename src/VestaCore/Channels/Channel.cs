@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace VestaCore.Channels;
+namespace Vesta;
 
 /// <summary>
 /// Channel metadata. Channels are identified by human-readable slugs.

@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
-using VestaCore.Events;
 
-namespace VestaCore.Storage;
+namespace Vesta;
 
 /// <summary>
 /// Thread-safe in-memory implementation of <see cref="IEventStore"/>.

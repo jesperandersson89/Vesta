@@ -13,17 +13,22 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from vesta_client.federation import FederationClient
+from vesta_client.events import create_event
+from vesta_client.federation import DiscoveredRelay, FederationClient
 from vesta_client.identity import VestaIdentity
 from vesta_client.limits import VestaLimitNotice, classify_error_code
 from vesta_client.relay import (
     RELAY_MANIFEST_EVENT_TYPE,
     RelayAttempt,
     RelayDirectory,
+    RelayEndpoint,
     RelayManifest,
     RelayOverride,
     RelaysExhaustedError,
     RelaysExhaustedInfo,
+    VestaAppConfig,
+    manifest_channel_for,
+    sign_manifest,
 )
 from vesta_client.relay_recovery import RelayAdoptResult
 from vesta_client.signing import sign_event
@@ -96,14 +101,18 @@ class VestaConnection:
 
     Handles the HELLO/WELCOME handshake, message dispatch, and
     automatic reconnection with exponential backoff.
+
+    Typical use passes only ``app_config``, ``identity`` and ``channels``: relays are resolved
+    from a default file-backed :class:`RelayDirectory` and ``client_id`` comes from the identity.
     """
 
     def __init__(
         self,
-        server_url: str,
-        client_id: str,
-        channels: list[str],
+        server_url: str | None = None,
+        client_id: str | None = None,
+        channels: list[str] | None = None,
         *,
+        app_config: VestaAppConfig | None = None,
         relays: list[str] | None = None,
         auto_reconnect: bool = True,
         initial_reconnect_delay: float = 1.0,
@@ -115,11 +124,31 @@ class VestaConnection:
         relay_directory: RelayDirectory | None = None,
         relay_exhaustion_passes: int = 3,
     ):
-        self.server_url = server_url
-        self._relay_candidates = list(relays) if relays else [server_url]
+        if relay_directory is None and app_config is not None:
+            relay_directory = RelayDirectory.create_default(app_config)
+        if relays:
+            candidates = list(relays)
+        elif server_url:
+            candidates = [server_url]
+        elif relay_directory is not None:
+            candidates = relay_directory.resolve_candidates()
+        else:
+            candidates = []
+        if not candidates:
+            raise ValueError(
+                "VestaConnection requires an app_config (or relay_directory) with default relays, "
+                "a server_url, or a non-empty relays list."
+            )
+        resolved_client_id = client_id or (identity.client_id if identity else None)
+        if not resolved_client_id:
+            raise ValueError("VestaConnection requires a client_id or an identity.")
+        channels = channels or []
+
+        self.server_url = server_url or candidates[0]
+        self._relay_candidates = candidates
         self._active_relay_index = 0
         self._notified_relay_index = -1
-        self.client_id = client_id
+        self.client_id = resolved_client_id
         self._channels = list(channels)
         self.auto_reconnect = auto_reconnect
         self.initial_reconnect_delay = initial_reconnect_delay
@@ -382,6 +411,61 @@ class VestaConnection:
         self._relay_directory.clear_user_override()
         self.update_relay_candidates(self._relay_directory.resolve_candidates())
         return await self.reconnect()
+
+    async def discover_relays(self, include_all: bool = False) -> list[DiscoveredRelay]:
+        """
+        Ask a reachable relay which relays host this app (federation gossip), or — with
+        ``include_all`` — which relays it knows about at all. Show-only: descriptors are
+        signature-checked and owner-matched, but never adopted automatically.
+        """
+        directory = self._relay_directory
+        if directory is None:
+            raise RuntimeError("No relay_directory attached — pass app_config or relay_directory.")
+        base: str | None = FederationClient.to_federation_base_url(self.active_relay)
+        if base is None:
+            raise RuntimeError("The active relay URL cannot be used for federation discovery.")
+        if self._federation is None:
+            self._federation = FederationClient(directory.config)
+        if include_all:
+            return await self._federation.list_all_relays(base)
+        return await self._federation.discover_relays_for_app(base)
+
+    async def publish_relay_manifest(self, relays: list[str]) -> RelayManifest:
+        """
+        Sign and publish a new owner relay manifest steering every client of this app to
+        ``relays`` (in preference order). Requires the connection's ``identity`` to be the app
+        owner — the key matching ``app_config.owner_public_key``.
+        """
+        directory = self._relay_directory
+        if directory is None:
+            raise RuntimeError("No relay_directory attached — pass app_config or relay_directory.")
+        identity = self._identity
+        if identity is None or identity.public_key_b64 != directory.config.owner_public_key:
+            raise RuntimeError("Only the app owner's identity can publish a relay manifest.")
+        if not relays:
+            raise ValueError("At least one relay URL is required.")
+
+        current = directory.current_manifest
+        manifest = sign_manifest(
+            RelayManifest(
+                app_id=directory.config.app_id,
+                version=(current.version if current else 0) + 1,
+                issued_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                relays=[RelayEndpoint(url=url, priority=i) for i, url in enumerate(relays)],
+                owner_public_key="",
+            ),
+            identity,
+        )
+        await self.publish(
+            create_event(
+                manifest_channel_for(directory.config.app_id),
+                identity.client_id,
+                RELAY_MANIFEST_EVENT_TYPE,
+                manifest.to_dict(),
+                identity=identity,
+            )
+        )
+        return manifest
 
     # ── Connection lifecycle ──────────────────────────────────────────────────
 

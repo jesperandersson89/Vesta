@@ -81,6 +81,12 @@ class VestaIdentity:
         )
 
 
+def load_identity_file(path: str | Path) -> VestaIdentity:
+    """Load an identity from a JSON file — e.g. the ``{appId}.identity.json`` downloaded from Atrium."""
+    data: dict[str, Any] = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    return VestaIdentity.from_private_key(b64url_decode(data["privateKey"]))
+
+
 def load_or_create_identity(prefix: str) -> VestaIdentity:
     """
     Load or create a persistent client identity stored in

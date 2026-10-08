@@ -1,10 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using VestaClient.Relay;
-using VestaCore.Identity;
-using VestaCore.Relay;
 
-namespace VestaClient.Federation;
+namespace Vesta;
 
 /// <summary>
 /// A relay this client discovered through server-to-server federation. It is <b>show-only</b>:

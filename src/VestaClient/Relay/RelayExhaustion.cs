@@ -1,4 +1,4 @@
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>A failed connection attempt against one relay candidate.</summary>
 /// <param name="Relay">The relay that could not be reached.</param>

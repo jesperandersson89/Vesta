@@ -1,4 +1,4 @@
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Thrown by <see cref="EventReducer{TState}.Snapshot"/> or

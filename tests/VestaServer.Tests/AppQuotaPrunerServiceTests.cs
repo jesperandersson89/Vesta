@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Testcontainers.PostgreSql;
-using VestaCore.Events;
+using Vesta;
 using VestaServer.Data;
 using VestaServer.Storage;
 

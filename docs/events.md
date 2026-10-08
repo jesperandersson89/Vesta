@@ -51,7 +51,7 @@ Events are signed with Ed25519 over an [RFC 8785 (JCS)](https://datatracker.ietf
 | `metadata`  | ❌                                                  |
 | `sequence`  | ❌ (server-assigned, doesn't exist at signing time) |
 
-The reference signing input is built by `VestaCore.Serialization.EventSigner.BuildSigningInput`. The TypeScript (`buildSigningInput` in `clients/vesta-client-ts/src/signing.ts`) and Python (`clients/vesta-client-py/vesta_client/signing.py`) clients produce byte-identical output.
+The reference signing input is built by `EventSigner.BuildSigningInput` (namespace `Vesta`). The TypeScript (`buildSigningInput` in `clients/vesta-client-ts/src/signing.ts`) and Python (`clients/vesta-client-py/vesta_client/signing.py`) clients produce byte-identical output.
 
 ### Verification on the server
 
@@ -112,7 +112,7 @@ Events with `metadata.ttlSeconds` are persisted normally, but the server compute
 - Excluded from catch-up `FETCH` queries
 - Cleaned up by the `ExpiredEventCleanupService` background sweep (Postgres backend only — interval and batch size are configurable, see [server-configuration.md](server-configuration.md#expiredeventcleanupservice))
 
-This gives you "live for a while, then forget" semantics — perfect for presence/heartbeats that should outlast a single disconnect but not accumulate forever. The canonical reader is `VestaCore.Events.VestaEventMetadata.TryGetTtlSeconds`.
+This gives you "live for a while, then forget" semantics — perfect for presence/heartbeats that should outlast a single disconnect but not accumulate forever. The canonical reader is `VestaEventMetadata.TryGetTtlSeconds`.
 
 `metadata` is reserved for **wire-level transport hints**. Apps must not put domain data there — domain data goes in `payload` where it is signed.
 

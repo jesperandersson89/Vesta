@@ -1,5 +1,4 @@
-using VestaCore.Identity;
-using VestaCore.Relay;
+using Vesta;
 
 namespace VestaCore.Tests.Relay;
 
@@ -34,7 +33,7 @@ public class ManifestSignerTests
 
         Assert.NotNull(signed.Signature);
         Assert.NotEmpty(signed.Signature);
-        Assert.Equal(VestaCore.Utilities.Base64Url.Encode(owner.PublicKey), signed.OwnerPublicKey);
+        Assert.Equal(Base64Url.Encode(owner.PublicKey), signed.OwnerPublicKey);
     }
 
     [Fact]
@@ -44,7 +43,7 @@ public class ManifestSignerTests
         using VestaIdentity other = VestaIdentity.Generate();
         RelayManifest manifest = CreateManifest() with
         {
-            OwnerPublicKey = VestaCore.Utilities.Base64Url.Encode(other.PublicKey)
+            OwnerPublicKey = Base64Url.Encode(other.PublicKey)
         };
 
         Assert.Throws<ArgumentException>(() => ManifestSigner.Sign(manifest, owner));

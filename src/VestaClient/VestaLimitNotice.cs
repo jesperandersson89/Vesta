@@ -1,6 +1,5 @@
-using VestaCore.Protocol;
 
-namespace VestaClient;
+namespace Vesta;
 
 /// <summary>
 /// A structured "your app is being limited" signal raised by <see cref="VestaConnection.OnLimited"/>.

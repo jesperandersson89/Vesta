@@ -2,9 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
-using VestaClient;
-using VestaCore.Events;
-using VestaCore.Protocol;
+using Vesta;
 
 namespace VestaClient.Tests;
 

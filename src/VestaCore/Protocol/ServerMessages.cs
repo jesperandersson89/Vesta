@@ -1,6 +1,5 @@
-using VestaCore.Events;
 
-namespace VestaCore.Protocol;
+namespace Vesta;
 
 /// <summary>
 /// SERVER → CLIENT: Response to HELLO. Confirms connection and lists available channels.

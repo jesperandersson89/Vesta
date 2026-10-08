@@ -22,10 +22,11 @@ import type { DeviceGroup } from "./device-groups.js";
 import { classifyErrorCode } from "./limits.js";
 import type { VestaLimitNotice } from "./limits.js";
 import { FederationClient } from "./federation.js";
-import { RELAY_MANIFEST_EVENT_TYPE } from "./relay.js";
+import type { DiscoveredRelay } from "./federation.js";
+import { createEvent } from "./events.js";
+import { manifestChannelFor, RELAY_MANIFEST_EVENT_TYPE, RelayDirectory, signManifest } from "./relay.js";
 import type {
     RelayAttempt,
-    RelayDirectory,
     RelayManifest,
     RelayOverride,
     RelaysExhaustedInfo,
@@ -89,8 +90,8 @@ export function remapChannel(
 }
 
 // ── WebSocket abstraction ────────────────────────────────────────────────────
-// We support both the `ws` package (Node.js) and the browser WebSocket API.
-// The connection expects a factory function that returns a WebSocket-like object.
+// The global `WebSocket` (browsers, Node.js 22+) is used by default; any object with this
+// shape (e.g. the `ws` package) can be supplied through the `createSocket` option instead.
 
 export interface VestaSocket {
     readonly readyState: number;
@@ -114,9 +115,26 @@ export interface VestaSocket {
 
 export type SocketFactory = (url: string) => VestaSocket;
 
+function defaultSocketFactory(): SocketFactory {
+    const ctor = (globalThis as { WebSocket?: new (url: string) => unknown }).WebSocket;
+    if (!ctor) {
+        throw new Error(
+            "No global WebSocket is available (browsers and Node.js 22+ provide one). Pass 'createSocket' to supply your own.",
+        );
+    }
+    return (url: string): VestaSocket => new ctor(url) as VestaSocket;
+}
+
 // ── Connection options ───────────────────────────────────────────────────────
 
 export interface VestaConnectionOptions {
+    /**
+     * The app's relay-independence config (id, owner key, default relays). With it the connection
+     * builds a default {@link RelayDirectory} and resolves its relays itself, so `serverUrl`,
+     * `relays` and `relayDirectory` are all optional.
+     */
+    appConfig?: VestaAppConfig;
+
     /** The WebSocket URL to connect to (e.g. "ws://localhost:5150/ws"). Use this OR `relays`. */
     serverUrl?: string;
 
@@ -127,18 +145,18 @@ export interface VestaConnectionOptions {
      */
     relays?: string[];
 
-    /** Unique client identifier. */
-    clientId: string;
+    /** Unique client identifier. Defaults to `identity.clientId`. */
+    clientId?: string;
 
     /** Channels to subscribe to on connect. */
     channels: string[];
 
     /**
-     * Factory function that creates a WebSocket instance.
-     * For Node.js: `(url) => new WebSocket(url)` (using the `ws` package).
-     * For browsers: `(url) => new WebSocket(url)`.
+     * Factory function that creates a WebSocket instance. Defaults to the global `WebSocket`
+     * (browsers and Node.js 22+); pass `(url) => new WebSocket(url)` from a package such as `ws`
+     * to use another implementation.
      */
-    createSocket: SocketFactory;
+    createSocket?: SocketFactory;
 
     /** Enable automatic reconnection on disconnect. Default: true. */
     autoReconnect?: boolean;
@@ -265,21 +283,28 @@ export class VestaConnection {
     private readonly pendingPublishes = new Map<string, VestaEvent>();
 
     constructor(options: VestaConnectionOptions) {
+        const directory: RelayDirectory | undefined =
+            options.relayDirectory ??
+            (options.appConfig ? RelayDirectory.createDefault(options.appConfig) : undefined);
         const candidates =
             options.relays && options.relays.length > 0
                 ? [...options.relays]
                 : options.serverUrl
                   ? [options.serverUrl]
-                  : [];
+                  : (directory?.resolveCandidates() ?? []);
         if (candidates.length === 0) {
             throw new Error(
-                "VestaConnection requires either 'serverUrl' or a non-empty 'relays' list.",
+                "VestaConnection requires an 'appConfig' (or 'relayDirectory') with default relays, a 'serverUrl', or a non-empty 'relays' list.",
             );
         }
+        const clientId: string | undefined = options.clientId ?? options.identity?.clientId;
+        if (!clientId) {
+            throw new Error("VestaConnection requires a 'clientId' or an 'identity'.");
+        }
         this.relayCandidates = candidates;
-        this.clientId = options.clientId;
+        this.clientId = clientId;
         this._channels = [...options.channels];
-        this.createSocket = options.createSocket;
+        this.createSocket = options.createSocket ?? defaultSocketFactory();
         this.autoReconnect = options.autoReconnect ?? true;
         this.relayExhaustionPasses = Math.max(1, options.relayExhaustionPasses ?? 3);
         this.initialReconnectDelay = options.initialReconnectDelay ?? 1000;
@@ -288,7 +313,7 @@ export class VestaConnection {
         this.identity = options.identity;
         this.publicKey = options.publicKey ?? options.identity?.publicKeyB64;
         this.localStore = options.localStore;
-        this.relayDirectory = options.relayDirectory;
+        this.relayDirectory = directory;
 
         // Default all channels to sequence 0
         for (const ch of this._channels) {
@@ -531,6 +556,59 @@ export class VestaConnection {
         directory.clearUserOverride();
         this.updateRelayCandidates(directory.resolveCandidates());
         return this.reconnect();
+    }
+
+    /**
+     * Ask a reachable relay which relays host this app (federation gossip), or — with `all` —
+     * which relays it knows about at all. Show-only: descriptors are signature-checked and
+     * owner-matched, but never adopted automatically.
+     */
+    async discoverRelays(options?: { all?: boolean }): Promise<DiscoveredRelay[]> {
+        const directory = this.relayDirectory;
+        if (!directory) {
+            throw new Error("No relayDirectory attached — pass 'appConfig' or 'relayDirectory'.");
+        }
+        const baseUrl: string | null = FederationClient.toFederationBaseUrl(this.activeRelay);
+        if (!baseUrl) {
+            throw new Error("The active relay URL cannot be used for federation discovery.");
+        }
+        this.federation ??= new FederationClient(directory.config);
+        return options?.all
+            ? this.federation.listAllRelays(baseUrl)
+            : this.federation.discoverRelaysForApp(baseUrl);
+    }
+
+    /**
+     * Sign and publish a new owner relay manifest steering every client of this app to `relays`
+     * (in preference order). Requires the connection's `identity` to be the app owner — the key
+     * matching `appConfig.ownerPublicKey`.
+     */
+    publishRelayManifest(relays: string[]): RelayManifest {
+        const directory = this.relayDirectory;
+        if (!directory) {
+            throw new Error("No relayDirectory attached — pass 'appConfig' or 'relayDirectory'.");
+        }
+        const identity = this.identity;
+        if (!identity || identity.publicKeyB64 !== directory.config.ownerPublicKey) {
+            throw new Error("Only the app owner's identity can publish a relay manifest.");
+        }
+        if (relays.length === 0) {
+            throw new Error("At least one relay URL is required.");
+        }
+
+        const appId: string = directory.config.appId;
+        const manifest: RelayManifest = signManifest(
+            {
+                appId,
+                version: (directory.currentManifest?.version ?? 0) + 1,
+                issuedAt: new Date().toISOString(),
+                relays: relays.map((url, priority) => ({ url, priority })),
+                ownerPublicKey: "",
+            },
+            identity,
+        );
+        this.publish(createEvent(manifestChannelFor(appId), identity, RELAY_MANIFEST_EVENT_TYPE, manifest));
+        return manifest;
     }
 
     /** Gracefully disconnect. Does not trigger auto-reconnect. */

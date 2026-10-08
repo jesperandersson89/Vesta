@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace VestaCore.Channels;
+namespace Vesta;
 
 /// <summary>
 /// Validates and encapsulates a channel ID slug.

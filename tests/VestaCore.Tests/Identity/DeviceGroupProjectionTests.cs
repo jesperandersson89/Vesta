@@ -1,6 +1,4 @@
-using VestaCore.Channels;
-using VestaCore.Events;
-using VestaCore.Identity;
+using Vesta;
 
 namespace VestaCore.Tests.Identity;
 
@@ -138,7 +136,7 @@ public class DeviceGroupProjectionTests
         using VestaIdentity identity = VestaIdentity.Generate();
         PairingPayload payload = new(
             GroupId: "abc123",
-            PublicKey: Utilities.Base64Url.Encode(identity.PublicKey),
+            PublicKey: Base64Url.Encode(identity.PublicKey),
             ServerUrl: "wss://vesta.example/ws");
 
         string encoded = payload.ToBase64();

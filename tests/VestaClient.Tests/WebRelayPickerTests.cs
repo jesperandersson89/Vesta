@@ -1,7 +1,5 @@
 using System.Net;
-using VestaClient.Federation;
-using VestaClient.Relay;
-using VestaCore.Identity;
+using Vesta;
 
 namespace VestaClient.Tests;
 

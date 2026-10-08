@@ -1,7 +1,6 @@
 using System.Text.Json;
-using VestaCore.Relay;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// Caches the latest verified <see cref="RelayManifest"/> so a client can resolve relay

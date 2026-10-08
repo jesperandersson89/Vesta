@@ -1,17 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using VestaClient.Federation;
-using VestaClient.Relay;
-using VestaClient.Storage;
-using VestaCore.Channels;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Protocol;
-using VestaCore.Relay;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
 
-namespace VestaClient;
+namespace Vesta;
 
 /// <summary>
 /// C# client for connecting to a Vesta server via WebSocket.
@@ -222,6 +212,18 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         AttachRelayDirectory(relayDirectory ?? RelayDirectory.CreateDefault(appConfig));
     }
 
+    /// <summary>
+    /// Create a connection for an app using <paramref name="identity"/> for both the client id and
+    /// event signing. Equivalent to the primary constructor with <c>identity.ClientId</c>.
+    /// </summary>
+    public VestaConnection(
+        VestaIdentity identity,
+        VestaAppConfig appConfig,
+        IClientEventStore? localStore = null,
+        RelayDirectory? relayDirectory = null)
+        : this(identity?.ClientId ?? throw new ArgumentNullException(nameof(identity)), appConfig, localStore, identity, relayDirectory)
+    {
+    }
     /// <summary>
     /// Connect using the relays resolved from the app config — the user override, then the latest
     /// owner-signed manifest, then the compiled-in defaults, in that precedence. This is the default
@@ -932,6 +934,68 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         {
             throw new InvalidOperationException("Not connected and no local store configured for offline publishing");
         }
+    }
+
+    /// <summary>
+    /// Ask a reachable relay which relays host this app (federation gossip), or — with
+    /// <paramref name="includeAll"/> — which relays it knows about at all. Results are show-only:
+    /// descriptors are signature-checked and owner-matched, but never adopted automatically.
+    /// </summary>
+    public async Task<IReadOnlyList<DiscoveredRelay>> DiscoverRelaysAsync(
+        bool includeAll = false,
+        CancellationToken cancellationToken = default)
+    {
+        Uri? entryRelay = ActiveRelay ?? _relayCandidates.FirstOrDefault();
+        if (entryRelay is null || !FederationClient.ToFederationBaseUrl(entryRelay, out Uri? baseUrl) || baseUrl is null)
+        {
+            throw new InvalidOperationException("No relay available to query for discovery.");
+        }
+
+        _federation ??= new FederationClient(_appConfig);
+        return includeAll
+            ? await _federation.ListAllRelaysAsync(baseUrl, cancellationToken)
+            : await _federation.DiscoverRelaysForAppAsync(baseUrl, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sign and publish a new owner relay manifest that steers every client of this app to
+    /// <paramref name="relays"/> (in preference order). Requires the identity this connection was
+    /// created with to be the app owner — the key matching <see cref="VestaAppConfig.OwnerPublicKey"/>.
+    /// </summary>
+    public async Task<RelayManifest> PublishRelayManifestAsync(
+        IReadOnlyList<Uri> relays,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(relays);
+        if (relays.Count == 0)
+        {
+            throw new ArgumentException("At least one relay URI is required.", nameof(relays));
+        }
+        if (_identity is null || !_identity.PublicKey.AsSpan().SequenceEqual(_appConfig.OwnerPublicKey))
+        {
+            throw new InvalidOperationException("Only the app owner's identity can publish a relay manifest.");
+        }
+
+        RelayManifest manifest = new()
+        {
+            AppId = _appConfig.AppId,
+            Version = (RelayDirectory.CurrentManifest?.Version ?? 0) + 1,
+            IssuedAt = DateTimeOffset.UtcNow,
+            Relays = relays.Select((url, index) => new RelayEndpoint(url.ToString(), index)).ToList(),
+            OwnerPublicKey = string.Empty,
+        };
+        RelayManifest signed = ManifestSigner.Sign(manifest, _identity);
+
+        VestaEvent manifestEvent = new(
+            Id: Guid.NewGuid(),
+            ChannelId: RelayManifest.ChannelFor(_appConfig.AppId),
+            Timestamp: DateTimeOffset.UtcNow,
+            ClientId: _clientId,
+            EventType: RelayManifest.EventType,
+            Payload: JsonSerializer.SerializeToElement(signed, _jsonOptions));
+
+        await PublishAsync(manifestEvent, cancellationToken);
+        return signed;
     }
 
     /// <summary>

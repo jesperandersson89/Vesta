@@ -1,10 +1,6 @@
 using System.Text.Json;
-using VestaCore.Events;
-using VestaCore.Projections;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
 
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// Client-side reducer that materializes the current membership of a device

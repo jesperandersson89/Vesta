@@ -1,4 +1,4 @@
-namespace VestaCore.Utilities;
+namespace Vesta;
 
 /// <summary>
 /// Base64Url encoding/decoding utilities (RFC 4648 §5).

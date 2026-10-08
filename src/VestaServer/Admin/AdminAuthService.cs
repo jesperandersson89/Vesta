@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using VestaCore.Identity;
-using VestaCore.Utilities;
+using Vesta;
 using VestaServer.Storage;
 
 namespace VestaServer.Admin;

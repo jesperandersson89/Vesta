@@ -12,14 +12,18 @@ pip install vesta-client
 
 ```python
 import asyncio
-from vesta_client import VestaConnection, create_event, load_or_create_identity
+from vesta_client import VestaAppConfig, VestaConnection, create_event, load_or_create_identity
 
 async def main():
-    client_id = load_or_create_identity("myapp-main-alice")
+    identity = load_or_create_identity("myapp-main-alice")
 
     conn = VestaConnection(
-        server_url="ws://localhost:5150/ws",
-        client_id=client_id,
+        app_config=VestaAppConfig(
+            app_id="myapp",
+            owner_public_key=identity.public_key_b64,
+            default_relays=["ws://localhost:5150/ws"],
+        ),
+        identity=identity,
         channels=["myapp/chat"],
     )
 
@@ -29,19 +33,21 @@ async def main():
     await conn.connect()
 
     # Publish
-    event = create_event(
-        channel_id="myapp/chat",
-        client_id=client_id,
-        event_type="app.chat.message",
-        payload={"text": "Hello!", "username": "alice"},
-    )
-    await conn.publish(event)
+    await conn.publish(create_event(
+        "myapp/chat", identity.client_id, "app.chat.message",
+        {"text": "Hello!", "username": "alice"}, identity=identity,
+    ))
 
     # Keep running
     await asyncio.Event().wait()
 
 asyncio.run(main())
 ```
+
+`app_config` gives the connection a default file-backed `RelayDirectory` (override, manifest and
+peer cache under `~/.vesta/relays/`), resolves its relays from it and derives `client_id` from the
+identity. For a quick local test you can still pass `server_url="ws://localhost:5150/ws"` and a
+`client_id` instead.
 
 ## API
 
@@ -53,9 +59,12 @@ Async WebSocket connection with auto-reconnect.
 
 ```python
 VestaConnection(
-    server_url: str,
-    client_id: str,
-    channels: list[str],
+    server_url: str | None = None,   # or pass app_config / relay_directory / relays
+    client_id: str | None = None,    # defaults to identity.client_id
+    channels: list[str] | None = None,
+    *,
+    app_config: VestaAppConfig | None = None,  # builds a default RelayDirectory and resolves relays
+    relays: list[str] | None = None,
     auto_reconnect: bool = True,
     initial_reconnect_delay: float = 1.0,
     max_reconnect_delay: float = 30.0,
@@ -81,6 +90,8 @@ VestaConnection(
 - `await register_app(app_id)` — Register an app namespace (needed when the relay requires app registration)
 - `set_user_relay_override(url)` / `clear_user_relay_override()` — Persist or clear the user's manual relay choice (requires `relay_directory`)
 - `await switch_relay(url)` — Switch to a specific relay from the current candidate list and reconnect
+- `await discover_relays(include_all=False)` — Ask a reachable relay which relays host this app (or every relay it knows); show-only
+- `await publish_relay_manifest(relays)` — Sign and publish an owner relay manifest (`identity` must be the app owner)
 
 **Device group helpers** (require `identity` in constructor):
 
@@ -157,28 +168,23 @@ A reducer that hasn't opted in raises `SnapshotNotSupportedError` — override `
 ### Relay independence
 
 `RelayDirectory` resolves an ordered relay candidate list from a user override, the latest
-verified owner-signed manifest, and the app's compiled-in defaults (`VestaAppConfig`). Attach one
-to get manifest verification/adoption and `set_user_relay_override()` / `clear_user_relay_override()`:
+verified owner-signed manifest, and the app's compiled-in defaults (`VestaAppConfig`). Passing
+`app_config` to `VestaConnection` attaches `RelayDirectory.create_default(app_config)` for you,
+which gives manifest verification/adoption and `set_user_relay_override()` / `clear_user_relay_override()`.
+
+To control persistence, build the directory yourself and pass `relay_directory`:
 
 ```python
-from vesta_client import RelayDirectory, VestaAppConfig, FileRelayOverrideStore, FileManifestStore
+from vesta_client import InMemoryManifestStore, InMemoryRelayOverrideStore, RelayDirectory, VestaAppConfig
 
 app_config = VestaAppConfig(app_id="myapp", owner_public_key="...", default_relays=["wss://relay.example/ws"])
-relay_directory = RelayDirectory(
-    app_config,
-    FileRelayOverrideStore("~/.vesta/relays/myapp.override.json"),
-    FileManifestStore("~/.vesta/relays/myapp.manifest.json"),
-)
+relay_directory = RelayDirectory(app_config, InMemoryRelayOverrideStore(), InMemoryManifestStore())
 
-conn = VestaConnection(
-    relays=relay_directory.resolve_candidates(),
-    client_id=client_id, channels=["myapp/chat"],
-    relay_directory=relay_directory,
-)
+conn = VestaConnection(relay_directory=relay_directory, identity=identity, channels=["myapp/chat"])
 ```
 
-`InMemoryRelayOverrideStore` / `InMemoryManifestStore` are also available for tests or transient
-sessions.
+`FileRelayOverrideStore` / `FileManifestStore` / `FilePeerCacheStore` are the file-backed
+equivalents used by `create_default`.
 
 ### Federation (server-to-server discovery)
 

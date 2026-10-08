@@ -124,7 +124,7 @@ When you change anything in `src/VestaCore/` (protocol messages, `VestaEvent` sh
 Rules of thumb:
 
 - If you added a wire-level field (e.g. `metadata` on `VestaEvent`), all three clients must serialize / deserialize it round-trip and exclude it from signing input where applicable.
-- If you added an SDK primitive (e.g. `VestaCore.Projections.*`), pick at least one example per language to refactor onto it as a smoke test — don't leave the primitive unused.
+- If you added an SDK primitive (e.g. `LwwMap`/`Projections`), pick at least one example per language to refactor onto it as a smoke test — don't leave the primitive unused.
 - If an example would need a large rewrite, note that explicitly in the response instead of silently leaving it stale.
 - After edits, run `dotnet build Vesta.sln`, `npm test` / `npm run build` in the touched TS packages, and `python -m unittest discover -s clients/vesta-client-py/tests` (or `python -m compileall` for examples) to confirm nothing rotted.
 
@@ -151,7 +151,7 @@ published packages under one shared version (see TODO #22 and the `## Releasing`
   Keep each example self-contained (no `ProjectReference`, `file:` or `-e ../..`).
 - **`vesta_atrium` depends on `VestaProtocol.Core`** from NuGet (`PackageReference` in
   `Atrium.Web.csproj`, TODO #19/#22) — it no longer reimplements any primitives locally. Bumping
-  `VestaCore.Identity.VestaIdentity`, `VestaCore.Utilities.Base64Url`, or `VestaCore.Channels.AppId`
+  `VestaIdentity`, `Base64Url`, or `AppId` (all in namespace `Vesta`)
   is a cross-repo breaking change: Atrium's `VestaProtocol.Core` package reference needs a matching bump
   after the next Vesta release, not just an internal refactor.
 
@@ -164,7 +164,7 @@ When you change something that has user-visible impact, update the relevant doc 
 | You changed...                                                                   | Update                                |
 | -------------------------------------------------------------------------------- | ------------------------------------- |
 | `VestaEvent` shape, signing rules, `replace` / `volatile` / `metadata` semantics | `docs/events.md`                      |
-| `VestaCore.Projections.*` (new primitive, new method, semantics)                 | `docs/projections.md`                 |
+| Projection primitives (new primitive, new method, semantics)                     | `docs/projections.md`                 |
 | Protocol message types, `$type` discriminators, wire format                      | `docs/protocol.md`                    |
 | Server config keys (`appsettings.json`), hosted services, ACL behaviour          | `docs/server-configuration.md`        |
 | Anything user-visible at the SDK or CLI surface                                  | `README.md` if it affects quick-start |

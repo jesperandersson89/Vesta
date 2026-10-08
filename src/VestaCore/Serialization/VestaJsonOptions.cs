@@ -1,9 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using VestaCore.Identity;
-using VestaCore.Protocol;
 
-namespace VestaCore.Serialization;
+namespace Vesta;
 
 /// <summary>
 /// Shared JSON serializer options for the Vesta protocol.
@@ -52,6 +50,7 @@ public static class VestaJsonOptions
 [JsonSerializable(typeof(DeviceAnnounce))]
 [JsonSerializable(typeof(DeviceLink))]
 [JsonSerializable(typeof(PairingPayload))]
+[JsonSerializable(typeof(RelayManifest))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

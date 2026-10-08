@@ -2,9 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
-using VestaClient.Storage;
-using VestaCore.Events;
-using VestaCore.Protocol;
+using Vesta;
 
 namespace VestaClient.Tests;
 
@@ -28,12 +26,12 @@ public class OfflineOutboxSyncTests : IClassFixture<WebApplicationFactory<Progra
     public async Task PublishWhileDisconnected_EnqueuesToOutbox()
     {
         using SqliteClientEventStore store = SqliteClientEventStore.CreateInMemory();
-        VestaClient.Relay.VestaAppConfig appConfig = new("test", new byte[32], [new Uri("ws://localhost:1/ws")]);
+        VestaAppConfig appConfig = new("test", new byte[32], [new Uri("ws://localhost:1/ws")]);
         VestaConnection connection = new(
             "offline-client",
             appConfig,
             store,
-            relayDirectory: new VestaClient.Relay.RelayDirectory(appConfig));
+            relayDirectory: new RelayDirectory(appConfig));
 
         VestaEvent evt = CreateEvent("test/offline", clientId: "offline-client");
         await connection.PublishAsync(evt);

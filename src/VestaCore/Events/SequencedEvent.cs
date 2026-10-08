@@ -1,4 +1,4 @@
-namespace VestaCore.Events;
+namespace Vesta;
 
 /// <summary>
 /// Server-assigned wrapper around a <see cref="VestaEvent"/>.

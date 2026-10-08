@@ -6,7 +6,7 @@ export type {
 } from "./connection.js";
 export { remapChannel, setRelayPickerEnabled, VestaConnection } from "./connection.js";
 export { createEvent } from "./events.js";
-export { loadOrCreateIdentity, VestaIdentity } from "./identity.js";
+export { loadIdentityFile, loadOrCreateIdentity, VestaIdentity } from "./identity.js";
 export type { SerializedIdentity } from "./identity.js";
 export {
     ANNOUNCE_EVENT_TYPE,

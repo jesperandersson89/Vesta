@@ -11,5 +11,5 @@ this package.
 
 See the [project README](https://github.com/jesperandersson89/Vesta#readme) and
 [docs](https://github.com/jesperandersson89/Vesta/tree/main/docs) for protocol details,
-event semantics, and the `VestaCore.Projections` conflict-resolution primitives (LWW register,
+event semantics, and the conflict-resolution primitives (LWW register,
 LWW map, append-only log).

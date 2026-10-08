@@ -1,6 +1,4 @@
-using VestaCore.Identity;
-using VestaCore.Relay;
-using VestaCore.Utilities;
+using Vesta;
 
 namespace VestaCore.Tests.Relay;
 

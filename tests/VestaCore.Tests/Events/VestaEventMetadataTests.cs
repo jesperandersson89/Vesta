@@ -1,7 +1,5 @@
 using System.Text.Json;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Serialization;
+using Vesta;
 
 namespace VestaCore.Tests.Events;
 

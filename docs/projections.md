@@ -8,7 +8,7 @@ The SDK provides four reusable building blocks so you don't have to hand-roll th
 
 | Language   | Namespace / module                 |
 | ---------- | ---------------------------------- |
-| C#         | `VestaCore.Projections`            |
+| C#         | `Vesta` (`using Vesta;`)           |
 | TypeScript | `vesta-client` (top-level exports) |
 | Python     | `vesta_client` (top-level exports) |
 

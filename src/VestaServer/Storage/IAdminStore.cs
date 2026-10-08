@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
-using VestaCore.Utilities;
+using Vesta;
 
 namespace VestaServer.Storage;
 
@@ -14,7 +14,7 @@ public sealed class AdminOptions
   /// Ed25519 public keys (base64url, 32 bytes decoded) of clients that should
   /// be promoted to admin during HELLO. A client whose <c>HELLO.PublicKey</c>
   /// matches one of these entries can issue admin-only commands such as
-  /// <see cref="VestaCore.Protocol.DeleteChannelMessage"/>.
+  /// <see cref="Vesta.DeleteChannelMessage"/>.
   /// </summary>
   public IList<string> BootstrapPublicKeys { get; set; } = [];
 }

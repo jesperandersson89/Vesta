@@ -1,7 +1,6 @@
 using System.Text.Json;
-using VestaCore.Events;
 
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Describes a single update to an <see cref="LwwMap{TKey, TValue}"/>: either set a key

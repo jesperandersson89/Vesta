@@ -1,7 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using VestaCore.Protocol;
-using VestaCore.Serialization;
+using Vesta;
 
 namespace VestaServer.Connections;
 

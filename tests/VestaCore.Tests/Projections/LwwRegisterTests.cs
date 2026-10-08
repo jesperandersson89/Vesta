@@ -1,6 +1,5 @@
 using System.Text.Json;
-using VestaCore.Events;
-using VestaCore.Projections;
+using Vesta;
 
 namespace VestaCore.Tests.Projections;
 

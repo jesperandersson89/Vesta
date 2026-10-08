@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
-using VestaCore.Channels;
-using VestaCore.Protocol;
+using Vesta;
 
 namespace VestaServer.Connections;
 

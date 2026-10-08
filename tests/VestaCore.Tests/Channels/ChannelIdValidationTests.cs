@@ -1,4 +1,4 @@
-using VestaCore.Channels;
+using Vesta;
 
 namespace VestaCore.Tests.Channels;
 

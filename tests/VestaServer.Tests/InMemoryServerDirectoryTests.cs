@@ -1,5 +1,4 @@
-using VestaCore.Identity;
-using VestaCore.Relay;
+using Vesta;
 using VestaServer.Federation;
 
 namespace VestaServer.Tests;

@@ -1,7 +1,6 @@
 using System.Text.Json;
-using VestaCore.Events;
 
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Single-value last-writer-wins register.

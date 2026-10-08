@@ -2,7 +2,7 @@ using System.Net.Http.Json;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
-using VestaCore.Relay;
+using Vesta;
 
 namespace VestaServer.Federation;
 

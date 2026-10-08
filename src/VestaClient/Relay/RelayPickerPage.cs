@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>Renders a <see cref="RelayRecoverySnapshot"/> as the self-contained relay-picker web page (no scripts, no external assets).</summary>
 internal static class RelayPickerPage

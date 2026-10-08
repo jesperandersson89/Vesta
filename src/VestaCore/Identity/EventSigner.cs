@@ -1,10 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using Org.Webpki.JsonCanonicalizer;
-using VestaCore.Events;
-using VestaCore.Utilities;
 
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// Signs and verifies VestaEvents using Ed25519 and RFC 8785 (JCS) canonical JSON.

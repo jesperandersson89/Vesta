@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Web;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// The built-in relay-recovery UI: a loopback-only web page that opens in the user's browser when a

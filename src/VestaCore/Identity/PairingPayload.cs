@@ -1,10 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using VestaCore.Serialization;
-using VestaCore.Utilities;
 
-namespace VestaCore.Identity;
+namespace Vesta;
 
 /// <summary>
 /// The information one device needs to deliver to another in order to bootstrap

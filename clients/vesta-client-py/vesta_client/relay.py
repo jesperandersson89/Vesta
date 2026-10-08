@@ -10,6 +10,7 @@ byte-for-byte (RFC 8785 JCS + Ed25519) so manifests verify across all three clie
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -442,6 +443,21 @@ class RelayDirectory:
             and verify_manifest(cached, config.owner_public_key)
         ):
             self._current = cached
+
+    @classmethod
+    def create_default(cls, config: VestaAppConfig) -> "RelayDirectory":
+        """
+        A directory wired to the default file-backed stores — the user override, manifest cache
+        and peer cache persist under ``~/.vesta/relays/``, keyed by the app id.
+        """
+        base = Path.home() / ".vesta" / "relays"
+        safe_id = re.sub(r'[<>:"/\\|?*]', "_", config.app_id)
+        return cls(
+            config,
+            FileRelayOverrideStore(base / f"{safe_id}.override.json"),
+            FileManifestStore(base / f"{safe_id}.manifest.json"),
+            FilePeerCacheStore(base / f"{safe_id}.peers.json"),
+        )
 
     @property
     def config(self) -> VestaAppConfig:

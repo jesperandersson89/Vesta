@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace VestaCore.Channels;
+namespace Vesta;
 
 /// <summary>
 /// Validates an app ID and extracts the app namespace from a channel ID.

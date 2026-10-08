@@ -3,6 +3,7 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>VestaProtocol.Client</PackageId>
+    <RootNamespace>Vesta</RootNamespace>
     <Description>.NET client library for the Vesta protocol: WebSocket connection, Ed25519 identity, offline outbox and local SQLite cache.</Description>
     <PackageTags>vesta;protocol;websocket;event-sourcing;offline-first</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

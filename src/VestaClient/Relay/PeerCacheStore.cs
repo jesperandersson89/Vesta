@@ -1,7 +1,6 @@
 using System.Text.Json;
-using VestaClient.Federation;
 
-namespace VestaClient.Relay;
+namespace Vesta;
 
 /// <summary>
 /// Remembers relays learned from federation while the app was healthy, so recovery can offer

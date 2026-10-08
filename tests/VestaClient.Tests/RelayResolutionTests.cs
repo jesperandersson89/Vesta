@@ -1,4 +1,4 @@
-using VestaClient.Relay;
+using Vesta;
 
 namespace VestaClient.Tests;
 

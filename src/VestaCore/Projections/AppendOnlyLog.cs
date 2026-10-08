@@ -1,7 +1,6 @@
 using System.Text.Json;
-using VestaCore.Events;
 
-namespace VestaCore.Projections;
+namespace Vesta;
 
 /// <summary>
 /// Append-only ordered list reducer.

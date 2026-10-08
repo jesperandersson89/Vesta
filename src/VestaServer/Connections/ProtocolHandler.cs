@@ -1,12 +1,7 @@
 using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using VestaCore.Channels;
-using VestaCore.Events;
-using VestaCore.Identity;
-using VestaCore.Protocol;
-using VestaCore.Storage;
-using VestaCore.Utilities;
+using Vesta;
 using VestaServer.Storage;
 
 namespace VestaServer.Connections;

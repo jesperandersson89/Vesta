@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Vesta;
 
 namespace VestaClient.Tests;
 
