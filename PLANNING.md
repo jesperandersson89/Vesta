@@ -261,8 +261,10 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   **Behaviour change:** server-admin promotion over WebSocket now requires the proof (the old path was a
   privilege escalation); `DeleteChannelTests` do the proof. Also fixed: a failed HELLO no longer leaves the
   claimed `clientId` on the connection, and a repeated HELLO clears subscriptions/admin/identity.
-  **Still open:** turn `RequireHelloProof` on for Atrium's relay (needs `vesta-provision.js` to answer
-  CHALLENGE first — see Atrium PLANNING); proof binds the connection, not each message, so a TLS-terminating
+  **Still open:** turn `RequireHelloProof` on for Atrium's relay. Atrium's `vesta-provision.js` answers `CHALLENGE`
+  and was smoke-tested against a local relay with `RequireHelloProof=true` (2026-10-26), so what remains is
+  releasing a relay image newer than `server-v0.2.0` (it predates #29, #32 and owner-only channel creation) and
+  bumping Atrium's `relayImageTag`; proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
 
