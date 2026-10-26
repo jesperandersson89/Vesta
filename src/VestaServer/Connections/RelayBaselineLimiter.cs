@@ -19,6 +19,12 @@ public sealed class ProtocolLimitDefaults
     public int MaxSubscriptionsPerConnection { get; set; } = 100;
 
     /// <summary>
+    /// Concurrent connections one client id may hold. Counts only connections that proved key
+    /// possession (HELLO proof), so it cannot be used to lock a known client id out.
+    /// </summary>
+    public int MaxConnectionsPerClientId { get; set; } = 10;
+
+    /// <summary>
     /// Concurrent WebSocket connections per remote IP. Off by default: behind a proxy every client
     /// shares the proxy's IP unless <c>ForwardedHeaders:Enabled</c> is set.
     /// </summary>

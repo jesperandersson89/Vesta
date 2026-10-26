@@ -79,6 +79,13 @@ class SequencedEvent:
 
 
 @dataclass
+class ChallengeMessage:
+    """Nonce the client must sign (and return as PROVE) before WELCOME."""
+
+    nonce: str
+
+
+@dataclass
 class WelcomeMessage:
     server_id: str
     channels: list[str]
@@ -115,13 +122,17 @@ class ErrorMessage:
     channel_id: str | None = None
 
 
-ServerMessage = WelcomeMessage | EventMessage | EventsBatchMessage | AckMessage | ErrorMessage
+ServerMessage = (
+    ChallengeMessage | WelcomeMessage | EventMessage | EventsBatchMessage | AckMessage | ErrorMessage
+)
 
 
 def parse_server_message(data: dict[str, Any]) -> ServerMessage:
     """Parse a raw JSON dict into a typed server message."""
     msg_type = data.get("type")
     match msg_type:
+        case "CHALLENGE":
+            return ChallengeMessage(nonce=data["nonce"])
         case "WELCOME":
             return WelcomeMessage(
                 server_id=data["serverId"],

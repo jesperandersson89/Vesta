@@ -27,6 +27,15 @@ public sealed class ClientConnection : IDisposable
     /// </summary>
     public bool IsAdmin { get; set; }
 
+    /// <summary>
+    /// True once the client answered a CHALLENGE with a valid signature, i.e. it proved it holds the
+    /// private key for <see cref="ClientId"/>. Reset by every HELLO.
+    /// </summary>
+    public bool Authenticated { get; set; }
+
+    /// <summary>A HELLO waiting for its PROVE; the connection has no identity until it completes.</summary>
+    public PendingHello? PendingHello { get; set; }
+
     public ClientConnection(WebSocket socket)
     {
         _socket = socket;
@@ -142,3 +151,6 @@ public sealed class ClientConnection : IDisposable
         _socket.Dispose();
     }
 }
+
+/// <summary>State of a HELLO that is waiting for the client to answer its CHALLENGE.</summary>
+public sealed record PendingHello(HelloMessage Hello, byte[] PublicKey, string Nonce, DateTimeOffset ExpiresAt);

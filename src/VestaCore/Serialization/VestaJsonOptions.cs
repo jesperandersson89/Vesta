@@ -36,6 +36,8 @@ public static class VestaJsonOptions
 /// </summary>
 [JsonSerializable(typeof(ProtocolMessage))]
 [JsonSerializable(typeof(HelloMessage))]
+[JsonSerializable(typeof(ProveMessage))]
+[JsonSerializable(typeof(ChallengeMessage))]
 [JsonSerializable(typeof(PublishMessage))]
 [JsonSerializable(typeof(SubscribeMessage))]
 [JsonSerializable(typeof(UnsubscribeMessage))]

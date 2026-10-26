@@ -149,13 +149,19 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   (PUBLISH, volatile included); `CanAccessAsync` stays the read check for SUBSCRIBE/FETCH/HELLO. Visibility
   and role are free text columns, so **no migration**. `{appId}/vesta/relays` is owner-only-write for
   registered apps (`EnsureManifestPublisherIsOwnerAsync`). Write control is only as strong as the identity
-  behind it — sound with `RequireSignedEvents=true`; read control waits on #32. **Still open:** admin GUI could show role
+  behind it — sound with `RequireSignedEvents=true`; read control is proof-backed with `RequireHelloProof=true` (#32). **Still open:** admin GUI could show role
   per member; Atrium `AppDetail` should display the new values (Atrium `RelayChannelMember.Role` /
   `RelayChannelSummary.Visibility` are plain strings, so nothing breaks).
-- **#26 Trusted-writer recipe (docs).** A service with its own identity publishes to a `broadcast`
-  channel; clients honour state-changing events only from that `clientId`; use `receivedAt` to detect
-  backdated client timestamps; state plainly what the relay will never validate (currency, purchases,
-  anti-cheat). Lives in `docs/events.md` or a new `docs/patterns.md` (add to the `docs/README.md` index).
+- **#26 Trusted-writer recipe (docs).** ✅ **Done:** `docs/patterns.md` (indexed in `docs/README.md`) — service
+  identity + `broadcast` channel + pinned signer key checked in every reducer, request/confirm purchase
+  flow, what the relay never validates, `receivedAt` for time, and the developer-abandons case. It needed
+  receive-side verification in every SDK, so `verifyEvent` (TS) and `verify_event` (Python) were added
+  alongside C# `EventSigner.VerifyEvent` (tests: `verify-event.test.mjs`, `test_verify_event.py`).
+  **Still open:** **owner-only channel creation** — any client can create a channel under any app
+  namespace, so a stranger can squat `mygame/shop` as their own broadcast channel before the service does
+  (clients still reject their events by signer, but the service cannot claim the name); needs a per-app
+  rule such as `channel_creation = owner|anyone` enforced in `HandleCreateChannelAsync` and the implicit
+  create path; an optional `examples/Shopkeeper` demo.
 - **#27 Relay baseline limits.** ✅ **Done** (`Protocol:Defaults`, `RelayBaselineLimiter`,
   `BaselineLimitsTests`; documented in `docs/server-configuration.md`): default `PublishRatePerMinute`
   (600, per `(app, client)`, also for unregistered apps; an app quota wins),
@@ -164,12 +170,13 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   `CONNECTION_LIMITED`, classified in all three SDKs as a non-transient, non-event-fatal limit),
   `MaxConnectionsPerIp` and `ConnectionAttemptsPerMinutePerIp` (HTTP 429 before the upgrade; **off by
   default** because behind a proxy without `ForwardedHeaders:Enabled` every client shares one IP — Atrium's
-  relay stack does not set it yet). **Not done:** a per-client-id connection cap — HELLO does not prove
-  possession of the key, so it would let anyone lock out a known client id; needs a HELLO challenge first.
+  relay stack does not set it yet). `MaxConnectionsPerClientId` (10) was added with #32 and counts only
+  proven connections.
   Relay-wide defaults for the other quotas (payload size etc.) are unchanged (null = unlimited).
   **Deviations from the original plan:** (1) the per-IP limits ship **off** — enabling them requires
   `ForwardedHeaders:Enabled` on the relay first, otherwise they cap every player behind the proxy at once
-  (players behind one NAT also share an IP); (2) no `MaxConnectionsPerClientId` (see #32); (3)
+  (players behind one NAT also share an IP); (2) `MaxConnectionsPerClientId` waited for #32 because
+  without a key proof it would let anyone lock out a known client id; (3)
   `MaxChannelsPerClientPerApp` counts distinct channels published to rather than implicitly created
   ones, and `HelloRatePerMinutePerIp` became `ConnectionAttemptsPerMinutePerIp` (enforced at the
   upgrade, before HELLO).
@@ -197,15 +204,23 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   another relay, starts fresh data). Reference `examples/account-server` (signup/login, stores and
   returns the #30 encrypted blob, never sees the key) + the game-side login flow; new `docs/identity.md`
   (device identity, device groups, backup/export, accounts, recovery) added to the `docs/README.md` index.
-- **#32 HELLO key-possession challenge.** `HELLO` only checks that the announced `PublicKey` derives to
-  the `clientId`; it never proves the client holds the private key (signatures are checked on PUBLISH
-  only). Consequences: anyone who knows a member's `clientId` + public key (both visible in event
-  streams) can connect as that member, so **read access to private channels (SUBSCRIBE / FETCH / HELLO
-  catch-up) is spoofable**, and a per-client-id connection cap (#27) would let an attacker lock a known
-  client out. Add a server nonce (in `WELCOME`, or a pre-HELLO `CHALLENGE`) that the client signs;
-  until answered the connection is unauthenticated and gets no private-channel access. Wire change → all
-  three SDKs, `docs/protocol.md`, relay-recovery/federation paths, and a compatibility story for old
-  clients (`Protocol:RequireHelloProof`, default off first). Unblocks `MaxConnectionsPerClientId`.
+- **#32 HELLO key-possession proof.** ✅ **Done** (core + relay + C#/TS/Python SDKs + docs; `HelloProofTests`
+  in VestaCore/VestaServer, `HelloProofHandshakeTests` (C#), `hello-proof.test.mjs`, `test_hello_proof.py`).
+  `HELLO` only checked that the announced `PublicKey` derives to the `clientId`, so a client id was a mere
+  claim: anyone who knew a member's `clientId` + public key (both visible in event streams) could read
+  their private channels, and an operator's (public) admin key announced in HELLO made a connection a
+  server admin over WS (`DELETE_CHANNEL`). Now a client sending `proofSupported` + `publicKey` gets
+  `CHALLENGE { nonce }` and answers `PROVE { signature }` over `vesta-hello-v1\n{nonce}\n{clientId}`
+  (`HelloProof`; shared test vector in all three SDKs); no identity exists until it passes. Compatible by
+  design: legacy clients are never challenged (older relays ignore the flag), `Protocol:RequireHelloProof`
+  (default **off**) rejects clients that cannot prove and blocks everything but HELLO/PROVE until proven.
+  **Behaviour change:** server-admin promotion over WebSocket now requires the proof (the old path was a
+  privilege escalation); `DeleteChannelTests` do the proof. Also fixed: a failed HELLO no longer leaves the
+  claimed `clientId` on the connection, and a repeated HELLO clears subscriptions/admin/identity.
+  **Still open:** turn `RequireHelloProof` on for Atrium's relay (needs `vesta-provision.js` to answer
+  CHALLENGE first — see Atrium PLANNING); proof binds the connection, not each message, so a TLS-terminating
+  middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
+  `VestaTestClient` does not do the proof.
 
 **Deferred:** device-group phases 2–6; relay Layer C (re-seed empty relay from client logs);
 admin scoped keys (read-only vs full), client-side importer for the export format; validate

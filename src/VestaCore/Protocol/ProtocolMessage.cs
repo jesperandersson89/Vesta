@@ -16,6 +16,8 @@ namespace Vesta;
 [JsonDerivedType(typeof(GrantAccessMessage), "GRANT_ACCESS")]
 [JsonDerivedType(typeof(RegisterAppMessage), "REGISTER_APP")]
 [JsonDerivedType(typeof(DeleteChannelMessage), "DELETE_CHANNEL")]
+[JsonDerivedType(typeof(ProveMessage), "PROVE")]
+[JsonDerivedType(typeof(ChallengeMessage), "CHALLENGE")]
 [JsonDerivedType(typeof(WelcomeMessage), "WELCOME")]
 [JsonDerivedType(typeof(EventMessage), "EVENT")]
 [JsonDerivedType(typeof(EventsBatchMessage), "EVENTS_BATCH")]

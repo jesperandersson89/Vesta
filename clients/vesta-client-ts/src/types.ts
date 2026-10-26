@@ -38,6 +38,21 @@ export interface HelloMessage {
     channels: string[];
     lastSequences: Record<string, number>;
     publicKey?: string | null;
+    /** Advertises that the client can answer a CHALLENGE with a PROVE; relays only challenge clients that set it. */
+    proofSupported?: boolean;
+}
+
+/** Client → Server: Signature over the relay's CHALLENGE nonce, proving the client holds its key. */
+export interface ProveMessage {
+    type: "PROVE";
+    /** base64url Ed25519 signature over `buildHelloProofInput(nonce, clientId)`. */
+    signature: string;
+}
+
+/** Server → Client: Nonce the client must sign (and return as PROVE) before WELCOME. */
+export interface ChallengeMessage {
+    type: "CHALLENGE";
+    nonce: string;
 }
 
 /** Client → Server: Publish an event. */
@@ -155,10 +170,12 @@ export type ClientMessage =
     | CreateChannelMessage
     | GrantAccessMessage
     | RegisterAppMessage
-    | DeleteChannelMessage;
+    | DeleteChannelMessage
+    | ProveMessage;
 
 /** Union of all server → client messages. */
 export type ServerMessage =
+    | ChallengeMessage
     | WelcomeMessage
     | EventMessage
     | EventsBatchMessage

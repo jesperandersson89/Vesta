@@ -2,6 +2,14 @@
 namespace Vesta;
 
 /// <summary>
+/// SERVER → CLIENT: Sent in answer to a <see cref="HelloMessage"/> that set <c>ProofSupported</c> and
+/// carried a public key. The client must reply with a <see cref="ProveMessage"/> signing this nonce
+/// (see <see cref="HelloProof"/>) before the relay completes the handshake with WELCOME.
+/// </summary>
+/// <param name="Nonce">Single-use random value (base64url) valid for a short window.</param>
+public sealed record ChallengeMessage(string Nonce) : ProtocolMessage;
+
+/// <summary>
 /// SERVER → CLIENT: Response to HELLO. Confirms connection and lists available channels.
 /// </summary>
 public sealed record WelcomeMessage(

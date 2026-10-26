@@ -31,10 +31,11 @@ from vesta_client.relay import (
     sign_manifest,
 )
 from vesta_client.relay_recovery import RelayAdoptResult
-from vesta_client.signing import sign_event
+from vesta_client.signing import sign_event, sign_hello_proof
 from vesta_client.storage import ClientEventStore
 from vesta_client.types import (
     AckMessage,
+    ChallengeMessage,
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
@@ -523,11 +524,18 @@ class VestaConnection:
             }
             if self.public_key:
                 hello["publicKey"] = self.public_key
+                if self._identity is not None:
+                    hello["proofSupported"] = True
             await ws.send(json.dumps(self._map_outbound(hello)))
 
-            # Wait for WELCOME
+            # Wait for WELCOME; a relay that verifies key possession answers HELLO with a CHALLENGE first.
             raw = await ws.recv()
             msg = parse_server_message(json.loads(raw))
+            if isinstance(msg, ChallengeMessage) and self._identity is not None:
+                proof: str = sign_hello_proof(self._identity, msg.nonce)
+                await ws.send(json.dumps({"type": "PROVE", "signature": proof}))
+                raw = await ws.recv()
+                msg = parse_server_message(json.loads(raw))
             if not isinstance(msg, WelcomeMessage):
                 raise RuntimeError(f"Expected WELCOME, got {type(msg).__name__}")
         except BaseException:

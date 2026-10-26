@@ -37,6 +37,7 @@ Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more 
 | `HELLO`          | `HelloMessage`         | Handshake. Declares `clientId`, channels to resume, last-seen sequence per channel, optional Ed25519 public key.                                                                                                                                                                                                                             |
 | `PUBLISH`        | `PublishMessage`       | Append an event to a channel. Server validates, assigns sequence, broadcasts. Idempotent on `event.id`: re-publishing an event the server has already stored returns the original `ACK` (same `sequence`) and does **not** allocate a new slot — clients can safely retry after a dropped `ACK`.                                             |
 | `SUBSCRIBE`      | `SubscribeMessage`     | Subscribe to a channel, optionally resuming from `fromSequence`.                                                                                                                                                                                                                                                                             |
+| `PROVE`          | `ProveMessage`         | Answer to a `CHALLENGE`: Ed25519 signature over the nonce, proving the client holds the key behind its `clientId`. See [HELLO key-possession proof](#hello-key-possession-proof). |
 | `UNSUBSCRIBE`    | `UnsubscribeMessage`   | Stop receiving real-time events for a channel.                                                                                                                                                                                                                                                                                               |
 | `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                                                                                                                                                                                                                                                      |
 | `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                                                                                                                                                                                                                                              |
@@ -48,6 +49,7 @@ Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more 
 
 | `$type`        | Record               | Purpose                                                                                                                                                                                                                                                        |
 | -------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHALLENGE`    | `ChallengeMessage`   | Sent instead of `WELCOME` when a `HELLO` set `proofSupported` and carried a `publicKey`: `(nonce)`. The client must reply `PROVE` before the handshake completes. |
 | `WELCOME`      | `WelcomeMessage`     | Response to `HELLO`. Confirms connection and lists accessible channels.                                                                                                                                                                                        |
 | `EVENT`        | `EventMessage`       | A single real-time event pushed to subscribers: `(channelId, event, sequence, receivedAt)`.                                                                                                                                                                    |
 | `EVENTS_BATCH` | `EventsBatchMessage` | A batch of `SequencedEvent` (response to `FETCH` or initial catch-up after `HELLO`).                                                                                                                                                                           |
@@ -79,6 +81,23 @@ All messages use System.Text.Json polymorphic serialization with `$type` as the 
 
 The TypeScript and Python clients produce the same wire format — see their respective `connection.ts` / `connection.py` for the encoder/decoder.
 
+## HELLO key-possession proof
+
+`HELLO` announces a `clientId` and `publicKey` and the relay checks they match, but that does not show the client holds the private key. To let a relay authenticate a connection, a client that has an identity sets `proofSupported: true` in `HELLO`:
+
+```
+client                              server
+  │── HELLO { publicKey, proofSupported: true } ─▶│
+  │◀─────────────── CHALLENGE { nonce } ──────────│   random 32 bytes, base64url, single-use, 30 s
+  │── PROVE { signature } ───────────────────────▶│   verify, then subscribe + catch-up
+  │◀──────────────────────────────── WELCOME ─────│
+```
+
+- **Signed bytes:** the UTF-8 encoding of `vesta-hello-v1\n{nonce}\n{clientId}` (nonce exactly as received). `signature` is the base64url Ed25519 signature. Reference: [HelloProof.cs](../src/VestaCore/Identity/HelloProof.cs); `signHelloProof` (TS) and `sign_hello_proof` (Python). Test vector — seed `32 × 0x00`, clientId `E545QOZLVJFyIIjZoNdBYo`, nonce `bm9uY2Utdm9uY2Utdm9uY2U` → signature `9hGCvE4icwU-17knAeGGHxw0xvyqpm38vbgrC0z8ZREQWCtRk9UoPGNP_o0bp0-ABGhIXJAY5rrDsblaYih_DQ`.
+- **No identity is established until the proof passes.** A wrong signature gets `PROOF_INVALID`, a late one `PROOF_EXPIRED`, a `PROVE` with no pending `HELLO` (including a replay) `UNEXPECTED_PROOF`; the connection then has no client id.
+- **Compatibility:** relays only challenge clients that set `proofSupported`, and clients that receive `WELCOME` straight away (older relays ignore the unknown field) simply continue. A client without a key never sets the flag.
+- **`Protocol:RequireHelloProof`** makes it mandatory: other clients get `PROOF_REQUIRED`, and nothing but `HELLO`/`PROVE` is accepted until the proof succeeds. Server admin status and `MaxConnectionsPerClientId` only ever apply to proven connections.
+
 ## Channel IDs
 
 - Human-readable slugs: `[a-z0-9][a-z0-9\-/]*[a-z0-9]`
@@ -106,7 +125,7 @@ Channel IDs are validated on every `PUBLISH`, `SUBSCRIBE`, and `FETCH`.
 
 A `broadcast` channel is the building block for "one trusted writer, everyone reads" (a shop, a world-state feed, an announcements channel): create it with the writer as issuer (admin), list any additional writers as `initialMembers`, and every other client can subscribe and fetch but gets `ACCESS_DENIED` on `PUBLISH` (volatile events included). It is never created implicitly. Unknown roles in `GRANT_ACCESS` are treated as `member`.
 
-> **Identity caveat.** The relay trusts the `clientId` announced in `HELLO` (it checks the public key derives to it, but not that the client holds the private key). Write control is sound when the relay runs with `Protocol:RequireSignedEvents = true`, because publishes must then be signed by that key. Read control on private channels is not yet proof-backed (see PLANNING.md #32).
+> **Identity caveat.** Without the [HELLO key-possession proof](#hello-key-possession-proof) the relay trusts the `clientId` announced in `HELLO` (it checks the public key derives to it, but not that the client holds the private key). Write control is sound when the relay runs with `Protocol:RequireSignedEvents = true`, because publishes must then be signed by that key. Read control on private channels is only proof-backed when `Protocol:RequireHelloProof = true`.
 
 The app owner is the only identity that may publish to `{appId}/vesta/relays` (the relay manifest channel) on a registered app; everyone can still read it. Unregistered apps keep the channel open.
 

@@ -100,14 +100,18 @@ export {
 export {
     base64UrlToBytes,
     bytesToBase64Url,
+    buildHelloProofInput,
     buildSigningInput,
     canonicalize,
     deriveClientId,
     normalizeTimestampForSigning,
     signEvent,
+    signHelloProof,
+    verifyEvent,
 } from "./signing.js";
 export type {
     AckMessage,
+    ChallengeMessage,
     ClientMessage,
     CreateChannelMessage,
     DeleteChannelMessage,
@@ -117,6 +121,7 @@ export type {
     FetchMessage,
     GrantAccessMessage,
     HelloMessage,
+    ProveMessage,
     PublishMessage,
     RegisterAppMessage,
     SequencedEvent,

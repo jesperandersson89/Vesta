@@ -728,17 +728,23 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             ClientId: _clientId,
             Channels: registerFirst ? [] : _channels!.ToList(),
             LastSequences: registerFirst ? new Dictionary<string, long>() : sequences,
-            PublicKey: publicKeyBase64Url);
+            PublicKey: publicKeyBase64Url,
+            ProofSupported: _identity is not null ? true : null);
 
         await SendAsync(hello, cancellationToken);
 
-        // Receive WELCOME (and possibly error messages before it)
+        // Receive WELCOME (and possibly a CHALLENGE or error messages before it)
         while (true)
         {
             ProtocolMessage? raw = await ReceiveOneAsync(cancellationToken);
             ProtocolMessage? response = raw is null ? null : MapInbound(raw);
 
-            if (response is WelcomeMessage welcome)
+            if (response is ChallengeMessage challenge && _identity is not null)
+            {
+                // A relay that verifies key possession wants the nonce signed before it says WELCOME.
+                await SendAsync(new ProveMessage(HelloProof.Sign(_identity, challenge.Nonce)), cancellationToken);
+            }
+            else if (response is WelcomeMessage welcome)
             {
                 ServerId = welcome.ServerId;
                 Channels = welcome.Channels;

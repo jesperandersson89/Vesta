@@ -98,7 +98,13 @@ from vesta_client.relay_recovery import (
     is_valid_app_id,
     normalize_relay_url,
 )
-from vesta_client.signing import build_signing_input, sign_event
+from vesta_client.signing import (
+    build_hello_proof_input,
+    build_signing_input,
+    sign_event,
+    sign_hello_proof,
+    verify_event,
+)
 from vesta_client.storage import (
     ClientEventStore,
     InMemoryClientEventStore,
@@ -108,6 +114,7 @@ from vesta_client.storage import (
 )
 from vesta_client.types import (
     AckMessage,
+    ChallengeMessage,
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
@@ -120,6 +127,7 @@ from vesta_client.types import (
 __all__ = [
     "__version__",
     "AckMessage",
+    "ChallengeMessage",
     "ANNOUNCE_EVENT_TYPE",
     "AppendOnlyLog",
     "ClientEventStore",
@@ -195,6 +203,7 @@ __all__ = [
     "build_descriptor_signing_input",
     "build_link",
     "build_manifest_signing_input",
+    "build_hello_proof_input",
     "build_signing_input",
     "build_unlink",
     "classify_error_code",
@@ -211,6 +220,8 @@ __all__ = [
     "save_identity_extra",
     "save_projection",
     "sign_event",
+    "sign_hello_proof",
+    "verify_event",
     "sign_manifest",
     "verify_descriptor",
     "verify_manifest",

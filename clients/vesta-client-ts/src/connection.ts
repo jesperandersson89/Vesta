@@ -32,7 +32,7 @@ import type {
     RelaysExhaustedInfo,
     VestaAppConfig,
 } from "./relay.js";
-import { signEvent } from "./signing.js";
+import { signEvent, signHelloProof } from "./signing.js";
 import { RelayRecoverySession } from "./relay-recovery.js";
 import type { RelayAdoptResult, RelayRecoveryHost } from "./relay-recovery.js";
 import { mountRelayPickerOverlay } from "./relay-picker.js";
@@ -414,6 +414,7 @@ export class VestaConnection {
                 channels: registerFirst ? [] : this._channels,
                 lastSequences: registerFirst ? {} : this.lastSequences,
                 publicKey: this.publicKey ?? null,
+                ...(this.identity ? { proofSupported: true } : {}),
             });
         });
 
@@ -909,6 +910,16 @@ export class VestaConnection {
     private handleMessage(raw: ServerMessage): void {
         const msg: ServerMessage = this.mapInbound(raw);
         switch (msg.type) {
+            case "CHALLENGE":
+                // Prove we hold the key behind the announced clientId; WELCOME follows on success.
+                if (this.identity) {
+                    this.sendRaw({
+                        type: "PROVE",
+                        signature: signHelloProof(msg.nonce, this.clientId, this.identity.privateKey),
+                    });
+                }
+                break;
+
             case "WELCOME": {
                 const wasReconnect = this.hasReachedWelcomeOnce;
                 const registerFirst: boolean = this.registerOnConnect;

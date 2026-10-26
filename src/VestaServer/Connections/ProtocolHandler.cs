@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Vesta;
@@ -46,6 +47,14 @@ public sealed class ProtocolOptions
     public int MaxFetchLimit { get; set; } = 1000;
 
     /// <summary>
+    /// When true, every connection must complete the HELLO key-possession proof (CHALLENGE / PROVE)
+    /// before it may do anything else; clients that cannot prove get <c>PROOF_REQUIRED</c>. Off by
+    /// default so legacy SDKs keep working. Turn it on in production: without it a client id is only
+    /// a claim, so private-channel reads and the per-client connection cap can be spoofed.
+    /// </summary>
+    public bool RequireHelloProof { get; set; }
+
+    /// <summary>
     /// Relay-wide baseline limits that apply when an app sets no quota of its own; app quotas
     /// always take precedence. See <see cref="ProtocolLimitDefaults"/>.
     /// </summary>
@@ -74,6 +83,7 @@ public sealed class ProtocolHandler(
 
     // Real client ids are base64url, so "*" can never collide with a per-client bucket.
     private const string AppThrottleBucketKey = "*throttle";
+    private static readonly TimeSpan HelloProofWindow = TimeSpan.FromSeconds(30);
     private readonly ProtocolOptions _options = protocolOptions?.Value ?? new ProtocolOptions();
 
     /// <summary>
@@ -122,10 +132,22 @@ public sealed class ProtocolHandler(
         ProtocolMessage message,
         CancellationToken cancellationToken)
     {
+        if (_options.RequireHelloProof && !connection.Authenticated && message is not (HelloMessage or ProveMessage))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("PROOF_REQUIRED", "This relay requires HELLO with a key-possession proof first"),
+                cancellationToken);
+            return;
+        }
+
         switch (message)
         {
             case HelloMessage hello:
                 await HandleHelloAsync(connection, hello, cancellationToken);
+                break;
+
+            case ProveMessage prove:
+                await HandleProveAsync(connection, prove, cancellationToken);
                 break;
 
             case PublishMessage publish:
@@ -173,12 +195,20 @@ public sealed class ProtocolHandler(
         HelloMessage hello,
         CancellationToken cancellationToken)
     {
-        connection.ClientId = hello.ClientId;
+        // A new HELLO abandons any earlier handshake and drops the identity it established.
+        connection.PendingHello = null;
+        connection.Authenticated = false;
+        connection.IsAdmin = false;
+        connection.ClientId = null;
+        connection.PublicKey = null;
+        connection.Subscriptions.Clear();
 
-        // If a public key is provided, validate it matches the clientId and store it
+        byte[]? publicKeyBytes = null;
+
+        // If a public key is provided, validate it matches the clientId
         if (!string.IsNullOrEmpty(hello.PublicKey))
         {
-            byte[] publicKeyBytes = Base64Url.Decode(hello.PublicKey);
+            publicKeyBytes = Base64Url.Decode(hello.PublicKey);
             string derivedClientId = VestaIdentity.DeriveClientId(publicKeyBytes);
 
             if (derivedClientId != hello.ClientId)
@@ -188,8 +218,6 @@ public sealed class ProtocolHandler(
                     cancellationToken);
                 return;
             }
-
-            connection.PublicKey = publicKeyBytes;
         }
         else if (_options.RequireSignedEvents)
         {
@@ -199,10 +227,90 @@ public sealed class ProtocolHandler(
             return;
         }
 
-        // Promote to server admin if the verified public key is in the admin allow-list.
-        // The check runs only after PublicKey validation above, so an unauthenticated or
-        // mismatched client can never receive admin status.
-        if (adminStore is not null && connection.PublicKey is not null &&
+        // Proof-capable clients that announced a key are challenged to sign a nonce, which is the only
+        // thing that proves they hold the key behind the clientId (HELLO alone does not).
+        bool canProve = hello.ProofSupported == true && publicKeyBytes is not null;
+        if (_options.RequireHelloProof && !canProve)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("PROOF_REQUIRED", "This relay requires HELLO with a PublicKey and proofSupported"),
+                cancellationToken);
+            return;
+        }
+
+        if (canProve)
+        {
+            string nonce = Base64Url.Encode(RandomNumberGenerator.GetBytes(32));
+            connection.PendingHello = new PendingHello(hello, publicKeyBytes!, nonce, DateTimeOffset.UtcNow + HelloProofWindow);
+            await connection.SendAsync(new ChallengeMessage(nonce), cancellationToken);
+            return;
+        }
+
+        await CompleteHelloAsync(connection, hello, publicKeyBytes, authenticated: false, cancellationToken);
+    }
+
+    private async Task HandleProveAsync(
+        ClientConnection connection,
+        ProveMessage prove,
+        CancellationToken cancellationToken)
+    {
+        PendingHello? pending = connection.PendingHello;
+        connection.PendingHello = null; // single use, pass or fail
+
+        if (pending is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("UNEXPECTED_PROOF", "No HELLO is waiting for a proof"),
+                cancellationToken);
+            return;
+        }
+
+        if (DateTimeOffset.UtcNow > pending.ExpiresAt)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("PROOF_EXPIRED", "The challenge expired; send HELLO again"),
+                cancellationToken);
+            return;
+        }
+
+        if (!HelloProof.Verify(pending.PublicKey, pending.Nonce, pending.Hello.ClientId, prove.Signature))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("PROOF_INVALID", "Proof signature verification failed"),
+                cancellationToken);
+            return;
+        }
+
+        await CompleteHelloAsync(connection, pending.Hello, pending.PublicKey, authenticated: true, cancellationToken);
+    }
+
+    private async Task CompleteHelloAsync(
+        ClientConnection connection,
+        HelloMessage hello,
+        byte[]? publicKeyBytes,
+        bool authenticated,
+        CancellationToken cancellationToken)
+    {
+        // Only proven identities are counted, so a client id cannot be used to lock its owner out.
+        int maxPerClient = _options.Defaults.MaxConnectionsPerClientId;
+        if (authenticated && maxPerClient > 0 &&
+            connectionManager.CountAuthenticated(hello.ClientId, connection.ConnectionId) >= maxPerClient)
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "CONNECTION_LIMITED",
+                    $"Client already has {maxPerClient} open connections (Protocol:Defaults:MaxConnectionsPerClientId)"),
+                cancellationToken);
+            return;
+        }
+
+        connection.ClientId = hello.ClientId;
+        connection.PublicKey = publicKeyBytes;
+        connection.Authenticated = authenticated;
+
+        // Promote to server admin only for a proven key in the admin allow-list: the operator's public
+        // key is public, so announcing it in HELLO must never be enough.
+        if (authenticated && adminStore is not null && connection.PublicKey is not null &&
             await adminStore.IsAdminAsync(connection.PublicKey, cancellationToken))
         {
             connection.IsAdmin = true;

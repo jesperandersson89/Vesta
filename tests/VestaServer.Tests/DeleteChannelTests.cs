@@ -223,7 +223,12 @@ public class DeleteChannelTests : IClassFixture<DeleteChannelTests.Fixture>
         ClientId: identity.ClientId,
         Channels: channels,
         LastSequences: new Dictionary<string, long>(),
-        PublicKey: Base64Url.Encode(identity.PublicKey)));
+        PublicKey: Base64Url.Encode(identity.PublicKey),
+        ProofSupported: true));
+
+    // Server admin status requires proving the key, not just announcing it.
+    ChallengeMessage challenge = Assert.IsType<ChallengeMessage>(await ReceiveAsync(ws));
+    await SendAsync(ws, new ProveMessage(HelloProof.Sign(identity, challenge.Nonce)));
   }
 
   private static async Task SendAsync(WebSocket ws, ProtocolMessage message)

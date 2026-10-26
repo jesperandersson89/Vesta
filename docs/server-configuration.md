@@ -32,10 +32,12 @@ The in-memory backend is intended for development and tests only — it loses ev
         "RequireAppRegistration": false,
         "AllowedApps": [],
         "MaxFetchLimit": 1000,
+        "RequireHelloProof": false,
         "Defaults": {
             "PublishRatePerMinute": 600,
             "MaxChannelsPerClientPerApp": 100,
             "MaxSubscriptionsPerConnection": 100,
+            "MaxConnectionsPerClientId": 10,
             "MaxConnectionsPerIp": 0,
             "ConnectionAttemptsPerMinutePerIp": 0,
         },
@@ -52,12 +54,13 @@ Without any per-app quota a relay would accept unlimited traffic from anyone, so
 | `PublishRatePerMinute`             | 600     | Publishes per `(app, client)`; used only when the app has no `publish_rate_per_minute` quota. Volatile events count. | `ERROR { code: "RATE_LIMITED" }`                                          |
 | `MaxChannelsPerClientPerApp`       | 100     | Distinct channels one client has published to under an app (reset on relay restart / after 1 h idle). Stops one identity from spraying channels. | `ERROR { code: "QUOTA_EXCEEDED" }`                                        |
 | `MaxSubscriptionsPerConnection`    | 100     | Subscriptions held by one WebSocket (`HELLO` channels + `SUBSCRIBE`).                             | `ERROR { code: "CONNECTION_LIMITED" }`; extra `HELLO` channels are dropped |
+| `MaxConnectionsPerClientId`        | 10      | Concurrent connections one client id may hold. Counts **only** connections that passed the [HELLO proof](#hello-key-possession-proof), so claiming someone else's id cannot use up their slots. | `ERROR { code: "CONNECTION_LIMITED" }` instead of `WELCOME`              |
 | `MaxConnectionsPerIp`              | 0 (off) | Concurrent WebSocket connections per remote IP.                                                   | HTTP `429` with `Retry-After` before the upgrade                         |
 | `ConnectionAttemptsPerMinutePerIp` | 0 (off) | WebSocket connection attempts per remote IP per minute.                                           | HTTP `429` with `Retry-After` before the upgrade                         |
 
 The two per-IP limits are off by default because behind a reverse proxy every client appears to come from the proxy's address. Turn on `ForwardedHeaders:Enabled` (so the relay sees `X-Forwarded-For`) **before** enabling them, and remember that players behind one NAT share an IP.
 
-These are abuse guards, not authentication: a client id is not proven at `HELLO`, so the relay deliberately has no per-client-id *connection* cap (it would let anyone lock out a known client id).
+These are abuse guards, not authentication. Anything keyed on a client id is only as trustworthy as the id: without the HELLO proof it is a claim, which is why `MaxConnectionsPerClientId` ignores unproven connections.
 
 ### Catch-up paging
 
@@ -80,6 +83,16 @@ When `Protocol:RequireSignedEvents = true`, the server additionally:
 - Rejects any `PUBLISH` whose event is unsigned, regardless of whether the client previously registered a key.
 
 Use the strict mode for production. Leave it off for local development with the demo CLIs.
+
+### HELLO key-possession proof
+
+`HELLO` only checks that the announced `publicKey` derives to the `clientId`; by itself it never shows the client holds the private key, and public keys and client ids are visible in every event stream. So a client id is just a claim until it is proven:
+
+1. A client that sends `proofSupported: true` and a `publicKey` in `HELLO` gets a `CHALLENGE { nonce }` (random, single-use, valid 30 s) and must answer `PROVE { signature }`, an Ed25519 signature over `"vesta-hello-v1\n{nonce}\n{clientId}"` (see [protocol.md](protocol.md#hello-key-possession-proof)). Only then does the relay subscribe channels and send `WELCOME`. All three SDKs do this automatically when constructed with an identity.
+2. The connection is then *authenticated*. Server admin status (`Admin:BootstrapPublicKeys`) is granted **only** to authenticated connections, because an operator's public key is not secret.
+3. `Protocol:RequireHelloProof = true` additionally rejects clients that cannot prove (`PROOF_REQUIRED`) and refuses every message except `HELLO`/`PROVE` until the proof succeeds. With it on, a private channel's membership check can no longer be satisfied by merely knowing a member's client id. It is **off by default** so older SDKs keep working; turn it on in production once your clients are current.
+
+Write control (`PUBLISH`) is separately protected by event signatures when `RequireSignedEvents = true`; the proof is what makes *read* access (`SUBSCRIBE`, `FETCH`, catch-up) and the per-client-id connection cap trustworthy.
 
 ### App registration
 
@@ -131,7 +144,7 @@ A `null` quota means no limit. Quotas only attach to **registered** apps — unr
 
 ## Server admins
 
-A **server admin** is a connection whose Ed25519 public key is listed in the `Admin:BootstrapPublicKeys` allow-list. Admin status is established at `HELLO` time and lasts for the lifetime of the connection.
+A **server admin** is a connection whose Ed25519 public key is listed in the `Admin:BootstrapPublicKeys` allow-list **and** that proved it holds the key (the [HELLO proof](#hello-key-possession-proof)). Admin status is established when the handshake completes and lasts for the lifetime of the connection. Announcing an admin public key without proving it grants nothing.
 
 ```json
 {

@@ -19,7 +19,10 @@ import re
 from datetime import datetime
 from typing import Any
 
-from vesta_client.identity import VestaIdentity, b64url_encode
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from vesta_client.identity import VestaIdentity, b64url_decode, b64url_encode
 from vesta_client.types import VestaEvent
 
 _SIGNED_FIELDS = ("channelId", "clientId", "id", "parentId", "payload", "timestamp", "type")
@@ -123,3 +126,30 @@ def sign_event(event: VestaEvent, identity: VestaIdentity) -> VestaEvent:
     signing_input = build_signing_input(event)
     event.signature = identity.sign_b64(signing_input)
     return event
+
+
+def verify_event(event: VestaEvent, public_key: bytes) -> bool:
+    """
+    True when ``event.signature`` is a valid Ed25519 signature by ``public_key`` over the signed
+    fields. Matches C# ``EventSigner.VerifyEvent``; it does not check that ``event.client_id``
+    belongs to the key (compare it with ``derive_client_id(public_key)`` yourself).
+    """
+    if not event.signature:
+        return False
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key).verify(
+            b64url_decode(event.signature), build_signing_input(event)
+        )
+        return True
+    except (InvalidSignature, ValueError):
+        return False
+
+
+def build_hello_proof_input(nonce: str, client_id: str) -> bytes:
+    """Bytes signed for the HELLO proof: ``vesta-hello-v1\\n{nonce}\\n{clientId}`` in UTF-8 (matches C# ``HelloProof``)."""
+    return f"vesta-hello-v1\n{nonce}\n{client_id}".encode("utf-8")
+
+
+def sign_hello_proof(identity: VestaIdentity, nonce: str) -> str:
+    """Sign a relay CHALLENGE nonce; returns the base64url signature for a PROVE message."""
+    return identity.sign_b64(build_hello_proof_input(nonce, identity.client_id))

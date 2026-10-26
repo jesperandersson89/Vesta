@@ -128,3 +128,27 @@ export function signEvent(
     event.signature = bytesToBase64Url(sig);
     return event;
 }
+
+/**
+ * True when `event.signature` is a valid Ed25519 signature by `publicKey` over the signed fields.
+ * Matches C# `EventSigner.VerifyEvent`; it does not check that `event.clientId` belongs to the key
+ * (compare it with `deriveClientId(publicKey)` yourself).
+ */
+export function verifyEvent(event: VestaEvent, publicKey: Uint8Array): boolean {
+    if (!event.signature) return false;
+    try {
+        return ed.verify(base64UrlToBytes(event.signature), buildSigningInput(event), publicKey);
+    } catch {
+        return false;
+    }
+}
+
+/** Bytes signed for the HELLO proof: `"vesta-hello-v1\n{nonce}\n{clientId}"` in UTF-8 (matches C# `HelloProof`). */
+export function buildHelloProofInput(nonce: string, clientId: string): Uint8Array {
+    return new TextEncoder().encode(`vesta-hello-v1\n${nonce}\n${clientId}`);
+}
+
+/** Sign a relay CHALLENGE nonce; returns the base64url signature for a PROVE message. */
+export function signHelloProof(nonce: string, clientId: string, privateKey: Uint8Array): string {
+    return bytesToBase64Url(ed.sign(buildHelloProofInput(nonce, clientId), privateKey));
+}

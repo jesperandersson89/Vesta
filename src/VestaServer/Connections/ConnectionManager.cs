@@ -57,6 +57,23 @@ public sealed class ConnectionManager
     }
 
     /// <summary>
+    /// Open connections that proved ownership of <paramref name="clientId"/>, excluding one connection.
+    /// Unproven connections are never counted, so nobody can fill a victim's slots by claiming their id.
+    /// </summary>
+    public int CountAuthenticated(string clientId, string excludeConnectionId)
+    {
+        int count = 0;
+        foreach (ClientConnection connection in _connections.Values)
+        {
+            if (connection.IsOpen && connection.Authenticated &&
+                connection.ConnectionId != excludeConnectionId &&
+                string.Equals(connection.ClientId, clientId, StringComparison.Ordinal))
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
     /// Get the count of active connections (for diagnostics).
     /// </summary>
     public int ActiveCount => _connections.Count;

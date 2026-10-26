@@ -4,12 +4,15 @@ namespace Vesta;
 /// CLIENT → SERVER: Initial handshake. Identifies the client and declares
 /// which channels it wants to subscribe to with last-seen positions.
 /// PublicKey is the base64url-encoded Ed25519 public key (32 bytes) for signature verification.
+/// ProofSupported advertises that the client can answer a <see cref="ChallengeMessage"/> with a
+/// <see cref="ProveMessage"/>; relays only challenge clients that set it, so legacy clients are unaffected.
 /// </summary>
 public sealed record HelloMessage(
     string ClientId,
     IReadOnlyList<string> Channels,
     IReadOnlyDictionary<string, long> LastSequences,
-    string? PublicKey = null
+    string? PublicKey = null,
+    bool? ProofSupported = null
 ) : ProtocolMessage;
 
 /// <summary>
@@ -61,3 +64,12 @@ public sealed record DeleteChannelMessage(
     string ChannelId
 ) : ProtocolMessage;
 
+
+/// <summary>
+/// CLIENT → SERVER: Answer to a <see cref="ChallengeMessage"/>. <see cref="Signature"/> is the
+/// base64url Ed25519 signature over <see cref="HelloProof.BuildMessage"/> using the key announced in
+/// HELLO, proving the client holds the private key for the claimed client id.
+/// </summary>
+public sealed record ProveMessage(
+    string Signature
+) : ProtocolMessage;
