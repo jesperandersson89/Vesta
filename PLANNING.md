@@ -164,11 +164,14 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   flow, what the relay never validates, `receivedAt` for time, and the developer-abandons case. It needed
   receive-side verification in every SDK, so `verifyEvent` (TS) and `verify_event` (Python) were added
   alongside C# `EventSigner.VerifyEvent` (tests: `verify-event.test.mjs`, `test_verify_event.py`).
-  **Still open:** **owner-only channel creation** — any client can create a channel under any app
-  namespace, so a stranger can squat `mygame/shop` as their own broadcast channel before the service does
-  (clients still reject their events by signer, but the service cannot claim the name); needs a per-app
-  rule such as `channel_creation = owner|anyone` enforced in `HandleCreateChannelAsync` and the implicit
-  create path; an optional `examples/Shopkeeper` demo.
+  **Still open:** none for the relay. ✅ **Owner-only channel creation** (`apps.owner_only_channel_creation`,
+  `PATCH /admin/apps/{id}/channel-creation`, enforced in `HandleCreateChannelAsync` and, for the implicit create,
+  in `EnforcePublishQuotasAsync` via `GetVisibilityAsync`; `OwnerOnlyChannelCreationTests`). Decisions: a separate
+  operator-set flag rather than a field of `AppQuotas` (quotas are replace-all, so a platform rewriting quotas would
+  clobber a policy); a bool, not an `owner|anyone` enum, since there are only two states; operator-only because
+  `REGISTER_APP` has no spare field and a wire change would touch all three SDKs for no client-visible gain
+  (denials are plain `ACCESS_DENIED`). A stranger's *volatile* publish to a channel that does not exist yet is also
+  denied. Left open: Atrium does not call the endpoint yet (see its PLANNING); an optional `examples/Shopkeeper` demo.
 - **#27 Relay baseline limits.** ✅ **Done** (`Protocol:Defaults`, `RelayBaselineLimiter`,
   `BaselineLimitsTests`; documented in `docs/server-configuration.md`): default `PublishRatePerMinute`
   (600, per `(app, client)`, also for unregistered apps; an app quota wins),
@@ -302,7 +305,7 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 121 Client + 222 Server (incl. Testcontainers Postgres
+- Expected test totals (all green): C# 217 Core + 121 Client + 230 Server (incl. Testcontainers Postgres
   tests) + 9 AccountServer; TS 125; Py 142. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
@@ -330,8 +333,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   src/VestaServer/VestaServer.csproj`; check both `.cs` + `.Designer.cs` and the snapshot.
 - `PATCH /admin/apps/{id}/quotas` is **replace-all** (missing fields become null), and any client that
   does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
-- The relay does not restrict who may create channels under an app namespace (only the creator becomes
-  channel admin); see #26 for the squatting consequence.
+- By default the relay does not restrict who may create channels under an app namespace (only the creator becomes
+  channel admin); the per-app `owner_only_channel_creation` flag (#26) closes the squatting hole when set.
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via

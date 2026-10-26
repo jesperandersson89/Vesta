@@ -63,4 +63,18 @@ public sealed class NpgsqlAppStoreQuotaTests : IAsyncLifetime
     Assert.Null(stored.VolatileRatePerMinute);
     Assert.Equal(10, stored.PublishRatePerMinute);
   }
+
+  [Fact]
+  public async Task SetOwnerOnlyChannelCreation_DefaultsOffAndRoundTrips()
+  {
+    await _store.RegisterAsync("creationapp", "owner-3");
+    Assert.False((await _store.GetAsync("creationapp"))!.OwnerOnlyChannelCreation);
+
+    Assert.True(await _store.SetOwnerOnlyChannelCreationAsync("creationapp", true));
+    Assert.True((await _store.GetAsync("creationapp"))!.OwnerOnlyChannelCreation);
+
+    Assert.True(await _store.SetOwnerOnlyChannelCreationAsync("creationapp", false));
+    Assert.False((await _store.GetAsync("creationapp"))!.OwnerOnlyChannelCreation);
+    Assert.False(await _store.SetOwnerOnlyChannelCreationAsync("nosuchapp", true));
+  }
 }

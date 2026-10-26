@@ -476,6 +476,22 @@ public class AdminAppLifecycleTests : IClassFixture<AdminAppLifecycleTests.Fixtu
   }
 
   [Fact]
+  public async Task ChannelCreation_PatchSetsOwnerOnlyAndIsReportedByGet()
+  {
+    await Apps.RegisterAsync("creationapp", "owner");
+    HttpClient client = await GetAuthenticatedClientAsync();
+
+    HttpResponseMessage set = await client.PatchAsJsonAsync("/admin/apps/creationapp/channel-creation", new { ownerOnly = true });
+
+    Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+    Assert.True((await Apps.GetAsync("creationapp"))?.OwnerOnlyChannelCreation);
+    JsonElement detail = await client.GetFromJsonAsync<JsonElement>("/admin/apps/creationapp");
+    Assert.True(detail.GetProperty("ownerOnlyChannelCreation").GetBoolean());
+    Assert.Equal(HttpStatusCode.NotFound,
+        (await client.PatchAsJsonAsync("/admin/apps/nosuchapp/channel-creation", new { ownerOnly = true })).StatusCode);
+  }
+
+  [Fact]
   public async Task TrafficControl_UnknownApp_Returns404_DeletedApp_Returns409()
   {
     await Apps.RegisterAsync("tcdeleted", "owner");

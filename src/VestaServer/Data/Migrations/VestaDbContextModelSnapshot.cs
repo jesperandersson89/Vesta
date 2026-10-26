@@ -177,6 +177,12 @@ namespace VestaServer.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("owner_client_id");
 
+                    b.Property<bool>("OwnerOnlyChannelCreation")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("owner_only_channel_creation");
+
                     b.Property<DateTimeOffset?>("PausedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("paused_at");

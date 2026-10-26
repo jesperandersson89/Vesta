@@ -214,6 +214,7 @@ Tokens are kept in-process; a server restart invalidates everything. Multi-host 
 | `POST`   | `/admin/apps/{id}/pause`  | Refuse all publishes / channel creation with `APP_PAUSED` (`200 { id, pausedAt }`). See [Pause and throttle](#pause-and-throttle). |
 | `POST`   | `/admin/apps/{id}/resume` | Lift a pause (`200 { id, pausedAt: null }`). |
 | `PATCH`  | `/admin/apps/{id}/throttle` | `{ "perMinute": int \| null }` — cap total publishes per minute for the app; `null` removes it (`400` for ≤ 0). |
+| `PATCH`  | `/admin/apps/{id}/channel-creation` | `{ "ownerOnly": bool }` — when true only the app's owner may create channels in its namespace; see [Owner-only channel creation](#owner-only-channel-creation). |
 | `PATCH`  | `/admin/apps/{id}/quotas` | Replace the app's `AppQuotas` body. `409` for a deleted app (same for `owner` and `discoverable`). |
 | `PATCH`  | `/admin/apps/{id}/discoverable` | `{ "discoverable": bool }` — federation opt-in. |
 | `PATCH`  | `/admin/apps/{id}/owner`  | Operator-assisted rebind of the app's recognized owner to a new client id (key rotation / recovery from a lost identity). |
@@ -239,6 +240,10 @@ Two operator-level traffic controls, independent of the tier-style [quotas](#app
 - **Throttle** (`PATCH /admin/apps/{id}/throttle` with `{ "perMinute": 600 }`, `null` removes it) — caps the app's **total** publishes per minute across all clients (token bucket, one shared bucket per app; the per-client `publish_rate_per_minute` quota still applies on top). Excess publishes get `ERROR { code: "RATE_LIMITED" }`. In-process like the other rate limits, so it is per relay instance.
 
 Both persist in the `apps` table (`paused_at`, `throttle_per_minute`), are returned as `pausedAt` / `throttlePerMinute` by `GET /admin/apps[/{id}]`, are audited (`app.pause`, `app.resume`, `app.throttle`), and return `409` for a soft-deleted app. `GET /admin/metrics` reports `pausedApps`.
+
+### Owner-only channel creation
+
+By default any client may create a channel under any app namespace (explicit `CREATE_CHANNEL`, or implicitly by publishing to a new channel). `PATCH /admin/apps/{id}/channel-creation` with `{ "ownerOnly": true }` restricts that to the app's registered owner: everyone else gets `ERROR { code: "ACCESS_DENIED" }` for `CREATE_CHANNEL`, and for a `PUBLISH` (volatile included) to a channel that does not exist yet. Channels that already exist, reading, and publishing to existing public channels are unaffected, and `false` opens creation again. It is how a game's service claims `mygame/shop` as a `broadcast` channel that no stranger can squat (see [patterns.md](patterns.md)). Persisted as `apps.owner_only_channel_creation`, returned as `ownerOnlyChannelCreation` by `GET /admin/apps[/{id}]`, audited as `app.channel-creation`, `409` for a soft-deleted app. Like every owner check it is only as strong as the identity behind the connection: enable `Protocol:RequireHelloProof` so the owner's client id cannot be claimed by someone else.
 
 ### JSON Lines export format
 

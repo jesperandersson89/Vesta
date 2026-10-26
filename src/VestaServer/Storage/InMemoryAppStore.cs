@@ -126,4 +126,17 @@ public sealed class InMemoryAppStore : IAppStore
         return Task.FromResult(true);
     }
   }
+
+  public Task<bool> SetOwnerOnlyChannelCreationAsync(string appId, bool ownerOnly, CancellationToken cancellationToken = default)
+  {
+    while (true)
+    {
+      if (!_apps.TryGetValue(appId, out AppInfo? existing))
+        return Task.FromResult(false);
+
+      AppInfo updated = existing with { OwnerOnlyChannelCreation = ownerOnly };
+      if (_apps.TryUpdate(appId, updated, existing))
+        return Task.FromResult(true);
+    }
+  }
 }

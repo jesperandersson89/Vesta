@@ -39,6 +39,7 @@ public sealed record AppQuotas(
 /// <param name="DeletedAt">Soft-delete tombstone stamped by the admin API; <c>null</c> for active apps. Deleted apps are hidden from <see cref="IAppStore.ExistsAsync"/> and <see cref="IAppStore.ListAsync"/>.</param>
 /// <param name="PausedAt">Set by an operator to reject every PUBLISH and CREATE_CHANNEL for the app with <c>APP_PAUSED</c>; reads keep working. <c>null</c> when running normally.</param>
 /// <param name="ThrottlePerMinute">Operator-imposed cap on the app's total publishes per minute (all clients combined), enforced as <c>RATE_LIMITED</c>. Independent of <see cref="AppQuotas.PublishRatePerMinute"/>; <c>null</c> means unthrottled.</param>
+/// <param name="OwnerOnlyChannelCreation">When true only <paramref name="OwnerClientId"/> may create channels in the namespace (CREATE_CHANNEL, or a PUBLISH that would implicitly create one); everyone else gets <c>ACCESS_DENIED</c>. Existing channels are unaffected.</param>
 public sealed record AppInfo(
     string Id,
     string OwnerClientId,
@@ -47,7 +48,8 @@ public sealed record AppInfo(
     bool Discoverable = false,
     DateTimeOffset? DeletedAt = null,
     DateTimeOffset? PausedAt = null,
-    int? ThrottlePerMinute = null);
+    int? ThrottlePerMinute = null,
+    bool OwnerOnlyChannelCreation = false);
 
 /// <summary>
 /// Server-side abstraction for app namespace registration.
@@ -128,6 +130,12 @@ public interface IAppStore
   /// the app does not exist.
   /// </summary>
   Task<bool> SetThrottleAsync(string appId, int? perMinute, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Restrict channel creation in the app namespace to its owner (<paramref name="ownerOnly"/> = true) or
+  /// open it to everyone again. Returns false if the app does not exist.
+  /// </summary>
+  Task<bool> SetOwnerOnlyChannelCreationAsync(string appId, bool ownerOnly, CancellationToken cancellationToken = default);
 }
 
 public sealed class AppAlreadyRegisteredException(string appId)

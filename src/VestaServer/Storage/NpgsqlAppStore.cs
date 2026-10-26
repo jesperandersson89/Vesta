@@ -12,7 +12,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
             max_payload_bytes, publish_rate_per_minute, max_channels,
             max_events_per_channel, retention_days, total_storage_bytes, discoverable,
             max_messages_per_month, deleted_at, paused_at, throttle_per_minute,
-            max_connections, volatile_rate_per_minute
+            max_connections, volatile_rate_per_minute, owner_only_channel_creation
             """;
 
   public async Task<AppInfo?> GetAsync(string appId, CancellationToken cancellationToken = default)
@@ -151,6 +151,16 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     return rows > 0;
   }
 
+  public async Task<bool> SetOwnerOnlyChannelCreationAsync(string appId, bool ownerOnly, CancellationToken cancellationToken = default)
+  {
+    const string sql = "UPDATE apps SET owner_only_channel_creation = $2 WHERE id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = ownerOnly });
+    int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
+    return rows > 0;
+  }
+
   private async Task<IReadOnlyList<AppInfo>> ListCoreAsync(bool includeDeleted, CancellationToken cancellationToken)
   {
     string sql = includeDeleted
@@ -184,6 +194,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
         reader.GetBoolean(9),
         reader.IsDBNull(11) ? null : reader.GetFieldValue<DateTimeOffset>(11),
         reader.IsDBNull(12) ? null : reader.GetFieldValue<DateTimeOffset>(12),
-        reader.IsDBNull(13) ? null : reader.GetInt32(13));
+        reader.IsDBNull(13) ? null : reader.GetInt32(13),
+        reader.GetBoolean(16));
   }
 }

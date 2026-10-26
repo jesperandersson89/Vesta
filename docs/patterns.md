@@ -35,7 +35,7 @@ connection.on("event", (msg) => {
 
 The `broadcast` write rule is spam and quota protection: strangers can't fill the channel and burn your message allowance. The client-side signer check is the actual trust anchor, because it keeps working if a player fails over to a different relay or a relay misbehaves. Two caveats:
 
-- **Create the channel first.** The relay lets any client create a channel under any app namespace, so a stranger could register `mygame/shop` as their own broadcast channel before you do. Your client-side check still rejects their events, but your service could not claim the name. Create channels at deploy time. (Owner-only channel creation is on the roadmap.)
+- **Create the channel first.** Unless the operator has turned on [owner-only channel creation](server-configuration.md#owner-only-channel-creation) for your app, the relay lets any client create a channel under any app namespace, so a stranger could register `mygame/shop` as their own broadcast channel before you do. Your client-side check still rejects their events, but your service could not claim the name. Create channels at deploy time, and on a relay you do not operate ask the operator to enable owner-only creation.
 - **Run production relays with `Protocol:RequireSignedEvents = true` and `Protocol:RequireHelloProof = true`** ([server-configuration.md](server-configuration.md#signature-verification)). Write control relies on publishes being signed; private-channel reads (for example a per-player receipt inbox) rely on the connection having proven its key.
 
 ## What the relay will never validate

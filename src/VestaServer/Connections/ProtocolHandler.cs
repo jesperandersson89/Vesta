@@ -783,6 +783,14 @@ public sealed class ProtocolHandler(
         if (!await EnsureChannelNotDeletedAsync(connection, create.ChannelId, cancellationToken))
             return;
 
+        if (appStore is not null &&
+            AppId.ExtractFromChannelId(create.ChannelId) is string createAppId &&
+            IsBlockedByOwnerOnlyCreation(await appStore.GetAsync(createAppId, cancellationToken), connection))
+        {
+            await connection.SendAsync(OwnerOnlyCreationError(createAppId, null, create.ChannelId), cancellationToken);
+            return;
+        }
+
         // max_channels quota — checked before attempting to create the row.
         if (!await EnforceMaxChannelsAsync(connection, create.ChannelId, cancellationToken))
             return;
@@ -1069,6 +1077,14 @@ public sealed class ProtocolHandler(
             return false;
         }
 
+        // Owner-only apps: a stranger's first PUBLISH to an unknown channel would implicitly create it.
+        if (IsBlockedByOwnerOnlyCreation(app, connection) &&
+            await accessStore.GetVisibilityAsync(publish.ChannelId, cancellationToken) is null)
+        {
+            await connection.SendAsync(OwnerOnlyCreationError(appId, publish.Event.Id, publish.ChannelId), cancellationToken);
+            return false;
+        }
+
         AppQuotas quotas = app?.Quotas ?? AppQuotas.None;
 
         if (!await JoinAppAsync(connection, appId, app, publish.ChannelId, publish.Event.Id, cancellationToken))
@@ -1229,6 +1245,16 @@ public sealed class ProtocolHandler(
 
         return true;
     }
+
+    private static bool IsBlockedByOwnerOnlyCreation(AppInfo? app, ClientConnection connection) =>
+        app is { OwnerOnlyChannelCreation: true } &&
+        !string.Equals(app.OwnerClientId, connection.ClientId, StringComparison.Ordinal);
+
+    private static ErrorMessage OwnerOnlyCreationError(string appId, Guid? eventId, string channelId) => new(
+        "ACCESS_DENIED",
+        $"Only the owner of app '{appId}' may create channels in its namespace",
+        eventId,
+        channelId);
 
     private static int EstimatePayloadBytes(VestaEvent evt)
     {

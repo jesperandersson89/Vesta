@@ -100,6 +100,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.Property(e => e.PausedAt).HasColumnName("paused_at");
             entity.Property(e => e.ThrottlePerMinute).HasColumnName("throttle_per_minute");
+            entity.Property(e => e.OwnerOnlyChannelCreation).HasColumnName("owner_only_channel_creation").HasDefaultValue(false);
 
             // Reserved for TODO #9b — all nullable, server does not enforce yet.
             entity.Property(e => e.MaxChannels).HasColumnName("max_channels");

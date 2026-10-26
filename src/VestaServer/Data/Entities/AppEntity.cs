@@ -27,6 +27,9 @@ public sealed class AppEntity
   /// <summary>Operator cap on the app's total publishes per minute (all clients); null = unthrottled.</summary>
   public int? ThrottlePerMinute { get; set; }
 
+  /// <summary>When true only the app owner may create channels in the namespace.</summary>
+  public bool OwnerOnlyChannelCreation { get; set; }
+
   // === Reserved for TODO #9b (per-app quotas & rate limits) ===
   // Nullable means "no limit". Server does not enforce these yet.
   public int? MaxChannels { get; set; }

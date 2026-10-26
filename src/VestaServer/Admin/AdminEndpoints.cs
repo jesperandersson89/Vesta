@@ -153,6 +153,7 @@ public static class AdminEndpoints
         deletedAt = a.DeletedAt,
         pausedAt = a.PausedAt,
         throttlePerMinute = a.ThrottlePerMinute,
+        ownerOnlyChannelCreation = a.OwnerOnlyChannelCreation,
         activeAlerts = alertCounts.GetValueOrDefault(a.Id),
       }));
     });
@@ -180,6 +181,7 @@ public static class AdminEndpoints
         deletedAt = app.DeletedAt,
         pausedAt = app.PausedAt,
         throttlePerMinute = app.ThrottlePerMinute,
+        ownerOnlyChannelCreation = app.OwnerOnlyChannelCreation,
         activeConnections = connections.CountByApp(app.Id),
       });
     });
@@ -358,6 +360,21 @@ public static class AdminEndpoints
       await apps.SetThrottleAsync(id, req.PerMinute, ct);
       await RecordAuditAsync(ctx, "app.throttle", id, new { req.PerMinute });
       return Results.Ok(new { id, throttlePerMinute = req.PerMinute });
+    });
+
+    admin.MapPatch("/apps/{id}/channel-creation", async (
+        HttpContext ctx,
+        string id,
+        AppChannelCreationRequest req,
+        IAppStore apps,
+        CancellationToken ct) =>
+    {
+      IResult? blocked = await RejectUnlessActiveAsync(apps, id, ct);
+      if (blocked is not null) return blocked;
+
+      await apps.SetOwnerOnlyChannelCreationAsync(id, req.OwnerOnly, ct);
+      await RecordAuditAsync(ctx, "app.channel-creation", id, new { req.OwnerOnly });
+      return Results.Ok(new { id, ownerOnlyChannelCreation = req.OwnerOnly });
     });
 
     admin.MapPost("/apps/{id}/restore", async (
@@ -618,6 +635,10 @@ public sealed record AppDiscoverableRequest(
 /// <summary>Request body for <c>PATCH /admin/apps/{id}/throttle</c>; <c>null</c> removes the throttle.</summary>
 public sealed record AppThrottleRequest(
     [property: JsonPropertyName("perMinute")] int? PerMinute);
+
+/// <summary>Request body for <c>PATCH /admin/apps/{id}/channel-creation</c>.</summary>
+public sealed record AppChannelCreationRequest(
+    [property: JsonPropertyName("ownerOnly")] bool OwnerOnly);
 
 /// <summary>Request body for <c>PATCH /admin/apps/{id}/owner</c>.</summary>
 public sealed record AppOwnerRequest(
