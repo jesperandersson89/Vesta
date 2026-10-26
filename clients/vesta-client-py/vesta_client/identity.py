@@ -80,6 +80,32 @@ class VestaIdentity:
             encryption_algorithm=serialization.NoEncryption(),
         )
 
+    def export_encrypted(self, password: str, options: Any = None) -> str:
+        """Encrypt the private key under ``password`` (Argon2id + AES-256-GCM) into a JSON blob."""
+        from vesta_client.backup import export_identity
+
+        return export_identity(self, password, options)
+
+    @staticmethod
+    def import_encrypted(blob: str, password: str) -> "VestaIdentity":
+        """Restore an identity from :meth:`export_encrypted`; raises ``IdentityBackupError`` on failure."""
+        from vesta_client.backup import import_identity
+
+        return import_identity(blob, password)
+
+    def to_recovery_phrase(self) -> str:
+        """The 24-word recovery phrase for this identity's seed. Anyone who has it owns the identity."""
+        from vesta_client.backup import recovery_phrase_from_seed
+
+        return recovery_phrase_from_seed(self.export_private_key())
+
+    @staticmethod
+    def from_recovery_phrase(phrase: str) -> "VestaIdentity":
+        """Restore an identity from :meth:`to_recovery_phrase`."""
+        from vesta_client.backup import seed_from_recovery_phrase
+
+        return VestaIdentity.from_private_key(seed_from_recovery_phrase(phrase))
+
 
 def load_identity_file(path: str | Path) -> VestaIdentity:
     """Load an identity from a JSON file — e.g. the ``{appId}.identity.json`` downloaded from Atrium."""

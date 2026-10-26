@@ -9,6 +9,7 @@ Reference docs for the Vesta protocol, SDK, and server. For high-level architect
 | [events.md](events.md)                             | App developers   | The `VestaEvent` shape, signing, `metadata`, `replace`, `volatile`, TTL/ephemeral events      |
 | [projections.md](projections.md)                   | App developers   | SDK conflict-resolution primitives (`EventReducer`, `AppendOnlyLog`, `LwwRegister`, `LwwMap`) |
 | [patterns.md](patterns.md)                         | App developers   | Recipes for what the relay won't do: one trusted writer (shop, world state), what is never validated |
+| [identity.md](identity.md)                         | App developers   | Keys, backup and recovery: encrypted export, 24-word recovery phrase, relay-stored backup, pairing a second device |
 | [protocol.md](protocol.md)                         | SDK implementers | Wire-level message types and the connection lifecycle                                         |
 | [relay-recovery.md](relay-recovery.md)             | App devs, SDK implementers | What the user sees when every relay is down: the headless recovery session, peer cache, trust rules |
 | [operating-a-relay.md](operating-a-relay.md)       | Relay operators only | Running the relay image for *other people's* apps. Not needed to build an app                 |

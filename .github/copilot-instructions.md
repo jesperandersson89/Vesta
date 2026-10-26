@@ -103,6 +103,12 @@ Vesta/
 - When adding a new protocol message, update both the C# types AND the message type documentation
 - Run `dotnet build` after changes to verify compilation
 - Event payloads are always `JsonElement` or `JsonDocument` — never strongly-typed app models in core
+- **Record what you learn in `PLANNING.md`, in the same change, without being asked.** A non-obvious
+  decision (and the alternative you rejected) goes into the relevant TODO entry or section; a gotcha,
+  tooling quirk, surprising default, cross-repo effect or security finding goes into `Quirks & gotchas`
+  (or the TODO it belongs to, marked **Still open** if unfinished). Keep the expected test totals there
+  current. `PLANNING.md` is for *why* and *watch out*; user-facing *how* goes in `docs/`. When a finding
+  affects `vesta_atrium`, add a matching note to its `PLANNING.md`.
 
 ## Keeping Clients and Examples in Sync
 

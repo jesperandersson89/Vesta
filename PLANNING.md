@@ -64,7 +64,10 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
   `JsonCanonicalization` (C#), `canonicalize` (TS), `json-canonicalization` (Py).
 - **Identity:** `clientId = base64url(sha256(publicKey))[:22]`. HELLO carries the public key;
   server verifies it derives to the announced `clientId`; PUBLISH must match the connection's
-  `clientId`; signed events are verified. `Protocol:RequireSignedEvents=true` makes it strict.
+  `clientId`; signed events are verified. `Protocol:RequireSignedEvents=true` makes it strict. **HELLO alone proves nothing**: a client that sends
+  `proofSupported` + `publicKey` is challenged (`CHALLENGE`/`PROVE`, #32) and only then gets an identity,
+  admin status or a per-client-id connection cap; `Protocol:RequireHelloProof` makes it mandatory (off by
+  default for old SDKs).
 - **Channels:** slug `[a-z0-9][a-z0-9\-/]*[a-z0-9]`, max 128; created implicitly in open mode;
   ACL modes open/private/broadcast via `CREATE_CHANNEL` (roles admin/member/reader). Soft-delete via `deleted_at`, hard-delete
   by `ChannelDeletionPrunerService` after a grace period.
@@ -104,6 +107,10 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
   `VestaConnection.{CreateDeviceGroup,LinkDevice,JoinDeviceGroup,GetDeviceGroupMembers}Async`.
   Peer-equality trust; private keys never move. Phases 2–6 (revocation, rotation, cross-app,
   recovery, delegation) deferred; **server-mediated key transfer is rejected** (see archive).
+- Identity backup & recovery (#30, `docs/identity.md`): `ExportEncrypted`/`ImportEncrypted` (Argon2id +
+  AES-256-GCM), 24-word recovery phrase (BIP-39 wordlist on the raw seed), `RelayBackup` (key + channel from one
+  Argon2id run over app/username/password). Byte-compatible across the three SDKs; the server-mediated
+  plaintext key transfer stays rejected.
 - Relay independence (#20): `VestaConnection` **requires** `VestaAppConfig { AppId,
   OwnerPublicKey, DefaultRelays }` (C# also accepts `(appId, ownerKeyBase64Url, params string[] relays)`);
   `RelayDirectory.CreateDefault` / `createDefault` / `create_default` caches under
@@ -201,17 +208,27 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   **Still open:** the connection count is per relay process and unlocked (can overshoot a little; multi-host
   needs the shared backend of #15); `max_connections` alerts/usage in `app_alerts` and the admin dashboard
   meter; `Atrium` `TierCatalog` values for the Realtime tier.
-- **#30 Identity backup primitives.** `VestaIdentity.ExportEncrypted(password)` /
-  `ImportEncrypted(blob, password)` (Argon2id + AEAD, versioned JSON blob); recovery phrase (seed ↔ 24
-  words); optional relay-stored encrypted backup as a `replace: true` `vesta.identity.backup` event
-  (design the lookup-id derivation; junk blobs are harmless because AEAD rejects them); "pair a second
-  device early" guidance using device groups Phase 1. All three SDKs. Does **not** reopen the rejected
-  server-mediated plaintext key transfer.
+- **#30 Identity backup primitives.** ✅ **Done** in all three SDKs (`IdentityBackup` / `RelayBackup` /
+  `RecoveryPhrase` in `VestaCore`; `vesta_client/backup.py`; `clients/vesta-client-ts/src/backup.ts`; new
+  `docs/identity.md`, indexed). Encrypted export: Argon2id (64 MiB, 3 passes, p=1) → 64 bytes, first 32 =
+  AES-256-GCM key, `clientId` bound as AAD, versioned JSON blob, NFKC password, cost caps on import (512 MiB /
+  10 passes). Recovery phrase: 24 words, BIP-39 wordlist + checksum on the raw seed (no PBKDF2), BIP-39
+  vectors in tests. Relay-stored backup: **lookup-id decision** — one Argon2id run over `(appId, username,
+  password)` with a deterministic salt gives both the key and the channel (`vesta/identity-backup/{hex32}`,
+  bytes 32–47), so neither the channel nor the user list is enumerable; published as a signed `replace` event
+  of type `vesta.identity-backup`; `Restore` derives once, ignores foreign salts/costs and junk. Blobs, phrases
+  and channels are **byte-for-byte interchangeable** (a Python-made blob and channel id are fixed vectors in the
+  C# and TS tests; `IdentityBackupRecoveryFlowTests` runs the whole flow through a real relay). Python now
+  needs `cryptography>=44` (Argon2id). **Gotcha:** NSec's `Argon2Parameters.MemorySize` is in KiB, not bytes
+  — the cross-language vector caught it. **Still open:** a convenience that fetches all pages and restores in
+  one call (today the app does `FETCH` + `restore`); `VestaTestClient`; a UI/UX path (when to prompt, "pair a
+  second device" nudge) belongs to the game / #31; the relay may prune `vesta/identity-backup/*` (not an app
+  channel, so app retention does not apply) — decide a retention rule; password rotation leaves the old blob.
 - **#31 Developer-hosted accounts.** A developer may require account + password so one player works
   across devices and survives the developer abandoning the game (player downloads their blob, moves to
   another relay, starts fresh data). Reference `examples/account-server` (signup/login, stores and
-  returns the #30 encrypted blob, never sees the key) + the game-side login flow; new `docs/identity.md`
-  (device identity, device groups, backup/export, accounts, recovery) added to the `docs/README.md` index.
+  returns the #30 encrypted blob, never sees the key) + the game-side login flow; extend `docs/identity.md`
+  (now exists, from #30) with the accounts section.
 - **#32 HELLO key-possession proof.** ✅ **Done** (core + relay + C#/TS/Python SDKs + docs; `HelloProofTests`
   in VestaCore/VestaServer, `HelloProofHandshakeTests` (C#), `hello-proof.test.mjs`, `test_hello_proof.py`).
   `HELLO` only checked that the announced `PublicKey` derives to the `clientId`, so a client id was a mere
@@ -269,7 +286,36 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 180 Core + 118 Client + 179 Server (38 of them need Docker); TS 109; Py 121.
+- Expected test totals (all green): C# 214 Core + 121 Client + 222 Server (incl. Testcontainers Postgres
+  tests); TS 124; Py 140. Docker **is** available in this dev environment, so run the full server suite
+  (about 3–4 min); don't skip the Postgres tests.
+- PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
+  the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the
+  exit code, and don't pipe through `Select-String` patterns containing unescaped quotes.
+- **Crypto interop:** pin cross-language vectors computed by an *independent* implementation (Python's
+  OpenSSL-backed `cryptography`, or `@noble/*`) in all three SDKs' tests. That is what caught NSec's
+  `Argon2Parameters.MemorySize` being in **KiB** (not bytes), which silently asked for gigabytes. Shared
+  vectors live in `HelloProofTests`/`hello-proof.test.mjs`/`test_hello_proof.py` (seed `32 × 0x00`) and
+  `IdentityBackupTests`/`backup.test.mjs`/`test_backup.py`.
+- TS 5.7+ types `Uint8Array` as `Uint8Array<ArrayBufferLike>`: pass it to WebCrypto with `as BufferSource`.
+  Use `argon2idAsync` (not `argon2id`) so a 64 MiB derivation doesn't freeze the event loop/UI.
+- `src/VestaCore/Identity/Bip39WordList.cs`, `clients/vesta-client-ts/src/bip39-wordlist.ts` and
+  `vesta_client/_bip39_words.py` are **generated** from the BIP-39 English list (SHA-256
+  `2f5eed53…dbda`, https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt); regenerate, don't
+  hand-edit.
+- `VestaConnection` always opens a real `ClientWebSocket`, so TestServer sockets can't drive it. Test the
+  SDK handshake against a scripted loopback Kestrel relay (`HelloProofHandshakeTests`); `VestaTestClient`
+  is a separate lightweight client and does not do the HELLO proof.
+- Server integration tests: `factory.WithWebHostBuilder(b => b.UseSetting("Protocol:…", "…"))` per test
+  (options bind from the `Protocol` section); `volatile` publishes are never ACKed, so the first reply
+  after a volatile burst is the first error; register apps and set quotas through `IAppStore` from
+  `factory.Services`.
+- `dotnet ef` (global tool) works from the repo root: `dotnet ef migrations add <Name> --project
+  src/VestaServer/VestaServer.csproj`; check both `.cs` + `.Designer.cs` and the snapshot.
+- `PATCH /admin/apps/{id}/quotas` is **replace-all** (missing fields become null), and any client that
+  does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
+- The relay does not restrict who may create channels under an app namespace (only the creator becomes
+  channel admin); see #26 for the squatting consequence.
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via

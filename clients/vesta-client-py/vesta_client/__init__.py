@@ -98,6 +98,16 @@ from vesta_client.relay_recovery import (
     is_valid_app_id,
     normalize_relay_url,
 )
+from vesta_client.backup import (
+    IdentityBackupError,
+    IdentityBackupOptions,
+    RecoveryPhraseError,
+    RelayBackup,
+    export_identity,
+    import_identity,
+    recovery_phrase_from_seed,
+    seed_from_recovery_phrase,
+)
 from vesta_client.signing import (
     build_hello_proof_input,
     build_signing_input,
@@ -127,6 +137,14 @@ from vesta_client.types import (
 __all__ = [
     "__version__",
     "AckMessage",
+    "IdentityBackupError",
+    "IdentityBackupOptions",
+    "RecoveryPhraseError",
+    "RelayBackup",
+    "export_identity",
+    "import_identity",
+    "recovery_phrase_from_seed",
+    "seed_from_recovery_phrase",
     "ChallengeMessage",
     "ANNOUNCE_EVENT_TYPE",
     "AppendOnlyLog",

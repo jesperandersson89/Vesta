@@ -9,6 +9,16 @@ export { createEvent } from "./events.js";
 export { loadIdentityFile, loadOrCreateIdentity, VestaIdentity } from "./identity.js";
 export type { SerializedIdentity } from "./identity.js";
 export {
+    exportIdentity,
+    IdentityBackupError,
+    importIdentity,
+    RecoveryPhraseError,
+    recoveryPhraseFromSeed,
+    RelayBackup,
+    seedFromRecoveryPhrase,
+} from "./backup.js";
+export type { IdentityBackupOptions } from "./backup.js";
+export {
     ANNOUNCE_EVENT_TYPE,
     buildAnnounce,
     buildLink,

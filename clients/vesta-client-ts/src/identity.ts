@@ -9,6 +9,13 @@
 import * as ed from "@noble/ed25519";
 
 import {
+    exportIdentity,
+    importIdentity,
+    recoveryPhraseFromSeed,
+    seedFromRecoveryPhrase,
+    type IdentityBackupOptions,
+} from "./backup.js";
+import {
     base64UrlToBytes,
     bytesToBase64Url,
     deriveClientId,
@@ -66,6 +73,26 @@ export class VestaIdentity {
             publicKey: this.publicKeyB64,
             privateKey: this.privateKeyB64,
         };
+    }
+
+    /** Encrypt the private key under `password` (Argon2id + AES-256-GCM) into a JSON blob. */
+    exportEncrypted(password: string, options?: IdentityBackupOptions): Promise<string> {
+        return exportIdentity(this, password, options);
+    }
+
+    /** Restore an identity from {@link exportEncrypted}; rejects with `IdentityBackupError` on failure. */
+    static importEncrypted(blob: string, password: string): Promise<VestaIdentity> {
+        return importIdentity(blob, password);
+    }
+
+    /** The 24-word recovery phrase for this identity's seed. Anyone who has it owns the identity. */
+    toRecoveryPhrase(): string {
+        return recoveryPhraseFromSeed(this.privateKey);
+    }
+
+    /** Restore an identity from {@link toRecoveryPhrase}. */
+    static fromRecoveryPhrase(phrase: string): VestaIdentity {
+        return VestaIdentity.fromPrivateKey(seedFromRecoveryPhrase(phrase));
     }
 }
 

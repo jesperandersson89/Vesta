@@ -59,6 +59,36 @@ public sealed class VestaIdentity : IDisposable
     }
 
     /// <summary>
+    /// Encrypt the private key under <paramref name="password"/> (Argon2id + AES-256-GCM) into a versioned
+    /// JSON blob that is safe to store anywhere. See <see cref="IdentityBackup"/>.
+    /// </summary>
+    public string ExportEncrypted(string password, IdentityBackupOptions? options = null)
+    {
+        return IdentityBackup.Export(this, password, options);
+    }
+
+    /// <summary>
+    /// Restore an identity from a blob made by <see cref="ExportEncrypted"/>.
+    /// Throws <see cref="IdentityBackupException"/> for a wrong password or a corrupted blob.
+    /// </summary>
+    public static VestaIdentity ImportEncrypted(string blob, string password)
+    {
+        return IdentityBackup.Import(blob, password);
+    }
+
+    /// <summary>The 24-word recovery phrase for this identity's seed. Anyone who has it owns the identity.</summary>
+    public string ToRecoveryPhrase()
+    {
+        return RecoveryPhrase.FromSeed(ExportPrivateKey());
+    }
+
+    /// <summary>Restore an identity from a phrase made by <see cref="ToRecoveryPhrase"/>.</summary>
+    public static VestaIdentity FromRecoveryPhrase(string phrase)
+    {
+        return FromPrivateKey(RecoveryPhrase.ToSeed(phrase));
+    }
+
+    /// <summary>
     /// Sign arbitrary data with this identity's private key.
     /// Returns the raw Ed25519 signature (64 bytes).
     /// </summary>
