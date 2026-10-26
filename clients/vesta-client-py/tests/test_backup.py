@@ -88,6 +88,24 @@ class RelayBackupTests(unittest.TestCase):
             self.assertNotEqual(channel, RelayBackup.derive(*other, FAST).channel_id)
         self.assertRegex(channel, r"^vesta/identity-backup/[0-9a-f]{32}$")
 
+    def test_auth_secret_matches_the_cross_language_vector(self) -> None:
+        backup = RelayBackup.derive("game", "alice", "pw", FAST)
+
+        self.assertEqual(backup.auth_secret, "CLrdKDSaRfFotq1kGlEBfAy4qInZPjtKNYE0hzlVjcQ")
+        self.assertNotEqual(backup.auth_secret, RelayBackup.derive("game", "alice", "other", FAST).auth_secret)
+
+    def test_blob_round_trips_only_for_the_same_account(self) -> None:
+        identity = VestaIdentity.generate()
+        backup = RelayBackup.derive("game", "alice", "pw", FAST)
+        blob = backup.export_blob(identity)
+
+        self.assertEqual(RelayBackup.derive("game", "alice", "pw", FAST).import_blob(blob).client_id, identity.client_id)
+        for other in (("game", "alice", "wrong"), ("game", "bob", "pw")):
+            with self.assertRaises(IdentityBackupError):
+                RelayBackup.derive(*other, FAST).import_blob(blob)
+        with self.assertRaises(IdentityBackupError):
+            backup.import_blob(identity.export_encrypted("pw", FAST))
+
     def test_event_is_signed_replace_and_restores(self) -> None:
         identity = VestaIdentity.generate()
         backup = RelayBackup.derive("game", "alice", "pw", FAST)

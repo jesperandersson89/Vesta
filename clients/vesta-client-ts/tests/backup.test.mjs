@@ -86,6 +86,20 @@ test("RelayBackup.derive: channel matches the cross-language vector and depends 
     }
 });
 
+test("RelayBackup: authSecret matches the cross-language vector and exportBlob/importBlob are account-bound", async () => {
+    const backup = await RelayBackup.derive("game", "alice", "pw", FAST);
+    assert.equal(backup.authSecret, "CLrdKDSaRfFotq1kGlEBfAy4qInZPjtKNYE0hzlVjcQ");
+    assert.notEqual((await RelayBackup.derive("game", "alice", "other", FAST)).authSecret, backup.authSecret);
+
+    const identity = VestaIdentity.generate();
+    const blob = await backup.exportBlob(identity);
+    assert.equal((await (await RelayBackup.derive("game", "alice", "pw", FAST)).importBlob(blob)).clientId, identity.clientId);
+    for (const [app, user, pw] of [["game", "alice", "wrong"], ["game", "bob", "pw"]]) {
+        await assert.rejects((await RelayBackup.derive(app, user, pw, FAST)).importBlob(blob), IdentityBackupError);
+    }
+    await assert.rejects(backup.importBlob(await identity.exportEncrypted("pw", FAST)), IdentityBackupError);
+});
+
 test("RelayBackup: the event is signed + replace, restores, and junk or wrong passwords are skipped", async () => {
     const identity = VestaIdentity.generate();
     const attacker = VestaIdentity.generate();

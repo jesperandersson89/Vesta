@@ -8,6 +8,7 @@ A Vesta identity is an Ed25519 keypair; the `clientId` (`base64url(sha256(public
 | Player should be able to save a backup file / password manager entry | [Encrypted export](#encrypted-export)                  |
 | Player should be able to write something down            | [Recovery phrase](#recovery-phrase)                                 |
 | Player lost every device and only remembers a login      | [Relay-stored backup](#relay-stored-backup)                         |
+| Player should log in with a username and password on any device | [Developer-hosted accounts](#developer-hosted-accounts)      |
 
 None of these is automatic. The SDK gives you the primitives; your game decides what to offer and when to prompt (the best moment is right after first launch, before there is anything to lose).
 
@@ -80,3 +81,25 @@ What it does **not** do, deliberately:
 - There is no "forgot my password": that is what the phrase, a second paired device, or a developer-hosted account (planned) are for.
 
 The key never leaves the client in plaintext, so this does not reopen the rejected idea of server-mediated key transfer.
+
+## Developer-hosted accounts
+
+If your game wants a conventional login ("username + password, any device") and you are willing to run a small service, keep the encrypted identity there instead of on a relay. The account server holds only an opaque blob and a verifier, so it **cannot read the key and never learns the password**; the identity stays a normal Vesta keypair, so the relay and every other player see nothing different.
+
+```
+sign up:  keys = RelayBackup.Derive(appId, username, password)
+          POST /accounts { username, keys.AuthSecret, keys.ExportBlob(identity) }
+log in:   keys = RelayBackup.Derive(appId, username, password)        // same derivation, any device
+          POST /accounts/login { username, keys.AuthSecret }  →  { blob }
+          identity = keys.ImportBlob(blob)                            // decrypted locally
+```
+
+- **`AuthSecret`** is `base64url(HMAC-SHA256(material, "vesta-account-auth-v1"))` over the same 64-byte Argon2id output that encrypts the blob (bytes 0–31 key, 32–47 relay channel). It is one-way: the server can check that a login derived the same secret but cannot get the encryption key from it. `ExportBlob` / `ImportBlob` are `RelayBackup`'s account-bound variants of the export format (the salt is derived from app and username, so the blob only opens for that account).
+- **C#** `RelayBackup.AuthSecret`, `ExportBlob`, `ImportBlob`; **TypeScript** `authSecret`, `await exportBlob`, `await importBlob`; **Python** `auth_secret`, `export_blob`, `import_blob`. A shared test vector pins the secret across the three.
+- **Reference server:** [examples/AccountServer](../examples/AccountServer/README.md) is a runnable ASP.NET minimal API with signup, login, blob update, password change and delete, a login throttle, and no Vesta dependency. Its tests ([AccountFlowTests.cs](../tests/AccountServer.Tests/AccountFlowTests.cs)) run the whole flow with the SDK.
+- **Changing the password** re-derives everything: publish the new `AuthSecret` and a blob exported under the new derivation (`POST /accounts/password`). The identity itself does not change.
+- **A leaked account database** equals a leaked exported backup: offline password guessing, each guess an Argon2id run. Enforce strong passwords and keep the 64 MiB default cost.
+
+### If you stop running it
+
+The point of building accounts this way is that the game survives its developer. Give players a way to **download their blob** (and show them the [recovery phrase](#recovery-phrase)): with the blob and the password they can restore the identity without your service, point the game at any other relay or account server, and start over there. What is lost is whatever only your service held (balances, purchases, the shopkeeper's ledger, see [patterns.md](patterns.md)); the identity and the freedom to move are not.

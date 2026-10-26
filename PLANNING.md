@@ -207,7 +207,7 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   fields (older Atrium) resets them to null on every call; Atrium's `RelayAppQuotas` now mirrors them.
   **Still open:** the connection count is per relay process and unlocked (can overshoot a little; multi-host
   needs the shared backend of #15); `max_connections` alerts/usage in `app_alerts` and the admin dashboard
-  meter; `Atrium` `TierCatalog` values for the Realtime tier.
+  meter; Atrium's hidden Realtime tier now uses both quotas with indicative values (see its D10).
 - **#30 Identity backup primitives.** ✅ **Done** in all three SDKs (`IdentityBackup` / `RelayBackup` /
   `RecoveryPhrase` in `VestaCore`; `vesta_client/backup.py`; `clients/vesta-client-ts/src/backup.ts`; new
   `docs/identity.md`, indexed). Encrypted export: Argon2id (64 MiB, 3 passes, p=1) → 64 bytes, first 32 =
@@ -224,11 +224,27 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   one call (today the app does `FETCH` + `restore`); `VestaTestClient`; a UI/UX path (when to prompt, "pair a
   second device" nudge) belongs to the game / #31; the relay may prune `vesta/identity-backup/*` (not an app
   channel, so app retention does not apply) — decide a retention rule; password rotation leaves the old blob.
-- **#31 Developer-hosted accounts.** A developer may require account + password so one player works
-  across devices and survives the developer abandoning the game (player downloads their blob, moves to
-  another relay, starts fresh data). Reference `examples/account-server` (signup/login, stores and
-  returns the #30 encrypted blob, never sees the key) + the game-side login flow; extend `docs/identity.md`
-  (now exists, from #30) with the accounts section.
+- **#31 Developer-hosted accounts.** ✅ **Done** (`examples/AccountServer`, `tests/AccountServer.Tests`, SDK
+  support in all three languages, `docs/identity.md` § Developer-hosted accounts, root README). Goal: a game
+  can require account + password so a player's identity follows them across devices and survives the
+  developer abandoning the game. **Decisions:** (1) the account server stores an *opaque* blob and a verifier
+  and **never sees the password or key**: the client derives `AuthSecret = HMAC-SHA256(material,
+  "vesta-account-auth-v1")` from the same Argon2id output that encrypts the blob (`RelayBackup.AuthSecret`,
+  `ExportBlob`, `ImportBlob` / `auth_secret`, `export_blob`, `import_blob` / `authSecret`, `exportBlob`,
+  `importBlob`; shared vector `CLrdKDSa…jcQ` for `("game","alice","pw", 256 KiB, 1 pass)`); rejected
+  alternative: sending the password (or a key-derived value that doubles as the key) to the server, which
+  would let a breach decrypt identities; (2) I reused `RelayBackup` instead of a new type, because the
+  derivation is identical and none of this was released yet; (3) the example has **no Vesta dependency** (so
+  it builds against any SDK version and is not in `examples.yml`'s published-package matrix) and is tested
+  from a separate project, since a second top-level `Program` cannot share an assembly with
+  `VestaServer.Tests`'s; (4) the server verifier is `SHA-256(salt ‖ authSecret)` (the secret is already 256-bit
+  random, so a slow hash adds nothing), stateless re-authentication on every call, identical `401` for unknown
+  user and wrong secret, throttle 10 failures/user and 50/address per 15 min. **Known trade-offs:** a
+  per-username throttle lets anyone lock a known username out for 15 minutes; a leaked database equals a
+  leaked backup file (offline guessing, one Argon2id run per guess); signup is unthrottled. **Still open:**
+  session tokens, email/recovery flows, signup abuse protection and a database are deliberately left to the
+  game; an Atrium-managed account service is listed under Atrium's Later; the minimal API rejects an
+  inferred body on `DELETE` (500 until `[FromBody]` is added).
 - **#32 HELLO key-possession proof.** ✅ **Done** (core + relay + C#/TS/Python SDKs + docs; `HelloProofTests`
   in VestaCore/VestaServer, `HelloProofHandshakeTests` (C#), `hello-proof.test.mjs`, `test_hello_proof.py`).
   `HELLO` only checked that the announced `PublicKey` derives to the `clientId`, so a client id was a mere
@@ -286,9 +302,9 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 214 Core + 121 Client + 222 Server (incl. Testcontainers Postgres
-  tests); TS 124; Py 140. Docker **is** available in this dev environment, so run the full server suite
-  (about 3–4 min); don't skip the Postgres tests.
+- Expected test totals (all green): C# 217 Core + 121 Client + 222 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 125; Py 142. Docker **is** available in this dev environment, so run the full server suite
+  (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the
   exit code, and don't pipe through `Select-String` patterns containing unescaped quotes.

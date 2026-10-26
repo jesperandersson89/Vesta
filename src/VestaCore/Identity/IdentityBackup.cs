@@ -202,12 +202,21 @@ public sealed class RelayBackup
     /// <summary>The channel the backup is published to and fetched from.</summary>
     public string ChannelId { get; }
 
+    /// <summary>
+    /// What a developer-hosted account server verifies <i>instead of</i> the password:
+    /// <c>base64url(HMAC-SHA256(material, "vesta-account-auth-v1"))</c>. It is one-way, so the server can
+    /// neither recover the encryption key from it nor learn the password; it can only check that a login attempt
+    /// derived the same secret. The same derivation also keys <see cref="ExportBlob"/> / <see cref="ImportBlob"/>.
+    /// </summary>
+    public string AuthSecret { get; }
+
     private RelayBackup(byte[] material, byte[] salt, IdentityBackupOptions options)
     {
         _material = material;
         _salt = salt;
         _options = options;
         ChannelId = $"vesta/identity-backup/{Convert.ToHexString(material.AsSpan(32, 16)).ToLowerInvariant()}";
+        AuthSecret = Base64Url.Encode(HMACSHA256.HashData(material, Encoding.UTF8.GetBytes("vesta-account-auth-v1")));
     }
 
     /// <summary>
@@ -222,6 +231,23 @@ public sealed class RelayBackup
         string normalized = username.Trim().Normalize(NormalizationForm.FormKC).ToLowerInvariant();
         byte[] salt = SHA256.HashData(Encoding.UTF8.GetBytes($"vesta-backup-v1\n{appId}\n{normalized}"))[..IdentityBackup.SaltLength];
         return new RelayBackup(IdentityBackup.DeriveMaterial(password, salt, opts), salt, opts);
+    }
+
+    /// <summary>The encrypted identity as a standalone blob (same format as <see cref="IdentityBackup.Export"/>), for an account server to store.</summary>
+    public string ExportBlob(VestaIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        return IdentityBackup.Seal(identity, _material, _salt, _options).ToJsonString();
+    }
+
+    /// <summary>Opens a blob made by <see cref="ExportBlob"/> for this (app, username, password); throws <see cref="IdentityBackupException"/> otherwise.</summary>
+    public VestaIdentity ImportBlob(string blob)
+    {
+        ArgumentNullException.ThrowIfNull(blob);
+        IdentityBackup.ParsedBlob parsed = IdentityBackup.Parse(blob);
+        if (!parsed.Salt.AsSpan().SequenceEqual(_salt) || parsed.MemoryKiB != _options.MemoryKiB || parsed.Iterations != _options.Iterations)
+            throw new IdentityBackupException("The backup was made for a different account or Argon2id cost.");
+        return IdentityBackup.Open(parsed, _material);
     }
 
     /// <summary>A signed, replace-style event carrying the encrypted identity; publish it on <see cref="ChannelId"/>.</summary>

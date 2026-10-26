@@ -30,6 +30,7 @@ jobs:
           dotnet test tests/VestaCore.Tests/VestaCore.Tests.csproj --configuration Release
           dotnet test tests/VestaClient.Tests/VestaClient.Tests.csproj --configuration Release
           dotnet test tests/VestaServer.Tests/VestaServer.Tests.csproj --configuration Release
+          dotnet test tests/AccountServer.Tests/AccountServer.Tests.csproj --configuration Release
 
   image:
     needs: build

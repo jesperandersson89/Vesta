@@ -224,6 +224,42 @@ public class RelayBackupTests
     }
 
     [Fact]
+    public void AuthSecret_MatchesThePythonSdkVector_AndDependsOnEveryInput()
+    {
+        string secret = RelayBackup.Derive("game", "alice", "pw", Fast).AuthSecret;
+
+        Assert.Equal("CLrdKDSaRfFotq1kGlEBfAy4qInZPjtKNYE0hzlVjcQ", secret);
+        Assert.NotEqual(secret, RelayBackup.Derive("game", "alice", "other", Fast).AuthSecret);
+        Assert.NotEqual(secret, RelayBackup.Derive("game", "bob", "pw", Fast).AuthSecret);
+        Assert.NotEqual(secret, RelayBackup.Derive("other", "alice", "pw", Fast).AuthSecret);
+    }
+
+    [Fact]
+    public void AuthSecret_RevealsNeitherTheKeyNorTheChannel()
+    {
+        RelayBackup backup = RelayBackup.Derive("game", "alice", "pw", Fast);
+
+        Assert.DoesNotContain(backup.AuthSecret, backup.ChannelId);
+        Assert.Equal(43, backup.AuthSecret.Length);
+    }
+
+    [Fact]
+    public void ExportBlob_ThenImportBlob_RestoresTheIdentity_OnlyForTheSameAccount()
+    {
+        using VestaIdentity identity = VestaIdentity.Generate();
+        RelayBackup backup = RelayBackup.Derive("game", "alice", "pw", Fast);
+
+        string blob = backup.ExportBlob(identity);
+
+        using VestaIdentity restored = RelayBackup.Derive("game", "alice", "pw", Fast).ImportBlob(blob);
+        Assert.Equal(identity.ClientId, restored.ClientId);
+        Assert.Throws<IdentityBackupException>(() => RelayBackup.Derive("game", "alice", "wrong", Fast).ImportBlob(blob));
+        Assert.Throws<IdentityBackupException>(() => RelayBackup.Derive("game", "bob", "pw", Fast).ImportBlob(blob));
+        // A standalone export under a random salt is not an account blob.
+        Assert.Throws<IdentityBackupException>(() => backup.ImportBlob(identity.ExportEncrypted("pw", Fast)));
+    }
+
+    [Fact]
     public void Derive_MatchesThePythonSdkChannelVector()
     {
         Assert.Equal(

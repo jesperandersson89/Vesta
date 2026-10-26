@@ -8,6 +8,7 @@
  */
 
 import { argon2idAsync } from "@noble/hashes/argon2";
+import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
 
 import { BIP39_ENGLISH } from "./bip39-wordlist.js";
@@ -236,6 +237,8 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
  */
 export class RelayBackup {
     readonly channelId: string;
+    /** What an account server verifies instead of the password; one-way, so it reveals neither the key nor the password. */
+    readonly authSecret: string;
 
     private constructor(
         private readonly material: Uint8Array,
@@ -243,6 +246,7 @@ export class RelayBackup {
         private readonly cost: Cost,
     ) {
         this.channelId = `vesta/identity-backup/${toHex(material.slice(32, 48))}`;
+        this.authSecret = bytesToBase64Url(hmac(sha256, material, encoder.encode("vesta-account-auth-v1")));
     }
 
     /** Derive keys and channel. The username is trimmed, NFKC-normalised and lower-cased. */
@@ -257,6 +261,30 @@ export class RelayBackup {
         const normalized = username.trim().normalize("NFKC").toLowerCase();
         const salt = sha256(encoder.encode(`vesta-backup-v1\n${appId}\n${normalized}`)).slice(0, SALT_LENGTH);
         return new RelayBackup(await deriveMaterial(password, salt, cost), salt, cost);
+    }
+
+    /** The encrypted identity as a standalone blob (same format as {@link exportIdentity}). */
+    async exportBlob(identity: VestaIdentity): Promise<string> {
+        return JSON.stringify(await seal(identity, this.material, this.salt, this.cost));
+    }
+
+    /** Open a blob made by {@link exportBlob} for this (app, username, password). */
+    async importBlob(blob: string): Promise<VestaIdentity> {
+        let data: unknown;
+        try {
+            data = JSON.parse(blob);
+        } catch {
+            throw new IdentityBackupError("The backup is not valid JSON.");
+        }
+        const parsed = parse(data);
+        if (
+            !equalBytes(parsed.salt, this.salt) ||
+            parsed.cost.memoryKiB !== this.cost.memoryKiB ||
+            parsed.cost.iterations !== this.cost.iterations
+        ) {
+            throw new IdentityBackupError("The backup was made for a different account or Argon2id cost.");
+        }
+        return open(parsed, this.material);
     }
 
     /** A signed, replace-style event carrying the encrypted identity; publish it on `channelId`. */

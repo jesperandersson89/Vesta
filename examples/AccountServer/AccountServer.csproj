@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- Deliberately has no Vesta dependency: the server only stores an opaque blob and verifies an opaque
+       secret, so it works with any SDK version (and any language) on the client side. -->
+
+</Project>

@@ -56,6 +56,7 @@ examples/
 ├── ChatRoom.CLI/       # C# real-time chat
 ├── TodoList.CLI/       # C# todo list with offline support
 ├── Presence.CLI/       # C# online presence (heartbeats + TTL)
+├── AccountServer/      # Reference account server: password login on any device, key never exposed
 ├── colorwheel-py/      # Python tkinter color picker (real-time sync)
 ├── collab-edit-py/     # Python collaborative text editor
 └── clipboard-ts/       # TypeScript shared clipboard (Node.js)

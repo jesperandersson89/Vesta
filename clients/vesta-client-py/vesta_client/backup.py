@@ -10,6 +10,7 @@ and ``RecoveryPhrase``; blobs, phrases and relay channels are byte-for-byte inte
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import unicodedata
@@ -187,6 +188,8 @@ class RelayBackup:
         self._salt = salt
         self._options = options
         self.channel_id = f"vesta/identity-backup/{material[32:48].hex()}"
+        # What an account server verifies instead of the password; one-way, so it reveals neither the key nor the password.
+        self.auth_secret = b64url_encode(hmac.new(material, b"vesta-account-auth-v1", hashlib.sha256).digest())
 
     @classmethod
     def derive(
@@ -199,6 +202,21 @@ class RelayBackup:
         normalized = unicodedata.normalize("NFKC", username.strip()).lower()
         salt = hashlib.sha256(f"vesta-backup-v1\n{app_id}\n{normalized}".encode("utf-8")).digest()[:_SALT_LENGTH]
         return cls(_derive_material(password, salt, opts), salt, opts)
+
+    def export_blob(self, identity: VestaIdentity) -> str:
+        """The encrypted identity as a standalone blob (same format as :func:`export_identity`)."""
+        return json.dumps(_seal(identity, self._material, self._salt, self._options), separators=(",", ":"))
+
+    def import_blob(self, blob: str) -> VestaIdentity:
+        """Open a blob made by :meth:`export_blob` for this (app, username, password)."""
+        try:
+            data = json.loads(blob)
+        except (TypeError, ValueError):
+            raise IdentityBackupError("The backup is not valid JSON.") from None
+        parsed = _parse(data)
+        if parsed.salt != self._salt or parsed.options != self._options:
+            raise IdentityBackupError("The backup was made for a different account or Argon2id cost.")
+        return _open(parsed, self._material)
 
     def create_event(self, identity: VestaIdentity) -> VestaEvent:
         """A signed, replace-style event carrying the encrypted identity; publish it on ``channel_id``."""
