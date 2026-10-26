@@ -23,6 +23,13 @@ test("classifyErrorCode: APP_PAUSED is a transient limit, not event-fatal", () =
     assert.equal(c.isEventFatal, false);
 });
 
+test("classifyErrorCode: CONNECTION_LIMITED is a non-transient limit, not event-fatal", () => {
+    const c = classifyErrorCode("CONNECTION_LIMITED");
+    assert.equal(c.isLimit, true);
+    assert.equal(c.isTransient, false);
+    assert.equal(c.isEventFatal, false);
+});
+
 test("classifyErrorCode: QUOTA_EXCEEDED is a fatal limit", () => {
     const c = classifyErrorCode("QUOTA_EXCEEDED");
     assert.equal(c.isLimit, true);

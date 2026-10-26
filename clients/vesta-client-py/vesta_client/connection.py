@@ -821,8 +821,9 @@ class VestaConnection:
         """
         Create a channel with explicit visibility and initial members.
 
-        For `visibility="private"`, only the caller (admin) and the listed
-        members may publish/subscribe. The caller is auto-subscribed.
+        ``visibility`` is ``"public"``, ``"private"`` (only the caller and the listed
+        members may read or publish) or ``"broadcast"`` (anyone may subscribe/fetch, only
+        the caller and the listed members may publish). The caller is auto-subscribed.
         """
         await self._send({
             "type": "CREATE_CHANNEL",
@@ -838,7 +839,10 @@ class VestaConnection:
         *,
         role: str = "member",
     ) -> None:
-        """Grant a client access to a private channel. Caller must be admin."""
+        """Grant access to a private or broadcast channel (caller must be admin).
+
+        ``role`` is ``"member"``, ``"admin"`` or ``"reader"`` (reads a private channel, never publishes).
+        """
         await self._send({
             "type": "GRANT_ACCESS",
             "channelId": channel_id,

@@ -16,21 +16,23 @@ public sealed record HelloMessage(
 /// CLIENT → SERVER: Explicitly create a new channel.
 /// The issuing client becomes the channel admin. <see cref="InitialMembers"/>
 /// are added as members in addition to the creator.
-/// When <see cref="Visibility"/> is "private", only members can subscribe/publish/fetch.
+/// When <see cref="Visibility"/> is "private", only members can subscribe/publish/fetch; when it is
+/// "broadcast", anyone can subscribe/fetch but only members (and the admin) can publish.
 /// </summary>
 public sealed record CreateChannelMessage(
     string ChannelId,
-    string Visibility,                              // "public" | "private"
+    string Visibility,                              // "public" | "private" | "broadcast"
     IReadOnlyList<string> InitialMembers
 ) : ProtocolMessage;
 
 /// <summary>
-/// CLIENT → SERVER: Grant access to a private channel. Admin-only.
+/// CLIENT → SERVER: Grant access to a private or broadcast channel. Admin-only. The "reader" role
+/// may read a private channel but never publish; unrecognised roles are treated as "member".
 /// </summary>
 public sealed record GrantAccessMessage(
     string ChannelId,
     string ClientId,
-    string Role                                     // "member" | "admin"
+    string Role                                     // "member" | "admin" | "reader"
 ) : ProtocolMessage;
 
 /// <summary>

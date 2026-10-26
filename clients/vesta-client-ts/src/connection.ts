@@ -710,12 +710,13 @@ export class VestaConnection {
 
     /**
      * Create a channel with explicit visibility and initial members.
-     * For private channels, only the caller (admin) and listed members can publish/subscribe.
+     * `private`: only the caller (admin) and listed members can read or publish.
+     * `broadcast`: anyone can subscribe/fetch, only the caller and listed members can publish.
      * The caller is auto-subscribed.
      */
     createChannel(
         channelId: string,
-        options?: { visibility?: "public" | "private"; members?: string[] },
+        options?: { visibility?: "public" | "private" | "broadcast"; members?: string[] },
     ): void {
         this.sendRaw({
             type: "CREATE_CHANNEL",
@@ -725,11 +726,14 @@ export class VestaConnection {
         });
     }
 
-    /** Grant a client access to a private channel. Caller must be the channel admin. */
+    /**
+     * Grant a client access to a private or broadcast channel. Caller must be the channel admin.
+     * `reader` may read a private channel but never publish.
+     */
     grantAccess(
         channelId: string,
         clientId: string,
-        role: "member" | "admin" = "member",
+        role: "member" | "admin" | "reader" = "member",
     ): void {
         this.sendRaw({
             type: "GRANT_ACCESS",

@@ -426,7 +426,7 @@ async function viewApp(id) {
                     (c) => `<tr><td>${channelLink(c.id)}</td><td>${fmtNum(c.eventCount)}</td>
                     <td>${fmtBytes(c.payloadBytes)}</td><td>${fmtNum(c.latestSequence)}</td>
                     <td>${c.deletedAt ? '<span class="badge badge-danger">deleted</span>' : ""}
-                        ${c.visibility === "private" ? '<span class="badge badge-neutral">private</span>' : ""}</td></tr>`,
+                        ${c.visibility !== "public" ? `<span class="badge badge-neutral">${esc(c.visibility)}</span>` : ""}</td></tr>`,
                 )
                 .join("")}</tbody></table></div>`
         : `<div class="card-body muted small">No channels yet.</div>`;
@@ -634,7 +634,7 @@ async function viewChannels() {
             .filter((r) => !filter || r.id.includes(filter))
             .map(
                 (r) => `<tr><td>${channelLink(r.id)}</td>
-            <td><span class="badge ${r.visibility === "private" ? "badge-ember" : "badge-neutral"}">${esc(r.visibility)}</span></td>
+            <td><span class="badge ${r.visibility !== "public" ? "badge-ember" : "badge-neutral"}">${esc(r.visibility)}</span></td>
             <td class="muted">${fmtDate(r.createdAt)}</td>
             <td>${r.deletedAt ? '<span class="badge badge-danger">deleted</span>' : '<span class="muted">live</span>'}</td></tr>`,
             )

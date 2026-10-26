@@ -1027,7 +1027,8 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
 
     /// <summary>
     /// Create a channel with explicit visibility and initial members.
-    /// For private channels, only the caller (admin) and listed members can publish/subscribe.
+    /// <c>private</c>: only the caller (admin) and listed members can read or publish.
+    /// <c>broadcast</c>: anyone can subscribe/fetch, only the caller and listed members can publish.
     /// The caller is auto-subscribed.
     /// </summary>
     public async Task CreateChannelAsync(
@@ -1041,7 +1042,8 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
-    /// Grant a client access to a private channel. Caller must be the channel admin.
+    /// Grant a client access to a private or broadcast channel. Caller must be the channel admin.
+    /// Role <c>reader</c> may read a private channel but never publish.
     /// </summary>
     public async Task GrantAccessAsync(
         string channelId,

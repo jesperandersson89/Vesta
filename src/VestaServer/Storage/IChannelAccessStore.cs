@@ -8,8 +8,52 @@ public enum ChannelVisibility
   /// <summary>Public channel — implicitly created on first PUBLISH/SUBSCRIBE; anyone may read/write.</summary>
   Public,
 
-  /// <summary>Private channel — only entries in <c>channel_access</c> may read/write.</summary>
+  /// <summary>Private channel — only entries in <c>channel_access</c> may read; members and admins may write.</summary>
   Private,
+
+  /// <summary>
+  /// Broadcast channel — anyone may subscribe/fetch, but only <c>channel_access</c> entries with a
+  /// writing role (member/admin) may publish. Never implicit: it is created with CREATE_CHANNEL.
+  /// </summary>
+  Broadcast,
+}
+
+/// <summary>Wire names for <see cref="ChannelVisibility"/> (the <c>channels.visibility</c> text column).</summary>
+public static class ChannelVisibilityNames
+{
+  public static ChannelVisibility Parse(string? value) => value?.ToLowerInvariant() switch
+  {
+    "private" => ChannelVisibility.Private,
+    "broadcast" => ChannelVisibility.Broadcast,
+    _ => ChannelVisibility.Public,
+  };
+
+  public static string Format(ChannelVisibility visibility) => visibility switch
+  {
+    ChannelVisibility.Private => "private",
+    ChannelVisibility.Broadcast => "broadcast",
+    _ => "public",
+  };
+}
+
+/// <summary>Roles stored in <c>channel_access.role</c>.</summary>
+public static class ChannelRoles
+{
+  public const string Admin = "admin";
+  public const string Member = "member";
+
+  /// <summary>May read a private channel but never publish to it.</summary>
+  public const string Reader = "reader";
+
+  /// <summary>Maps a wire role to a stored role; anything unrecognised becomes <see cref="Member"/>.</summary>
+  public static string Normalize(string? role) => role?.ToLowerInvariant() switch
+  {
+    "admin" => Admin,
+    "reader" => Reader,
+    _ => Member,
+  };
+
+  public static bool CanWrite(string? role) => role is Admin or Member;
 }
 
 /// <summary>Summary row used by admin listing endpoints.</summary>
@@ -34,11 +78,19 @@ public interface IChannelAccessStore
   Task<ChannelVisibility?> GetVisibilityAsync(string channelId, CancellationToken cancellationToken = default);
 
   /// <summary>
-  /// Returns true if the given client is allowed to read or write to the channel.
-  /// Public channels always allow. For private channels, the client must have an entry in <c>channel_access</c>.
+  /// Returns true if the given client is allowed to read (subscribe / fetch) the channel.
+  /// Public and broadcast channels always allow. For private channels, the client must have an entry
+  /// (any role, including <c>reader</c>) in <c>channel_access</c>.
   /// Implicit-create semantics: if the channel does not yet exist, returns true (it will be created as public).
   /// </summary>
   Task<bool> CanAccessAsync(string channelId, string? clientId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Returns true if the given client is allowed to publish to the channel. Public channels (and
+  /// channels that do not exist yet) allow everyone. Private and broadcast channels require an entry
+  /// with a writing role (<c>member</c> or <c>admin</c>); <c>reader</c> entries may not publish.
+  /// </summary>
+  Task<bool> CanPublishAsync(string channelId, string? clientId, CancellationToken cancellationToken = default);
 
   /// <summary>
   /// Returns true if the given client has the "admin" role on the channel.

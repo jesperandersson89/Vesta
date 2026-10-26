@@ -66,7 +66,7 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
   server verifies it derives to the announced `clientId`; PUBLISH must match the connection's
   `clientId`; signed events are verified. `Protocol:RequireSignedEvents=true` makes it strict.
 - **Channels:** slug `[a-z0-9][a-z0-9\-/]*[a-z0-9]`, max 128; created implicitly in open mode;
-  ACL modes open/private/invite via `CREATE_CHANNEL`. Soft-delete via `deleted_at`, hard-delete
+  ACL modes open/private/broadcast via `CREATE_CHANNEL` (roles admin/member/reader). Soft-delete via `deleted_at`, hard-delete
   by `ChannelDeletionPrunerService` after a grace period.
 - **Apps:** `AppId` = one slug segment, max 64. `REGISTER_APP` + `Protocol:RequireAppRegistration`
   gates everything per app (`UNKNOWN_APP`). Six quotas in `AppQuotas` enforced hot-path +
@@ -138,9 +138,79 @@ rate-limited `/admin/auth/*`, self-contained GUI with no CDN dependency).
 
 **Open:** #13 client READMEs (TS/Py getting-started), #14 observability (metrics, structured
 logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store).
+
+**Open — game readiness** (from a multiplayer-game-with-store evaluation; the relay stays pure:
+every item is signature verification, ACL, or operator-configurable limits, never payload logic):
+
+- **#25 Channel write control.** ✅ **Done** (relay + docs + SDK types/docstrings; `ChannelWriteControlTests`):
+  `reader` role (`admin|member|reader`) and `broadcast` visibility (anyone subscribes/fetches, only
+  members/admin publish; never implicit). `IChannelAccessStore.CanPublishAsync` is the write check
+  (PUBLISH, volatile included); `CanAccessAsync` stays the read check for SUBSCRIBE/FETCH/HELLO. Visibility
+  and role are free text columns, so **no migration**. `{appId}/vesta/relays` is owner-only-write for
+  registered apps (`EnsureManifestPublisherIsOwnerAsync`). Write control is only as strong as the identity
+  behind it — sound with `RequireSignedEvents=true`; read control waits on #32. **Still open:** the
+  Npgsql store path has no automated test (needs Docker/Testcontainers); admin GUI could show role
+  per member; Atrium `AppDetail` should display the new values (Atrium `RelayChannelMember.Role` /
+  `RelayChannelSummary.Visibility` are plain strings, so nothing breaks).
+- **#26 Trusted-writer recipe (docs).** A service with its own identity publishes to a `broadcast`
+  channel; clients honour state-changing events only from that `clientId`; use `receivedAt` to detect
+  backdated client timestamps; state plainly what the relay will never validate (currency, purchases,
+  anti-cheat). Lives in `docs/events.md` or a new `docs/patterns.md` (add to the `docs/README.md` index).
+- **#27 Relay baseline limits.** ✅ **Done** (`Protocol:Defaults`, `RelayBaselineLimiter`,
+  `BaselineLimitsTests`; documented in `docs/server-configuration.md`): default `PublishRatePerMinute`
+  (600, per `(app, client)`, also for unregistered apps; an app quota wins),
+  `MaxChannelsPerClientPerApp` (100, distinct channels published to — deliberately not "implicitly
+  created", which would need a per-publish store lookup), `MaxSubscriptionsPerConnection` (100, new
+  `CONNECTION_LIMITED`, classified in all three SDKs as a non-transient, non-event-fatal limit),
+  `MaxConnectionsPerIp` and `ConnectionAttemptsPerMinutePerIp` (HTTP 429 before the upgrade; **off by
+  default** because behind a proxy without `ForwardedHeaders:Enabled` every client shares one IP — Atrium's
+  relay stack does not set it yet). **Not done:** a per-client-id connection cap — HELLO does not prove
+  possession of the key, so it would let anyone lock out a known client id; needs a HELLO challenge first.
+  Relay-wide defaults for the other quotas (payload size etc.) are unchanged (null = unlimited).
+  **Deviations from the original plan:** (1) the per-IP limits ship **off** — enabling them requires
+  `ForwardedHeaders:Enabled` on the relay first, otherwise they cap every player behind the proxy at once
+  (players behind one NAT also share an IP); (2) no `MaxConnectionsPerClientId` (see #32); (3)
+  `MaxChannelsPerClientPerApp` counts distinct channels published to rather than implicitly created
+  ones, and `HelloRatePerMinutePerIp` became `ConnectionAttemptsPerMinutePerIp` (enforced at the
+  upgrade, before HELLO).
+- **#28 Catch-up at scale.** ✅ **Server done:** `Protocol:MaxFetchLimit` (default 1000) clamps
+  `FETCH`, and HELLO / SUBSCRIBE catch-up now pages in consecutive `EVENTS_BATCH` frames instead of
+  silently truncating at 100 (`ProtocolHandler.SendCatchUpAsync`; `CatchUpPagingTests`). The SDKs already
+  apply multiple batches, so catch-up needs no SDK change. **Still open:**
+  (a) an SDK helper that auto-pages a manual `FETCH` (callers must continue from `lastSequence + 1`
+  themselves today); (b) the one-shot `GetDeviceGroupMembers` helpers resolve on the first batch — fine
+  for tiny identity channels, wrong for a channel larger than `MaxFetchLimit`; (c) docs guidance on
+  partitioning durable state from presence channels, and on snapshotting.
+- **#29 Realtime quota fields.** New per-app quotas `max_connections` (concurrent) and
+  `volatile_rate_per_minute` (separate token bucket; volatile events stop drawing from
+  `publish_rate_per_minute`). `AppQuotas` + `apps` migration (`dotnet ef`, never hand-written) +
+  `/admin/*` JSON. **Cross-repo breaking change:** Atrium's `RelayModels.RelayAppQuotas` + `TierCatalog`
+  must be bumped after the relay release.
+- **#30 Identity backup primitives.** `VestaIdentity.ExportEncrypted(password)` /
+  `ImportEncrypted(blob, password)` (Argon2id + AEAD, versioned JSON blob); recovery phrase (seed ↔ 24
+  words); optional relay-stored encrypted backup as a `replace: true` `vesta.identity.backup` event
+  (design the lookup-id derivation; junk blobs are harmless because AEAD rejects them); "pair a second
+  device early" guidance using device groups Phase 1. All three SDKs. Does **not** reopen the rejected
+  server-mediated plaintext key transfer.
+- **#31 Developer-hosted accounts.** A developer may require account + password so one player works
+  across devices and survives the developer abandoning the game (player downloads their blob, moves to
+  another relay, starts fresh data). Reference `examples/account-server` (signup/login, stores and
+  returns the #30 encrypted blob, never sees the key) + the game-side login flow; new `docs/identity.md`
+  (device identity, device groups, backup/export, accounts, recovery) added to the `docs/README.md` index.
+- **#32 HELLO key-possession challenge.** `HELLO` only checks that the announced `PublicKey` derives to
+  the `clientId`; it never proves the client holds the private key (signatures are checked on PUBLISH
+  only). Consequences: anyone who knows a member's `clientId` + public key (both visible in event
+  streams) can connect as that member, so **read access to private channels (SUBSCRIBE / FETCH / HELLO
+  catch-up) is spoofable**, and a per-client-id connection cap (#27) would let an attacker lock a known
+  client out. Add a server nonce (in `WELCOME`, or a pre-HELLO `CHALLENGE`) that the client signs;
+  until answered the connection is unauthenticated and gets no private-channel access. Wire change → all
+  three SDKs, `docs/protocol.md`, relay-recovery/federation paths, and a compatibility story for old
+  clients (`Protocol:RequireHelloProof`, default off first). Unblocks `MaxConnectionsPerClientId`.
+
 **Deferred:** device-group phases 2–6; relay Layer C (re-seed empty relay from client logs);
-owner-only-write hardening on `{appId}/vesta/relays`; admin scoped keys (read-only vs full),
-client-side importer for the export format.
+admin scoped keys (read-only vs full), client-side importer for the export format; validate
+`VestaProtocol.Client` (NSec native + SQLite) under Unity IL2CPP/Mono and Godot C#; point the README
+Atrium link at the live portal URL; optional `examples/Shopkeeper` demo of the #26 pattern.
 
 ## Releasing
 

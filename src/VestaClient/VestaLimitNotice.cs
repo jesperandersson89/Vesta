@@ -40,6 +40,9 @@ public static class VestaErrorCodes
     /// <summary>The operator paused the app: publishes are refused until it is resumed.</summary>
     public const string AppPaused = "APP_PAUSED";
 
+    /// <summary>The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event.</summary>
+    public const string ConnectionLimited = "CONNECTION_LIMITED";
+
     /// <summary>
     /// The outcome of classifying a server error code.
     /// </summary>
@@ -63,6 +66,7 @@ public static class VestaErrorCodes
         UnknownApp => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         AccessDenied => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
         AppNotAllowed => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: true),
+        ConnectionLimited => new Classification(IsLimit: true, IsTransient: false, IsEventFatal: false),
 
         // Doomed events that are client/protocol errors, not "limits": still dead-letter so the
         // offline outbox doesn't re-send them on every reconnect.

@@ -28,6 +28,16 @@ public sealed class VestaErrorCodesTests
         Assert.False(c.IsEventFatal);
     }
 
+    [Fact]
+    public void Classify_ConnectionLimited_IsNonTransientLimit_NotEventFatal()
+    {
+        VestaErrorCodes.Classification c = VestaErrorCodes.Classify(VestaErrorCodes.ConnectionLimited);
+
+        Assert.True(c.IsLimit);
+        Assert.False(c.IsTransient);
+        Assert.False(c.IsEventFatal);
+    }
+
     [Theory]
     [InlineData("QUOTA_EXCEEDED")]
     [InlineData("MESSAGE_QUOTA_EXCEEDED")]

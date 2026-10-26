@@ -9,6 +9,6 @@ public sealed class ChannelAccessEntity
 {
   public string ChannelId { get; set; } = string.Empty;
   public string ClientId { get; set; } = string.Empty;
-  public string Role { get; set; } = "member"; // "member" | "admin"
+  public string Role { get; set; } = "member"; // "member" | "admin" | "reader"
   public DateTimeOffset GrantedAt { get; set; }
 }

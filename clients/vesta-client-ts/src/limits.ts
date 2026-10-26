@@ -28,6 +28,8 @@ export const VestaErrorCodes = {
     AppNotAllowed: "APP_NOT_ALLOWED",
     /** The operator paused the app: publishes are refused until it is resumed. */
     AppPaused: "APP_PAUSED",
+    /** The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event. */
+    ConnectionLimited: "CONNECTION_LIMITED",
 } as const;
 
 /** The outcome of classifying a server error code. */
@@ -46,6 +48,8 @@ export function classifyErrorCode(code: string): ErrorClassification {
         case VestaErrorCodes.RateLimited:
         case VestaErrorCodes.AppPaused:
             return { isLimit: true, isTransient: true, isEventFatal: false };
+        case VestaErrorCodes.ConnectionLimited:
+            return { isLimit: true, isTransient: false, isEventFatal: false };
         case VestaErrorCodes.QuotaExceeded:
         case VestaErrorCodes.MessageQuotaExceeded:
         case VestaErrorCodes.UnknownApp:

@@ -73,7 +73,7 @@ export interface FetchMessage {
 export interface CreateChannelMessage {
     type: "CREATE_CHANNEL";
     channelId: string;
-    visibility: "public" | "private";
+    visibility: "public" | "private" | "broadcast";
     initialMembers: string[];
 }
 
@@ -82,7 +82,7 @@ export interface GrantAccessMessage {
     type: "GRANT_ACCESS";
     channelId: string;
     clientId: string;
-    role: "member" | "admin";
+    role: "member" | "admin" | "reader";
 }
 
 /** Client → Server: Register an app namespace. The connecting client becomes the owner. */

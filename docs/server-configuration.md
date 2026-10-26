@@ -31,9 +31,40 @@ The in-memory backend is intended for development and tests only — it loses ev
         "RequireSignedEvents": false,
         "RequireAppRegistration": false,
         "AllowedApps": [],
+        "MaxFetchLimit": 1000,
+        "Defaults": {
+            "PublishRatePerMinute": 600,
+            "MaxChannelsPerClientPerApp": 100,
+            "MaxSubscriptionsPerConnection": 100,
+            "MaxConnectionsPerIp": 0,
+            "ConnectionAttemptsPerMinutePerIp": 0,
+        },
     },
 }
 ```
+
+### Baseline limits (`Protocol:Defaults`)
+
+Without any per-app quota a relay would accept unlimited traffic from anyone, so these defaults apply to every app — registered or not — unless an app quota overrides them. `0` disables a limit. All counters are in-memory and per relay process.
+
+| Key                                | Default | Applies to                                                                                        | Rejection                                                                |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `PublishRatePerMinute`             | 600     | Publishes per `(app, client)`; used only when the app has no `publish_rate_per_minute` quota. Volatile events count. | `ERROR { code: "RATE_LIMITED" }`                                          |
+| `MaxChannelsPerClientPerApp`       | 100     | Distinct channels one client has published to under an app (reset on relay restart / after 1 h idle). Stops one identity from spraying channels. | `ERROR { code: "QUOTA_EXCEEDED" }`                                        |
+| `MaxSubscriptionsPerConnection`    | 100     | Subscriptions held by one WebSocket (`HELLO` channels + `SUBSCRIBE`).                             | `ERROR { code: "CONNECTION_LIMITED" }`; extra `HELLO` channels are dropped |
+| `MaxConnectionsPerIp`              | 0 (off) | Concurrent WebSocket connections per remote IP.                                                   | HTTP `429` with `Retry-After` before the upgrade                         |
+| `ConnectionAttemptsPerMinutePerIp` | 0 (off) | WebSocket connection attempts per remote IP per minute.                                           | HTTP `429` with `Retry-After` before the upgrade                         |
+
+The two per-IP limits are off by default because behind a reverse proxy every client appears to come from the proxy's address. Turn on `ForwardedHeaders:Enabled` (so the relay sees `X-Forwarded-For`) **before** enabling them, and remember that players behind one NAT share an IP.
+
+These are abuse guards, not authentication: a client id is not proven at `HELLO`, so the relay deliberately has no per-client-id *connection* cap (it would let anyone lock out a known client id).
+
+### Catch-up paging
+
+`Protocol:MaxFetchLimit` (default `1000`; values below 1 fall back to the default) bounds how many events one `EVENTS_BATCH` carries:
+
+- `FETCH { limit }` is clamped to it (the default `limit` stays 100). Page through a long history by repeating `FETCH` with `fromSequence = lastSequence + 1`.
+- `HELLO` resume (`lastSequences`) and `SUBSCRIBE { fromSequence }` catch-up are sent as consecutive `EVENTS_BATCH` frames of at most this size until the client is caught up, so a large backlog is never truncated.
 
 ### Signature verification
 

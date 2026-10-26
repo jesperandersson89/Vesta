@@ -16,7 +16,7 @@ client                            server
   │             (serverId,         │
   │              channels[])       │
   │                                 │
-  │◀───────── EVENTS_BATCH (×N) ──│  ← catch-up since lastSequences
+  │◀───────── EVENTS_BATCH (×N) ──│  ← catch-up since lastSequences (paged, see below)
   │                                 │
   │── PUBLISH ────────────────────▶│
   │       (channelId, event)       │
@@ -28,6 +28,8 @@ client                            server
 
 A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request historical data (`FETCH`), or create new channels (`CREATE_CHANNEL`).
 
+Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more `EVENTS_BATCH` frames per channel, each holding at most the relay's `Protocol:MaxFetchLimit` events (default 1000), in ascending sequence order; a shorter-than-full batch is the last one. `FETCH` limits are clamped to the same value, so clients paging manually should continue from `lastSequence + 1`.
+
 ## Client → Server messages
 
 | `$type`          | Record                 | Purpose                                                                                                                                                                                                                                                                                                                                      |
@@ -38,7 +40,7 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 | `UNSUBSCRIBE`    | `UnsubscribeMessage`   | Stop receiving real-time events for a channel.                                                                                                                                                                                                                                                                                               |
 | `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                                                                                                                                                                                                                                                      |
 | `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                                                                                                                                                                                                                                              |
-| `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin` role on a private channel.                                                                                                                                                                                                                                                                                |
+| `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin`/`reader` role on a private or broadcast channel.                                                                                                                                                                                                                                                                                |
 | `REGISTER_APP`   | `RegisterAppMessage`   | Register an app namespace (`appId`, optional `discoverable`). Connecting client becomes the app owner. `discoverable` opts the app into [server-to-server discovery](#server-to-server-discovery-federation). See [server-configuration.md](server-configuration.md#app-registration).                                                                                                                                                                                       |
 | `DELETE_CHANNEL` | `DeleteChannelMessage` | **Server admin only.** Soft-delete a channel: stamps a deletion tombstone. Existing events are retained for a future hard-delete sweep; further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel are rejected with `CHANNEL_DELETED`. Idempotent. See [server-configuration.md](server-configuration.md#server-admins). |
 
@@ -50,14 +52,14 @@ A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request
 | `EVENT`        | `EventMessage`       | A single real-time event pushed to subscribers: `(channelId, event, sequence, receivedAt)`.                                                                                                                                                                    |
 | `EVENTS_BATCH` | `EventsBatchMessage` | A batch of `SequencedEvent` (response to `FETCH` or initial catch-up after `HELLO`).                                                                                                                                                                           |
 | `ACK`          | `AckMessage`         | Acknowledges a `PUBLISH`: `(channelId, eventId, sequence)`.                                                                                                                                                                                                    |
-| `ERROR`        | `ErrorMessage`       | `(code, message, eventId?, channelId?)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), plus the per-app limit codes `RATE_LIMITED`, `QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED` (over `max_messages_per_month`), `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED` (app not on the server's allow-list), `APP_PAUSED` (an operator paused the app: publishes and channel creation are refused until it is resumed; transient). An operator-imposed throttle is reported as `RATE_LIMITED`. On publish rejections the relay stamps the optional `eventId` / `channelId` so the client can correlate the failure to the exact event. |
+| `ERROR`        | `ErrorMessage`       | `(code, message, eventId?, channelId?)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), plus the per-app limit codes `RATE_LIMITED`, `QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED` (over `max_messages_per_month`), `CONNECTION_LIMITED` (per-connection cap such as subscriptions; not tied to an event), `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED` (app not on the server's allow-list), `APP_PAUSED` (an operator paused the app: publishes and channel creation are refused until it is resumed; transient). An operator-imposed throttle is reported as `RATE_LIMITED`. On publish rejections the relay stamps the optional `eventId` / `channelId` so the client can correlate the failure to the exact event. |
 
 ### Limits and the client's reaction
 
 When the relay limits an app (managed quotas on Atrium, or `AppQuotas` on a self-hosted server), the publish is rejected with an `ERROR` frame carrying the offending `eventId` / `channelId`. All three SDKs interpret these codes (`VestaErrorCodes.Classify` in C#, `classifyErrorCode` in TS, `classify_error_code` in Python) and:
 
 - raise a typed limit signal — `OnLimited(VestaLimitNotice)` in C#, the `limited` event in TS, `on_limited(VestaLimitNotice)` in Python — distinct from the raw error callback, so apps can back off, surface UI, or prompt an upgrade without string-matching codes;
-- **dead-letter** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`, `APP_PAUSED`) are left in the outbox to retry later.
+- **dead-letter** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`, `APP_PAUSED`) are left in the outbox to retry later. `CONNECTION_LIMITED` surfaces via `OnLimited` but dead-letters nothing.
 
 The TypeScript and Python `ErrorMessage` types carry the same optional `eventId` / `channelId` fields, and both clients now ship the same classification + dead-letter behavior as C#.
 
@@ -92,8 +94,23 @@ Channel IDs are validated on every `PUBLISH`, `SUBSCRIBE`, and `FETCH`.
 | (open)     | Anyone       | Anyone       | Implicit (first publish) |
 | `public`   | Anyone       | Anyone       | `CREATE_CHANNEL`         |
 | `private`  | Members only | Members only | `CREATE_CHANNEL`         |
+| `broadcast`| Anyone       | Members only | `CREATE_CHANNEL`         |
 
-Admin is a role within a private channel — only admins can `GRANT_ACCESS`.
+"Members" means any `channel_access` entry that can write (`member` or `admin`). Roles:
+
+| Role     | Read (private) | Publish | `GRANT_ACCESS` |
+| -------- | -------------- | ------- | -------------- |
+| `admin`  | yes            | yes     | yes            |
+| `member` | yes            | yes     | no             |
+| `reader` | yes            | **no**  | no             |
+
+A `broadcast` channel is the building block for "one trusted writer, everyone reads" (a shop, a world-state feed, an announcements channel): create it with the writer as issuer (admin), list any additional writers as `initialMembers`, and every other client can subscribe and fetch but gets `ACCESS_DENIED` on `PUBLISH` (volatile events included). It is never created implicitly. Unknown roles in `GRANT_ACCESS` are treated as `member`.
+
+> **Identity caveat.** The relay trusts the `clientId` announced in `HELLO` (it checks the public key derives to it, but not that the client holds the private key). Write control is sound when the relay runs with `Protocol:RequireSignedEvents = true`, because publishes must then be signed by that key. Read control on private channels is not yet proof-backed (see PLANNING.md #32).
+
+The app owner is the only identity that may publish to `{appId}/vesta/relays` (the relay manifest channel) on a registered app; everyone can still read it. Unregistered apps keep the channel open.
+
+Admin is a role within a private or broadcast channel — only admins can `GRANT_ACCESS`.
 
 ## Relay manifests (server independence)
 

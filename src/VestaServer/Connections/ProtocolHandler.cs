@@ -37,6 +37,19 @@ public sealed class ProtocolOptions
     /// and the relay stays open. Protocol-reserved (<c>vesta/*</c>) channels are never gated.
     /// </summary>
     public IReadOnlyList<string> AllowedApps { get; set; } = [];
+
+    /// <summary>
+    /// Upper bound on events returned per <c>EVENTS_BATCH</c>. <c>FETCH</c> limits are clamped to this
+    /// value, and HELLO / SUBSCRIBE catch-up is sent as consecutive batches of at most this size until
+    /// the client is caught up. Values below 1 fall back to the default (1000).
+    /// </summary>
+    public int MaxFetchLimit { get; set; } = 1000;
+
+    /// <summary>
+    /// Relay-wide baseline limits that apply when an app sets no quota of its own; app quotas
+    /// always take precedence. See <see cref="ProtocolLimitDefaults"/>.
+    /// </summary>
+    public ProtocolLimitDefaults Defaults { get; set; } = new();
 }
 
 /// <summary>
@@ -54,7 +67,8 @@ public sealed class ProtocolHandler(
     IAppStorageAccountant? storageAccountant = null,
     IAppUsageAccountant? usageAccountant = null,
     IOptions<ProtocolOptions>? protocolOptions = null,
-    IAdminStore? adminStore = null)
+    IAdminStore? adminStore = null,
+    RelayBaselineLimiter? baselineLimiter = null)
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
 
@@ -222,6 +236,13 @@ public sealed class ProtocolHandler(
                 continue;
             }
 
+            if (SubscriptionCapReached(connection, channelId))
+            {
+                await connection.SendAsync(SubscriptionLimitError(channelId), cancellationToken);
+                rejected.Add(channelId);
+                continue;
+            }
+
             connection.Subscriptions.Add(channelId);
         }
 
@@ -236,16 +257,8 @@ public sealed class ProtocolHandler(
             if (!connection.Subscriptions.Contains(entry.Key))
                 continue;
 
-            long fromSequence = entry.Value + 1; // Client has seen up to entry.Value
-            IReadOnlyList<SequencedEvent> missedEvents = await eventStore.GetEventsAsync(
-                entry.Key, fromSequence, cancellationToken: cancellationToken);
-
-            if (missedEvents.Count > 0)
-            {
-                await connection.SendAsync(
-                    new EventsBatchMessage(entry.Key, missedEvents),
-                    cancellationToken);
-            }
+            // Client has seen up to entry.Value
+            await SendCatchUpAsync(connection, entry.Key, entry.Value + 1, cancellationToken);
         }
 
         logger.LogInformation("Client {ClientId} said HELLO, subscribed to {ChannelCount} channels",
@@ -288,7 +301,7 @@ public sealed class ProtocolHandler(
         if (!await EnsureChannelNotDeletedAsync(connection, publish.ChannelId, cancellationToken))
             return;
 
-        if (!await accessStore.CanAccessAsync(publish.ChannelId, connection.ClientId, cancellationToken))
+        if (!await accessStore.CanPublishAsync(publish.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
                 new ErrorMessage("ACCESS_DENIED", $"Not authorized to publish to '{publish.ChannelId}'",
@@ -296,6 +309,9 @@ public sealed class ProtocolHandler(
                 cancellationToken);
             return;
         }
+
+        if (!await EnsureManifestPublisherIsOwnerAsync(connection, publish, cancellationToken))
+            return;
 
         // Anti-impersonation: the event's clientId must match this connection's clientId.
         // Without this check, a connection could publish events claiming to be from another
@@ -437,22 +453,84 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (SubscriptionCapReached(connection, subscribe.ChannelId))
+        {
+            await connection.SendAsync(SubscriptionLimitError(subscribe.ChannelId), cancellationToken);
+            return;
+        }
+
         connection.Subscriptions.Add(subscribe.ChannelId);
 
         // If fromSequence is specified, send catch-up events
         if (subscribe.FromSequence.HasValue)
         {
-            IReadOnlyList<SequencedEvent> events = await eventStore.GetEventsAsync(
-                subscribe.ChannelId,
-                subscribe.FromSequence.Value,
-                cancellationToken: cancellationToken);
+            await SendCatchUpAsync(
+                connection, subscribe.ChannelId, subscribe.FromSequence.Value, cancellationToken);
+        }
+    }
 
-            if (events.Count > 0)
-            {
-                await connection.SendAsync(
-                    new EventsBatchMessage(subscribe.ChannelId, events),
-                    cancellationToken);
-            }
+    /// <summary>
+    /// Only the registered app owner may publish to <c>{appId}/vesta/relays</c> (the relay manifest
+    /// channel); anyone can still read it. Apps the relay does not know are left open.
+    /// </summary>
+    private async Task<bool> EnsureManifestPublisherIsOwnerAsync(
+        ClientConnection connection,
+        PublishMessage publish,
+        CancellationToken cancellationToken)
+    {
+        string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
+        if (appStore is null || appId is null || publish.ChannelId != RelayManifest.ChannelFor(appId))
+            return true;
+
+        AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
+        if (app is null || string.Equals(app.OwnerClientId, connection.ClientId, StringComparison.Ordinal))
+            return true;
+
+        await connection.SendAsync(
+            new ErrorMessage("ACCESS_DENIED", $"Only the owner of app '{appId}' may publish its relay manifest",
+                publish.Event.Id, publish.ChannelId),
+            cancellationToken);
+        return false;
+    }
+
+    private int EffectiveMaxFetchLimit => _options.MaxFetchLimit < 1 ? 1000 : _options.MaxFetchLimit;
+
+    private bool SubscriptionCapReached(ClientConnection connection, string channelId)
+    {
+        int max = _options.Defaults.MaxSubscriptionsPerConnection;
+        return max > 0 && connection.Subscriptions.Count >= max && !connection.Subscriptions.Contains(channelId);
+    }
+
+    private ErrorMessage SubscriptionLimitError(string channelId) => new(
+        "CONNECTION_LIMITED",
+        $"Connection already has {_options.Defaults.MaxSubscriptionsPerConnection} subscriptions (Protocol:Defaults:MaxSubscriptionsPerConnection)",
+        null,
+        channelId);
+
+    // Pages through the channel so a backlog larger than one batch is delivered in full, not truncated.
+    private async Task SendCatchUpAsync(
+        ClientConnection connection,
+        string channelId,
+        long fromSequence,
+        CancellationToken cancellationToken)
+    {
+        int pageSize = EffectiveMaxFetchLimit;
+        long next = fromSequence;
+
+        while (connection.IsOpen)
+        {
+            IReadOnlyList<SequencedEvent> page = await eventStore.GetEventsAsync(
+                channelId, next, pageSize, cancellationToken);
+
+            if (page.Count == 0)
+                return;
+
+            await connection.SendAsync(new EventsBatchMessage(channelId, page), cancellationToken);
+
+            if (page.Count < pageSize)
+                return;
+
+            next = page[^1].Sequence + 1;
         }
     }
 
@@ -488,7 +566,7 @@ public sealed class ProtocolHandler(
             return;
         }
 
-        int limit = fetch.Limit ?? 100;
+        int limit = Math.Clamp(fetch.Limit ?? 100, 1, EffectiveMaxFetchLimit);
         IReadOnlyList<SequencedEvent> events = await eventStore.GetEventsAsync(
             fetch.ChannelId,
             fetch.FromSequence,
@@ -549,9 +627,7 @@ public sealed class ProtocolHandler(
         if (!await EnforceMaxChannelsAsync(connection, create.ChannelId, cancellationToken))
             return;
 
-        ChannelVisibility visibility = string.Equals(create.Visibility, "private", StringComparison.OrdinalIgnoreCase)
-            ? ChannelVisibility.Private
-            : ChannelVisibility.Public;
+        ChannelVisibility visibility = ChannelVisibilityNames.Parse(create.Visibility);
 
         try
         {
@@ -611,7 +687,7 @@ public sealed class ProtocolHandler(
             return;
         }
 
-        string role = string.Equals(grant.Role, "admin", StringComparison.OrdinalIgnoreCase) ? "admin" : "member";
+        string role = ChannelRoles.Normalize(grant.Role);
         await accessStore.GrantAccessAsync(grant.ChannelId, grant.ClientId, role, cancellationToken);
 
         await connection.SendAsync(
@@ -804,26 +880,21 @@ public sealed class ProtocolHandler(
     /// <summary>
     /// Enforces the publish-time per-app quotas: <c>max_payload_bytes</c> (estimated as the
     /// UTF-8 byte length of <c>payload</c> + <c>metadata</c>) and <c>publish_rate_per_minute</c>
-    /// (token bucket keyed by <c>(appId, clientId)</c>). No-op when the channel's app is
-    /// unregistered or has no quotas set. Sends an ERROR frame and returns false on rejection.
+    /// (token bucket keyed by <c>(appId, clientId)</c>), falling back to <c>Protocol:Defaults</c> when the
+    /// app is unregistered or sets no rate. Sends an ERROR frame and returns false on rejection.
     /// </summary>
     private async Task<bool> EnforcePublishQuotasAsync(
         ClientConnection connection,
         PublishMessage publish,
         CancellationToken cancellationToken)
     {
-        if (appStore is null)
-            return true;
-
         string? appId = AppId.ExtractFromChannelId(publish.ChannelId);
         if (appId is null)
             return true;
 
-        AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
-        if (app is null)
-            return true; // unknown apps are either rejected upstream or grandfathered
+        AppInfo? app = appStore is null ? null : await appStore.GetAsync(appId, cancellationToken);
 
-        if (app.PausedAt is not null)
+        if (app?.PausedAt is not null)
         {
             await connection.SendAsync(
                 new ErrorMessage(
@@ -835,7 +906,7 @@ public sealed class ProtocolHandler(
             return false;
         }
 
-        AppQuotas quotas = app.Quotas;
+        AppQuotas quotas = app?.Quotas ?? AppQuotas.None;
 
         int? estimatedSize = null;
 
@@ -894,7 +965,7 @@ public sealed class ProtocolHandler(
             // Cold cache: allow — the next pruner sweep will populate it.
         }
 
-        if (rateLimiter is not null && app.ThrottlePerMinute is int throttle &&
+        if (rateLimiter is not null && app?.ThrottlePerMinute is int throttle &&
             !rateLimiter.TryAcquire(appId, AppThrottleBucketKey, throttle))
         {
             await connection.SendAsync(
@@ -907,10 +978,9 @@ public sealed class ProtocolHandler(
             return false;
         }
 
-        if (rateLimiter is not null &&
-            quotas.PublishRatePerMinute is int rate &&
-            !string.IsNullOrEmpty(connection.ClientId))
+        if (rateLimiter is not null && !string.IsNullOrEmpty(connection.ClientId))
         {
+            int rate = quotas.PublishRatePerMinute ?? _options.Defaults.PublishRatePerMinute;
             if (!rateLimiter.TryAcquire(appId, connection.ClientId, rate))
             {
                 await connection.SendAsync(
@@ -922,6 +992,19 @@ public sealed class ProtocolHandler(
                     cancellationToken);
                 return false;
             }
+        }
+
+        if (baselineLimiter is not null && !string.IsNullOrEmpty(connection.ClientId) &&
+            !baselineLimiter.TryTrackChannel(appId, connection.ClientId, publish.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "QUOTA_EXCEEDED",
+                    $"Client already publishes to {_options.Defaults.MaxChannelsPerClientPerApp} channels on app '{appId}' (Protocol:Defaults:MaxChannelsPerClientPerApp)",
+                    publish.Event.Id,
+                    publish.ChannelId),
+                cancellationToken);
+            return false;
         }
 
         return true;

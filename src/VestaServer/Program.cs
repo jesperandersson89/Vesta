@@ -87,6 +87,7 @@ else
 
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<AppRateLimiter>();
+builder.Services.AddSingleton<RelayBaselineLimiter>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IAppStorageAccountant, InMemoryAppStorageAccountant>();
 builder.Services.AddSingleton<IAppUsageAccountant, InMemoryAppUsageAccountant>();
@@ -206,7 +207,7 @@ app.UseDefaultFiles(new Microsoft.AspNetCore.Builder.DefaultFilesOptions
 });
 app.UseStaticFiles();
 
-app.Map("/ws", async (HttpContext context, ProtocolHandler handler) =>
+app.Map("/ws", async (HttpContext context, ProtocolHandler handler, RelayBaselineLimiter baseline) =>
 {
     if (!context.WebSockets.IsWebSocketRequest)
     {
@@ -215,10 +216,26 @@ app.Map("/ws", async (HttpContext context, ProtocolHandler handler) =>
         return;
     }
 
-    WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-    using ClientConnection connection = new(socket);
+    string remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!baseline.TryEnterConnection(remoteIp))
+    {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.Response.Headers.RetryAfter = "60";
+        await context.Response.WriteAsync("Too many connections from this address");
+        return;
+    }
 
-    await handler.HandleConnectionAsync(connection, context.RequestAborted);
+    try
+    {
+        WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+        using ClientConnection connection = new(socket);
+
+        await handler.HandleConnectionAsync(connection, context.RequestAborted);
+    }
+    finally
+    {
+        baseline.ExitConnection(remoteIp);
+    }
 });
 
 app.Lifetime.ApplicationStopping.Register(() =>

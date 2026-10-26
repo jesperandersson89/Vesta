@@ -30,7 +30,8 @@ class VestaErrorCodes:
     APP_NOT_ALLOWED = "APP_NOT_ALLOWED"
     # The operator paused the app: publishes are refused until it is resumed.
     APP_PAUSED = "APP_PAUSED"
-
+    # The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event.
+    CONNECTION_LIMITED = "CONNECTION_LIMITED"
 
 @dataclass(frozen=True)
 class ErrorClassification:
@@ -63,6 +64,8 @@ def classify_error_code(code: str) -> ErrorClassification:
     """Classify a server error code into limit / retry semantics."""
     if code in (VestaErrorCodes.RATE_LIMITED, VestaErrorCodes.APP_PAUSED):
         return ErrorClassification(is_limit=True, is_transient=True, is_event_fatal=False)
+    if code == VestaErrorCodes.CONNECTION_LIMITED:
+        return ErrorClassification(is_limit=True, is_transient=False, is_event_fatal=False)
     if code in _FATAL_LIMIT_CODES:
         return ErrorClassification(is_limit=True, is_transient=False, is_event_fatal=True)
     if code in _FATAL_PROTOCOL_CODES:

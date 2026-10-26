@@ -17,7 +17,7 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     return result switch
     {
       null => null,
-      string s when string.Equals(s, "private", StringComparison.OrdinalIgnoreCase) => ChannelVisibility.Private,
+      string s => ChannelVisibilityNames.Parse(s),
       _ => ChannelVisibility.Public,
     };
   }
@@ -26,25 +26,33 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
   {
     ChannelVisibility? visibility = await GetVisibilityAsync(channelId, cancellationToken);
     if (visibility is null) return true;                       // implicit-create on first append
-    if (visibility == ChannelVisibility.Public) return true;
+    if (visibility is ChannelVisibility.Public or ChannelVisibility.Broadcast) return true;
     if (clientId is null) return false;
 
-    const string sql = "SELECT 1 FROM channel_access WHERE channel_id = $1 AND client_id = $2 LIMIT 1";
-    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
-    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
-    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = clientId });
-    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
-    return result is not null;
+    return await GetRoleAsync(channelId, clientId, cancellationToken) is not null;
   }
 
-  public async Task<bool> IsAdminAsync(string channelId, string clientId, CancellationToken cancellationToken = default)
+  public async Task<bool> CanPublishAsync(string channelId, string? clientId, CancellationToken cancellationToken = default)
+  {
+    ChannelVisibility? visibility = await GetVisibilityAsync(channelId, cancellationToken);
+    if (visibility is null or ChannelVisibility.Public) return true;
+    if (clientId is null) return false;
+
+    return ChannelRoles.CanWrite(await GetRoleAsync(channelId, clientId, cancellationToken));
+  }
+
+  private async Task<string?> GetRoleAsync(string channelId, string clientId, CancellationToken cancellationToken)
   {
     const string sql = "SELECT role FROM channel_access WHERE channel_id = $1 AND client_id = $2";
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = clientId });
-    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
-    return result is string role && role == "admin";
+    return await cmd.ExecuteScalarAsync(cancellationToken) as string;
+  }
+
+  public async Task<bool> IsAdminAsync(string channelId, string clientId, CancellationToken cancellationToken = default)
+  {
+    return await GetRoleAsync(channelId, clientId, cancellationToken) == ChannelRoles.Admin;
   }
 
   public async Task CreateChannelAsync(
@@ -57,7 +65,7 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(cancellationToken);
     await using NpgsqlTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
 
-    string visibilityStr = visibility == ChannelVisibility.Private ? "private" : "public";
+    string visibilityStr = ChannelVisibilityNames.Format(visibility);
 
     const string insertChannelSql = """
             INSERT INTO channels (id, visibility) VALUES ($1, $2)
@@ -179,9 +187,7 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
       string visibilityStr = reader.GetString(1);
       DateTimeOffset createdAt = reader.GetFieldValue<DateTimeOffset>(2);
       DateTimeOffset? deletedAt = reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3);
-      ChannelVisibility visibility = string.Equals(visibilityStr, "private", StringComparison.OrdinalIgnoreCase)
-          ? ChannelVisibility.Private
-          : ChannelVisibility.Public;
+      ChannelVisibility visibility = ChannelVisibilityNames.Parse(visibilityStr);
       result.Add(new ChannelSummary(id, visibility, createdAt, deletedAt));
     }
     return result;

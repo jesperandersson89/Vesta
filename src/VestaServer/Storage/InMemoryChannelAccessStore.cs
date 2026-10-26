@@ -26,7 +26,7 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
       // Implicit-create: unknown channel will become public on first append.
       return Task.FromResult(true);
     }
-    if (info.Visibility == ChannelVisibility.Public)
+    if (info.Visibility is ChannelVisibility.Public or ChannelVisibility.Broadcast)
     {
       return Task.FromResult(true);
     }
@@ -37,12 +37,25 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.FromResult(info.Members.ContainsKey(clientId));
   }
 
+  public Task<bool> CanPublishAsync(string channelId, string? clientId, CancellationToken cancellationToken = default)
+  {
+    if (!_channels.TryGetValue(channelId, out ChannelInfo? info) || info.Visibility == ChannelVisibility.Public)
+    {
+      return Task.FromResult(true);
+    }
+    if (clientId is null)
+    {
+      return Task.FromResult(false);
+    }
+    return Task.FromResult(info.Members.TryGetValue(clientId, out string? role) && ChannelRoles.CanWrite(role));
+  }
+
   public Task<bool> IsAdminAsync(string channelId, string clientId, CancellationToken cancellationToken = default)
   {
     if (_channels.TryGetValue(channelId, out ChannelInfo? info) &&
         info.Members.TryGetValue(clientId, out string? role))
     {
-      return Task.FromResult(role == "admin");
+      return Task.FromResult(role == ChannelRoles.Admin);
     }
     return Task.FromResult(false);
   }
@@ -55,11 +68,11 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
       CancellationToken cancellationToken = default)
   {
     ChannelInfo info = new(visibility);
-    info.Members[adminClientId] = "admin";
+    info.Members[adminClientId] = ChannelRoles.Admin;
     foreach (string member in memberClientIds)
     {
       if (member == adminClientId) continue;
-      info.Members.TryAdd(member, "member");
+      info.Members.TryAdd(member, ChannelRoles.Member);
     }
 
     if (!_channels.TryAdd(channelId, info))
