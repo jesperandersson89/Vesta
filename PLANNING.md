@@ -146,7 +146,7 @@ client-side importer for the export format.
 
 - **Shared version lives in 3 manifests**: `Directory.Build.props` (`VersionPrefix`),
   `clients/vesta-client-ts/package.json`, `clients/vesta-client-py/vesta_client/__init__.py`
-  (`pyproject.toml` reads it dynamically). Current: **0.1.6**.
+  (`pyproject.toml` reads it dynamically). Current: **0.2.0**.
 - Bump all three → `powershell -File .github/scripts/check-version.ps1 -Tag vX.Y.Z` →
   `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` verifies, publishes NuGet
   (`VestaProtocol.Core`, `VestaProtocol.Client`), npm + PyPI (`vesta-client`) via OIDC trusted
