@@ -142,14 +142,14 @@ logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + toke
 **Open — game readiness** (from a multiplayer-game-with-store evaluation; the relay stays pure:
 every item is signature verification, ACL, or operator-configurable limits, never payload logic):
 
-- **#25 Channel write control.** ✅ **Done** (relay + docs + SDK types/docstrings; `ChannelWriteControlTests`):
+- **#25 Channel write control.** ✅ **Done** (relay + docs + SDK types/docstrings; `ChannelWriteControlTests`,
+  `NpgsqlChannelAccessStoreTests` against Postgres):
   `reader` role (`admin|member|reader`) and `broadcast` visibility (anyone subscribes/fetches, only
   members/admin publish; never implicit). `IChannelAccessStore.CanPublishAsync` is the write check
   (PUBLISH, volatile included); `CanAccessAsync` stays the read check for SUBSCRIBE/FETCH/HELLO. Visibility
   and role are free text columns, so **no migration**. `{appId}/vesta/relays` is owner-only-write for
   registered apps (`EnsureManifestPublisherIsOwnerAsync`). Write control is only as strong as the identity
-  behind it — sound with `RequireSignedEvents=true`; read control waits on #32. **Still open:** the
-  Npgsql store path has no automated test (needs Docker/Testcontainers); admin GUI could show role
+  behind it — sound with `RequireSignedEvents=true`; read control waits on #32. **Still open:** admin GUI could show role
   per member; Atrium `AppDetail` should display the new values (Atrium `RelayChannelMember.Role` /
   `RelayChannelSummary.Visibility` are plain strings, so nothing breaks).
 - **#26 Trusted-writer recipe (docs).** A service with its own identity publishes to a `broadcast`
