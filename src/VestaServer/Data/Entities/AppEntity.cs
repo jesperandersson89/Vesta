@@ -38,4 +38,10 @@ public sealed class AppEntity
 
   /// <summary>Monthly message-count ceiling. Nullable means "no limit". Enforced against the <c>app_usage</c> rollup.</summary>
   public long? MaxMessagesPerMonth { get; set; }
+
+  /// <summary>Concurrent connections that may have joined the app. Nullable means "no limit".</summary>
+  public int? MaxConnections { get; set; }
+
+  /// <summary>Per-client volatile publishes per minute, in a separate bucket. Null = volatile shares <see cref="PublishRatePerMinute"/>.</summary>
+  public int? VolatileRatePerMinute { get; set; }
 }

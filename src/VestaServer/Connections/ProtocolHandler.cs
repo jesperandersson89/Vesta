@@ -351,6 +351,12 @@ public sealed class ProtocolHandler(
                 continue;
             }
 
+            if (!await JoinAppAsync(connection, channelId, eventId: null, cancellationToken))
+            {
+                rejected.Add(channelId);
+                continue;
+            }
+
             connection.Subscriptions.Add(channelId);
         }
 
@@ -567,6 +573,9 @@ public sealed class ProtocolHandler(
             return;
         }
 
+        if (!await JoinAppAsync(connection, subscribe.ChannelId, eventId: null, cancellationToken))
+            return;
+
         connection.Subscriptions.Add(subscribe.ChannelId);
 
         // If fromSequence is specified, send catch-up events
@@ -602,6 +611,49 @@ public sealed class ProtocolHandler(
     }
 
     private int EffectiveMaxFetchLimit => _options.MaxFetchLimit < 1 ? 1000 : _options.MaxFetchLimit;
+
+    private async Task<bool> JoinAppAsync(
+        ClientConnection connection,
+        string channelId,
+        Guid? eventId,
+        CancellationToken cancellationToken)
+    {
+        string? appId = AppId.ExtractFromChannelId(channelId);
+        if (appId is null || connection.JoinedApps.ContainsKey(appId))
+            return true;
+
+        AppInfo? app = appStore is null ? null : await appStore.GetAsync(appId, cancellationToken);
+        return await JoinAppAsync(connection, appId, app, channelId, eventId, cancellationToken);
+    }
+
+    // The first SUBSCRIBE / CREATE_CHANNEL / PUBLISH in an app's namespace makes the connection count
+    // against max_connections until it disconnects; over the cap answers CONNECTION_LIMITED.
+    private async Task<bool> JoinAppAsync(
+        ClientConnection connection,
+        string appId,
+        AppInfo? app,
+        string channelId,
+        Guid? eventId,
+        CancellationToken cancellationToken)
+    {
+        if (connection.JoinedApps.ContainsKey(appId))
+            return true;
+
+        if (app?.Quotas.MaxConnections is int max && connectionManager.CountJoined(appId) >= max)
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "CONNECTION_LIMITED",
+                    $"App '{appId}' already has {max} connections (max_connections)",
+                    eventId,
+                    channelId),
+                cancellationToken);
+            return false;
+        }
+
+        connection.JoinedApps[appId] = 0;
+        return true;
+    }
 
     private bool SubscriptionCapReached(ClientConnection connection, string channelId)
     {
@@ -733,6 +785,9 @@ public sealed class ProtocolHandler(
 
         // max_channels quota — checked before attempting to create the row.
         if (!await EnforceMaxChannelsAsync(connection, create.ChannelId, cancellationToken))
+            return;
+
+        if (!await JoinAppAsync(connection, create.ChannelId, eventId: null, cancellationToken))
             return;
 
         ChannelVisibility visibility = ChannelVisibilityNames.Parse(create.Visibility);
@@ -1016,6 +1071,9 @@ public sealed class ProtocolHandler(
 
         AppQuotas quotas = app?.Quotas ?? AppQuotas.None;
 
+        if (!await JoinAppAsync(connection, appId, app, publish.ChannelId, publish.Event.Id, cancellationToken))
+            return false;
+
         int? estimatedSize = null;
 
         if (quotas.MaxPayloadBytes is int maxBytes)
@@ -1088,13 +1146,22 @@ public sealed class ProtocolHandler(
 
         if (rateLimiter is not null && !string.IsNullOrEmpty(connection.ClientId))
         {
-            int rate = quotas.PublishRatePerMinute ?? _options.Defaults.PublishRatePerMinute;
-            if (!rateLimiter.TryAcquire(appId, connection.ClientId, rate))
+            // An app that sets volatile_rate_per_minute gets a bucket of its own for volatile events,
+            // so a 20 Hz position stream no longer eats the budget for persisted events.
+            bool volatileBucket = publish.Event.Volatile is true && quotas.VolatileRatePerMinute is not null;
+            int rate = volatileBucket
+                ? quotas.VolatileRatePerMinute!.Value
+                : quotas.PublishRatePerMinute ?? _options.Defaults.PublishRatePerMinute;
+            // Real client ids are base64url, so "*v:" can never collide with another client's bucket.
+            string bucketClient = volatileBucket ? $"*v:{connection.ClientId}" : connection.ClientId;
+            if (!rateLimiter.TryAcquire(appId, bucketClient, rate))
             {
                 await connection.SendAsync(
                     new ErrorMessage(
                         "RATE_LIMITED",
-                        $"Publish rate exceeded ({rate}/min) for client on app '{appId}'",
+                        volatileBucket
+                            ? $"Volatile publish rate exceeded ({rate}/min) for client on app '{appId}'"
+                            : $"Publish rate exceeded ({rate}/min) for client on app '{appId}'",
                         publish.Event.Id,
                         publish.ChannelId),
                     cancellationToken);

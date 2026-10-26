@@ -56,6 +56,18 @@ public sealed class ConnectionManager
         await Task.WhenAll(sendTasks);
     }
 
+    /// <summary>Open connections that have joined the app (see <see cref="ClientConnection.JoinedApps"/>).</summary>
+    public int CountJoined(string appId)
+    {
+        int count = 0;
+        foreach (ClientConnection connection in _connections.Values)
+        {
+            if (connection.IsOpen && connection.JoinedApps.ContainsKey(appId))
+                count++;
+        }
+        return count;
+    }
+
     /// <summary>
     /// Open connections that proved ownership of <paramref name="clientId"/>, excluding one connection.
     /// Unproven connections are never counted, so nobody can fill a victim's slots by claiming their id.

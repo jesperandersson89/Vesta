@@ -122,7 +122,7 @@ With a non-empty `AllowedApps`, only the listed app namespaces may be used or re
 
 ### App quotas & rate limits
 
-All seven per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
+All nine per-app limits are enforced today (set via `IAppStore.SetQuotasAsync`, `PATCH /admin/apps/{id}/quotas`, or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
 
 | Column                    | Enforced where                        | Error frame on breach                      |
 | ------------------------- | -------------------------------------- | ------------------------------------------- |
@@ -131,6 +131,8 @@ All seven per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` 
 | `max_channels`            | `CREATE_CHANNEL`                       | `ERROR { code: "QUOTA_EXCEEDED" }`          |
 | `total_storage_bytes`     | `PUBLISH` (cached rollup + add)        | `ERROR { code: "QUOTA_EXCEEDED" }`          |
 | `max_messages_per_month`  | `PUBLISH` (cached rollup + increment)  | `ERROR { code: "MESSAGE_QUOTA_EXCEEDED" }`  |
+| `volatile_rate_per_minute`| `PUBLISH` of `volatile` events (per `(app, client)`, own bucket) | `ERROR { code: "RATE_LIMITED" }` |
+| `max_connections`         | First `SUBSCRIBE` / `CREATE_CHANNEL` / `PUBLISH` of a connection in the app (and `HELLO` channels) | `ERROR { code: "CONNECTION_LIMITED" }` |
 | `retention_days`          | Background sweep (`AppQuotaPruner`)    | n/a — silent deletion                       |
 | `max_events_per_channel`  | Background sweep (`AppQuotaPruner`)    | n/a — silent deletion                       |
 
@@ -139,6 +141,11 @@ All seven per-app limits are enforced today (set via `IAppStore.SetQuotasAsync` 
 `total_storage_bytes` is checked against an in-process cached rollup maintained by `IAppStorageAccountant` (default `InMemoryAppStorageAccountant`). The pruner sweep seeds and refreshes the cache via `SUM(pg_column_size(payload))` per app namespace; successful PUBLISHes increment it in-line. On a cold cache (server restart before the first sweep), PUBLISH is allowed.
 
 `max_messages_per_month` is checked against a durable per-app, per-calendar-month rollup: the `app_usage` table backs an in-process cache (`IAppUsageAccountant`, default `InMemoryAppUsageAccountant`). The cache is seeded synchronously at startup from `app_usage` (so it's never cold on a fresh boot — a brand-new calendar period with no row yet is correctly zero, not unknown), refreshed by the `AppQuotaPruner` sweep (`COUNT(*)` over events received since the period start, upserted back into `app_usage`), and incremented in-line on every successful PUBLISH. The period rolls over automatically at the first UTC calendar-month boundary the server observes. Query the current rollup via `GET /admin/apps/{id}/usage`.
+
+**Realtime quotas.** Games stream high-frequency, throwaway state (positions, cursors) that should not compete with durable events for one budget:
+
+- `volatile_rate_per_minute` gives `volatile` events a token bucket of their own, keyed `(app, client)`. Volatile events then no longer draw from `publish_rate_per_minute`. When it is `null`, volatile events share the publish bucket exactly as before (and the `Protocol:Defaults:PublishRatePerMinute` default if the app sets no rate either), so setting nothing changes nothing. Volatile events still skip storage and never count toward `max_messages_per_month`.
+- `max_connections` caps concurrent connections per app. A connection *joins* an app on its first `SUBSCRIBE`, `CREATE_CHANNEL`, `PUBLISH` or `HELLO` channel in the namespace and counts until it disconnects; a connection over the cap gets `CONNECTION_LIMITED` (carrying the event id for a `PUBLISH`, and dropping the channel from `WELCOME` for `HELLO`). Joining further channels of the same app is free. The count is in-memory and per relay process, and checked without a lock, so a burst of simultaneous joins can overshoot by a few.
 
 A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
 

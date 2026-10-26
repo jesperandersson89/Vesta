@@ -372,6 +372,8 @@ const QUOTA_FIELDS = [
     ["retentionDays", "Retention (days)"],
     ["totalStorageBytes", "Total storage (bytes)"],
     ["maxMessagesPerMonth", "Max messages / month"],
+    ["maxConnections", "Max concurrent connections"],
+    ["volatileRatePerMinute", "Volatile rate / min / client"],
 ];
 
 async function viewApp(id) {

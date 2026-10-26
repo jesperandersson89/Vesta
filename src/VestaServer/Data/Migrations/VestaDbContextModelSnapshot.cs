@@ -156,6 +156,10 @@ namespace VestaServer.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_channels");
 
+                    b.Property<int?>("MaxConnections")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_connections");
+
                     b.Property<int?>("MaxEventsPerChannel")
                         .HasColumnType("integer")
                         .HasColumnName("max_events_per_channel");
@@ -192,6 +196,10 @@ namespace VestaServer.Data.Migrations
                     b.Property<long?>("TotalStorageBytes")
                         .HasColumnType("bigint")
                         .HasColumnName("total_storage_bytes");
+
+                    b.Property<int?>("VolatileRatePerMinute")
+                        .HasColumnType("integer")
+                        .HasColumnName("volatile_rate_per_minute");
 
                     b.HasKey("Id");
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Vesta;
@@ -18,6 +19,12 @@ public sealed class ClientConnection : IDisposable
     public string? ClientId { get; set; }
     public byte[]? PublicKey { get; set; }
     public HashSet<string> Subscriptions { get; } = [];
+
+    /// <summary>
+    /// Apps this connection has joined (first SUBSCRIBE, CREATE_CHANNEL or PUBLISH in the namespace),
+    /// for <c>max_connections</c>. Concurrent so other connections can count it; lives until disconnect.
+    /// </summary>
+    public ConcurrentDictionary<string, byte> JoinedApps { get; } = new();
 
     /// <summary>
     /// True when this connection's verified public key matched an entry in

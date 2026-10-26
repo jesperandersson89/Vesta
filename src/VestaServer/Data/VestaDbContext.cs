@@ -109,6 +109,8 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.RetentionDays).HasColumnName("retention_days");
             entity.Property(e => e.TotalStorageBytes).HasColumnName("total_storage_bytes");
             entity.Property(e => e.MaxMessagesPerMonth).HasColumnName("max_messages_per_month");
+            entity.Property(e => e.MaxConnections).HasColumnName("max_connections");
+            entity.Property(e => e.VolatileRatePerMinute).HasColumnName("volatile_rate_per_minute");
 
             entity.HasIndex(e => e.OwnerClientId).HasDatabaseName("IX_apps_owner_client_id");
             entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_apps_deleted_at");

@@ -11,7 +11,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
             id, owner_client_id, created_at,
             max_payload_bytes, publish_rate_per_minute, max_channels,
             max_events_per_channel, retention_days, total_storage_bytes, discoverable,
-            max_messages_per_month, deleted_at, paused_at, throttle_per_minute
+            max_messages_per_month, deleted_at, paused_at, throttle_per_minute,
+            max_connections, volatile_rate_per_minute
             """;
 
   public async Task<AppInfo?> GetAsync(string appId, CancellationToken cancellationToken = default)
@@ -81,7 +82,9 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
                 max_events_per_channel = $5,
                 retention_days = $6,
                 total_storage_bytes = $7,
-                max_messages_per_month = $8
+                max_messages_per_month = $8,
+                max_connections = $9,
+                volatile_rate_per_minute = $10
             WHERE id = $1
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -93,6 +96,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.RetentionDays ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.TotalStorageBytes ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxMessagesPerMonth ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxConnections ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.VolatileRatePerMinute ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
     return rows > 0;
   }
@@ -168,7 +173,9 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
         MaxEventsPerChannel: reader.IsDBNull(6) ? null : reader.GetInt32(6),
         RetentionDays: reader.IsDBNull(7) ? null : reader.GetInt32(7),
         TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8),
-        MaxMessagesPerMonth: reader.IsDBNull(10) ? null : reader.GetInt64(10));
+        MaxMessagesPerMonth: reader.IsDBNull(10) ? null : reader.GetInt64(10),
+        MaxConnections: reader.IsDBNull(14) ? null : reader.GetInt32(14),
+        VolatileRatePerMinute: reader.IsDBNull(15) ? null : reader.GetInt32(15));
     return new AppInfo(
         reader.GetString(0),
         reader.GetString(1),

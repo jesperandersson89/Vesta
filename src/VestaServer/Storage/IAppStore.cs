@@ -12,6 +12,8 @@ namespace VestaServer.Storage;
 /// <param name="RetentionDays">Events older than this (by <c>received_at</c>) are deleted by <see cref="AppQuotaPrunerService"/>.</param>
 /// <param name="TotalStorageBytes">Hard ceiling on summed <c>pg_column_size(payload)</c> across the app namespace. Checked at PUBLISH against an in-process cached rollup maintained by <see cref="IAppStorageAccountant"/>.</param>
 /// <param name="MaxMessagesPerMonth">Hard ceiling on events PUBLISHed to the app namespace within the current calendar-month usage period. Checked at PUBLISH against the durable rollup maintained by <see cref="IAppUsageAccountant"/>.</param>
+/// <param name="MaxConnections">Maximum concurrent connections that have joined the app (first SUBSCRIBE / CREATE_CHANNEL / PUBLISH in its namespace until disconnect). Checked at join; over the cap answers <c>CONNECTION_LIMITED</c>.</param>
+/// <param name="VolatileRatePerMinute">Maximum <c>volatile</c> events any single client may PUBLISH per minute, in a bucket of its own. When null, volatile events share <paramref name="PublishRatePerMinute"/> (and the relay default) with persisted ones.</param>
 public sealed record AppQuotas(
     int? MaxPayloadBytes = null,
     int? PublishRatePerMinute = null,
@@ -19,7 +21,9 @@ public sealed record AppQuotas(
     int? MaxEventsPerChannel = null,
     int? RetentionDays = null,
     long? TotalStorageBytes = null,
-    long? MaxMessagesPerMonth = null)
+    long? MaxMessagesPerMonth = null,
+    int? MaxConnections = null,
+    int? VolatileRatePerMinute = null)
 {
   public static AppQuotas None { get; } = new();
 }

@@ -188,11 +188,19 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   themselves today); (b) the one-shot `GetDeviceGroupMembers` helpers resolve on the first batch — fine
   for tiny identity channels, wrong for a channel larger than `MaxFetchLimit`; (c) docs guidance on
   partitioning durable state from presence channels, and on snapshotting.
-- **#29 Realtime quota fields.** New per-app quotas `max_connections` (concurrent) and
-  `volatile_rate_per_minute` (separate token bucket; volatile events stop drawing from
-  `publish_rate_per_minute`). `AppQuotas` + `apps` migration (`dotnet ef`, never hand-written) +
-  `/admin/*` JSON. **Cross-repo breaking change:** Atrium's `RelayModels.RelayAppQuotas` + `TierCatalog`
-  must be bumped after the relay release.
+- **#29 Realtime quota fields.** ✅ **Done** (`AppQuotas.MaxConnections` / `VolatileRatePerMinute`, `apps`
+  columns `max_connections` / `volatile_rate_per_minute` via migration `AddAppRealtimeQuotas`, Npgsql store,
+  admin GUI quota list; `RealtimeQuotaTests`, `NpgsqlAppStoreQuotaTests`; `docs/server-configuration.md`).
+  `volatile_rate_per_minute` gives volatile events a bucket of their own (keyed `(app, client)`, `*v:` prefix);
+  **null keeps the old behaviour** (volatile shares the publish bucket), so apps that set nothing — including
+  every Atrium tier — are unchanged. `max_connections` counts connections that *joined* the app (first
+  SUBSCRIBE / CREATE_CHANNEL / PUBLISH / HELLO channel) until disconnect; over the cap = `CONNECTION_LIMITED`.
+  The `/admin/*` JSON gains `maxConnections` and `volatileRatePerMinute` automatically (additive).
+  **Cross-repo:** `PATCH /admin/apps/{id}/quotas` is replace-all, so a client that does not know the new
+  fields (older Atrium) resets them to null on every call; Atrium's `RelayAppQuotas` now mirrors them.
+  **Still open:** the connection count is per relay process and unlocked (can overshoot a little; multi-host
+  needs the shared backend of #15); `max_connections` alerts/usage in `app_alerts` and the admin dashboard
+  meter; `Atrium` `TierCatalog` values for the Realtime tier.
 - **#30 Identity backup primitives.** `VestaIdentity.ExportEncrypted(password)` /
   `ImportEncrypted(blob, password)` (Argon2id + AEAD, versioned JSON blob); recovery phrase (seed ↔ 24
   words); optional relay-stored encrypted backup as a `replace: true` `vesta.identity.backup` event
