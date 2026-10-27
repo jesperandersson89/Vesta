@@ -78,6 +78,7 @@ The main class for managing a WebSocket connection to a Vesta server.
 - `unsubscribe(channelId)` — Unsubscribe from a channel
 - `fetch(channelId, fromSequence, options?)` — Fetch one page of historical events (answered through the `eventsBatch` event)
 - `fetchAll(channelId, options?)` — Fetch a channel's whole history by paging until the relay returns an empty page (`options`: `fromSequence`, `toSequence`, `pageSize`, `pageTimeoutMs`); resolves with the `SequencedEvent`s and rejects if the relay refuses or a page never arrives. Don't run it while a catch-up `subscribe` for the same channel is in flight
+- `restoreIdentity(backup)` / `VestaConnection.recoverIdentity({ username, password, connection })` — Get a lost identity back from a relay-stored backup (`RelayBackup`); `recoverIdentity` does the whole thing in one call and resolves `null` when no backup matches. See [identity.md](../../docs/identity.md#relay-stored-backup)
 - `updateSequence(channelId, sequence)` — Update catch-up position
 - `deleteChannel(channelId)` — Soft-delete a channel
 - `registerApp(appId)` — Register an app namespace (needed when the relay runs with `Protocol:RequireAppRegistration=true`)

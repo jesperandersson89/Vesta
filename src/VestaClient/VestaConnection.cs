@@ -1109,6 +1109,51 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
+    /// Fetches the channel of <paramref name="backup"/> (every page) and returns the identity from the first blob
+    /// that decrypts under its keys, or <c>null</c> if the relay holds no backup for that (app, username, password).
+    /// This connection's own identity is irrelevant: a throwaway one is fine. See <see cref="FetchAllAsync"/> for
+    /// the paging rules and exceptions.
+    /// </summary>
+    public async Task<VestaIdentity?> RestoreIdentityAsync(
+        RelayBackup backup,
+        TimeSpan? pageTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(backup);
+        IReadOnlyList<SequencedEvent> events = await FetchAllAsync(
+            backup.ChannelId, pageTimeout: pageTimeout, cancellationToken: cancellationToken);
+        return backup.Restore(events.Select(e => e.Event));
+    }
+
+    /// <summary>
+    /// One call for "I lost every device": derives the backup keys from (app, <paramref name="username"/>,
+    /// <paramref name="password"/>), connects to a relay with a throwaway identity, fetches the backup and returns
+    /// the player's real identity, or <c>null</c> if there is no matching backup (a wrong password is
+    /// indistinguishable from an unknown username). The derivation takes about a second of CPU.
+    /// </summary>
+    /// <param name="relays">Relays to try in order; defaults to the ones resolved from <paramref name="appConfig"/>.</param>
+    public static async Task<VestaIdentity?> RecoverIdentityAsync(
+        VestaAppConfig appConfig,
+        string username,
+        string password,
+        IdentityBackupOptions? options = null,
+        IReadOnlyList<Uri>? relays = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(appConfig);
+        RelayBackup backup = await Task.Run(
+            () => RelayBackup.Derive(appConfig.AppId, username, password, options), cancellationToken);
+
+        using VestaIdentity throwaway = VestaIdentity.Generate();
+        await using VestaConnection connection = new(throwaway, appConfig);
+        if (relays is null)
+            await connection.ConnectAsync([], cancellationToken: cancellationToken);
+        else
+            await connection.ConnectAsync(relays, [], cancellationToken: cancellationToken);
+        return await connection.RestoreIdentityAsync(backup, cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
     /// Create a channel with explicit visibility and initial members.
     /// <c>private</c>: only the caller (admin) and listed members can read or publish.
     /// <c>broadcast</c>: anyone can subscribe/fetch, only the caller and listed members can publish.

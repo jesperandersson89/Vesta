@@ -59,6 +59,16 @@ publish:  backup.CreateEvent(identity)                    // signed, replace: tr
 restore:  FETCH backup.ChannelId (all pages) → backup.Restore(events)
 ```
 
+The whole restore is one call on a device that has nothing but the login (it connects with a throwaway identity, derives the keys, pages the channel and returns the identity, or `null` when no backup matches — a wrong password looks the same as an unknown username):
+
+| Language   | One-call recovery                                                                             | On an existing connection                        |
+| ---------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| C#         | `await VestaConnection.RecoverIdentityAsync(appConfig, username, password)`                    | `await connection.RestoreIdentityAsync(backup)`  |
+| TypeScript | `await VestaConnection.recoverIdentity({ username, password, connection: { appConfig } })`     | `await connection.restoreIdentity(backup)`       |
+| Python     | `await VestaConnection.recover_identity(app_config, username, password)`                       | `await connection.restore_identity(backup)`      |
+
+The lower-level pieces, for apps that manage their own connection:
+
 | Language   | Derive                                          | Publish an event                  | Restore                         |
 | ---------- | ----------------------------------------------- | --------------------------------- | ------------------------------- |
 | C#         | `RelayBackup.Derive(app, user, pw)`             | `backup.CreateEvent(identity)`    | `backup.Restore(events)`        |

@@ -86,6 +86,7 @@ VestaConnection(
 - `await unsubscribe(channel_id)` — Unsubscribe
 - `await fetch(channel_id, from_sequence, to_sequence=None, limit=None)` — Fetch history (one page, answered through `on_events_batch`)
 - `await fetch_all(channel_id, from_sequence=0, to_sequence=None, page_size=1000, page_timeout=10.0)` — Fetch a channel's whole history by paging until the relay returns an empty page; returns the `SequencedEvent`s, raises `RuntimeError` if the relay refuses and `TimeoutError` if a page never arrives. Don't run it while a catch-up `subscribe` for the same channel is in flight
+- `await restore_identity(backup)` / `await VestaConnection.recover_identity(app_config, username, password)` — Get a lost identity back from a relay-stored backup (`RelayBackup`); `recover_identity` does the whole thing in one call and returns `None` when no backup matches. See [identity.md](../../docs/identity.md#relay-stored-backup)
 - `update_sequence(channel_id, sequence)` — Update catch-up position
 - `await delete_channel(channel_id)` — Soft-delete a channel
 - `await register_app(app_id)` — Register an app namespace (needed when the relay requires app registration)

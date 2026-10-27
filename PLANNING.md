@@ -233,8 +233,17 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   and channels are **byte-for-byte interchangeable** (a Python-made blob and channel id are fixed vectors in the
   C# and TS tests; `IdentityBackupRecoveryFlowTests` runs the whole flow through a real relay). Python now
   needs `cryptography>=44` (Argon2id). **Gotcha:** NSec's `Argon2Parameters.MemorySize` is in KiB, not bytes
-  — the cross-language vector caught it. **Still open:** a convenience that fetches all pages and restores in
-  one call (today the app does `FETCH` + `restore`); `VestaTestClient`; a UI/UX path (when to prompt, "pair a
+  — the cross-language vector caught it. ✅ **One-call recovery:** `VestaConnection.RecoverIdentityAsync` /
+  `recoverIdentity` / `recover_identity` derive the keys, connect with a throwaway identity, page the backup
+  channel with the #28 `FetchAll` helper and return the identity (or null), plus `RestoreIdentityAsync` /
+  `restoreIdentity` / `restore_identity` on an existing connection. Decisions: it lives on `VestaConnection`, not on
+  `RelayBackup`, because `VestaCore` has no client; the TS version loads `backup.js` with a dynamic `import()` so
+  the Argon2 + word-list code stays out of bundles that never recover, and the Python version derives in a worker
+  thread (about a second of CPU); wrong password and unknown username are both `null`, so recovery never leaks
+  which usernames exist. Tests: `RecoverIdentityTests`, `recover-identity.test.mjs`, `test_recover_identity.py`
+  (scripted relay with a real backup event). **Gotcha:** the Python SDK's best-effort peer-cache refresh makes a
+  real HTTP call after any connect, which stalls `asyncio.run` for seconds on Windows when the relay URL is fake;
+  tests patch `_refresh_peer_cache`. **Still open:** `VestaTestClient`; a UI/UX path (when to prompt, "pair a
   second device" nudge) belongs to the game / #31; the relay may prune `vesta/identity-backup/*` (not an app
   channel, so app retention does not apply) — decide a retention rule; password rotation leaves the old blob.
 - **#31 Developer-hosted accounts.** ✅ **Done** (`examples/AccountServer`, `tests/AccountServer.Tests`, SDK
@@ -316,8 +325,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 127 Client + 235 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 131; Py 148. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 217 Core + 132 Client + 235 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 137; Py 153. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

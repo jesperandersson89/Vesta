@@ -10,7 +10,8 @@ import type {
     VestaEvent,
     WelcomeMessage,
 } from "./types.js";
-import type { VestaIdentity } from "./identity.js";
+import { VestaIdentity } from "./identity.js";
+import type { IdentityBackupOptions, RelayBackup } from "./backup.js";
 import {
     buildAnnounce,
     buildLink,
@@ -768,6 +769,69 @@ export class VestaConnection {
             next = events[events.length - 1].sequence + 1;
         }
         return all;
+    }
+
+    /**
+     * Fetch the channel of `backup` (every page) and resolve with the identity from the first blob that
+     * decrypts under its keys, or `null` if the relay holds no backup for that (app, username, password).
+     * This connection's own identity is irrelevant: a throwaway one is fine. See {@link fetchAll} for the
+     * paging rules and rejections.
+     */
+    async restoreIdentity(backup: RelayBackup, options?: { pageTimeoutMs?: number }): Promise<VestaIdentity | null> {
+        const events = await this.fetchAll(backup.channelId, { pageTimeoutMs: options?.pageTimeoutMs });
+        return backup.restore(events.map((e) => e.event));
+    }
+
+    /**
+     * One call for "I lost every device": derives the backup keys from (app, `username`, `password`),
+     * connects to a relay with a throwaway identity, fetches the backup and resolves with the player's real
+     * identity, or `null` if there is no matching backup (a wrong password is indistinguishable from an
+     * unknown username). The derivation takes about a second of CPU. Rejects if no relay can be reached.
+     *
+     * `connection` takes the usual relay options (`appConfig`, `serverUrl`, `relays`, `createSocket`);
+     * `appId` defaults to `appConfig.appId`.
+     */
+    static async recoverIdentity(args: {
+        username: string;
+        password: string;
+        appId?: string;
+        connection: Omit<VestaConnectionOptions, "channels" | "identity" | "clientId" | "autoReconnect">;
+        backupOptions?: IdentityBackupOptions;
+        connectTimeoutMs?: number;
+        pageTimeoutMs?: number;
+    }): Promise<VestaIdentity | null> {
+        const appId = args.appId ?? args.connection.appConfig?.appId;
+        if (!appId) throw new Error("recoverIdentity needs an appId or connection.appConfig.");
+        const { RelayBackup: Backup } = await import("./backup.js"); // keeps Argon2 out of bundles that never recover
+        const backup = await Backup.derive(appId, args.username, args.password, args.backupOptions);
+
+        const connection = new VestaConnection({
+            ...args.connection,
+            channels: [],
+            identity: VestaIdentity.generate(),
+            autoReconnect: false,
+        });
+        const connectTimeoutMs = args.connectTimeoutMs ?? 15_000;
+        try {
+            await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(() => finish(() => reject(new Error("Timed out connecting to the relay."))), connectTimeoutMs);
+                const finish = (settle: () => void) => {
+                    clearTimeout(timer);
+                    connection.off("connected", onConnected);
+                    connection.off("disconnected", onDisconnected);
+                    settle();
+                };
+                const onConnected = () => finish(resolve);
+                const onDisconnected = (reason: string) =>
+                    finish(() => reject(new Error(`Could not connect to the relay: ${reason}`)));
+                connection.on("connected", onConnected);
+                connection.on("disconnected", onDisconnected);
+                connection.connect();
+            });
+            return await connection.restoreIdentity(backup, { pageTimeoutMs: args.pageTimeoutMs });
+        } finally {
+            connection.disconnect();
+        }
     }
 
     // ── Channel management (ACL) ─────────────────────────────────────────────

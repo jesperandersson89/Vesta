@@ -877,6 +877,50 @@ class VestaConnection:
             next_sequence = events[-1].sequence + 1
         return all_events
 
+    async def restore_identity(self, backup: Any, page_timeout: float = 10.0) -> VestaIdentity | None:
+        """
+        Fetch the channel of ``backup`` (a :class:`~vesta_client.RelayBackup`, every page) and return the
+        identity from the first blob that decrypts under its keys, or ``None`` if the relay holds no backup
+        for that (app, username, password). This connection's own identity is irrelevant: a throwaway one
+        is fine. See :meth:`fetch_all` for the paging rules and errors.
+        """
+        events = await self.fetch_all(backup.channel_id, page_timeout=page_timeout)
+        return backup.restore([e.event for e in events])
+
+    @staticmethod
+    async def recover_identity(
+        app_config: VestaAppConfig,
+        username: str,
+        password: str,
+        *,
+        options: Any = None,
+        relays: list[str] | None = None,
+        page_timeout: float = 10.0,
+    ) -> VestaIdentity | None:
+        """
+        One call for "I lost every device": derive the backup keys from (app, ``username``, ``password``),
+        connect to a relay with a throwaway identity, fetch the backup and return the player's real
+        identity, or ``None`` if there is no matching backup (a wrong password is indistinguishable from an
+        unknown username). The derivation takes about a second of CPU, so it runs in a worker thread.
+        Raises :class:`RelaysExhaustedError` if no relay can be reached. ``relays`` defaults to the ones
+        resolved from ``app_config``.
+        """
+        from vesta_client.backup import RelayBackup
+
+        backup = await asyncio.to_thread(RelayBackup.derive, app_config.app_id, username, password, options)
+        connection = VestaConnection(
+            app_config=app_config,
+            relays=relays,
+            identity=VestaIdentity.generate(),
+            channels=[],
+            auto_reconnect=False,
+        )
+        await connection.connect()
+        try:
+            return await connection.restore_identity(backup, page_timeout=page_timeout)
+        finally:
+            await connection.disconnect()
+
     # ── Channel management (ACL) ──────────────────────────────────────────────
 
     async def create_channel(
