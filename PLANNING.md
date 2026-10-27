@@ -193,9 +193,15 @@ every item is signature verification, ACL, or operator-configurable limits, neve
 - **#28 Catch-up at scale.** ✅ **Server done:** `Protocol:MaxFetchLimit` (default 1000) clamps
   `FETCH`, and HELLO / SUBSCRIBE catch-up now pages in consecutive `EVENTS_BATCH` frames instead of
   silently truncating at 100 (`ProtocolHandler.SendCatchUpAsync`; `CatchUpPagingTests`). The SDKs already
-  apply multiple batches, so catch-up needs no SDK change. **Still open:**
-  (a) an SDK helper that auto-pages a manual `FETCH` (callers must continue from `lastSequence + 1`
-  themselves today); (b) the one-shot `GetDeviceGroupMembers` helpers resolve on the first batch — fine
+  apply multiple batches, so catch-up needs no SDK change. ✅ **SDK paging helper:**
+  `FetchAllAsync` (C#) / `fetchAll` (TS) / `fetch_all` (Python) page a manual `FETCH` to the end. Decisions: it
+  stops on an **empty page**, not a short one, because the relay's clamp is invisible to the client (costs one
+  extra round trip); batches and errors are matched by channel id, so it must not run beside a catch-up
+  `SUBSCRIBE` for the same channel (documented, not enforced); the relay now puts the `channelId` on FETCH
+  rejections (`ACCESS_DENIED`, `CHANNEL_DELETED`, `INVALID_CHANNEL`, `UNKNOWN_APP`, `APP_NOT_ALLOWED`) so a
+  failed page is attributable. Tests: `FetchAllTests` (C#, scripted loopback relay), `fetch-all.test.mjs`,
+  `test_fetch_all.py`. `VestaTestClient` was left alone (test-only client). **Still open:**
+  (b) the one-shot `GetDeviceGroupMembers` helpers resolve on the first batch — fine
   for tiny identity channels, wrong for a channel larger than `MaxFetchLimit`; (c) docs guidance on
   partitioning durable state from presence channels, and on snapshotting.
 - **#29 Realtime quota fields.** ✅ **Done** (`AppQuotas.MaxConnections` / `VolatileRatePerMinute`, `apps`
@@ -310,8 +316,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 121 Client + 234 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 125; Py 142. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 217 Core + 127 Client + 235 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 131; Py 148. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

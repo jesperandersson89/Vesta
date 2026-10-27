@@ -709,7 +709,7 @@ public sealed class ProtocolHandler(
         if (!ChannelId.IsValid(fetch.ChannelId))
         {
             await connection.SendAsync(
-                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{fetch.ChannelId}'"),
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{fetch.ChannelId}'", null, fetch.ChannelId),
                 cancellationToken);
             return;
         }
@@ -723,7 +723,7 @@ public sealed class ProtocolHandler(
         if (!await accessStore.CanAccessAsync(fetch.ChannelId, connection.ClientId, cancellationToken))
         {
             await connection.SendAsync(
-                new ErrorMessage("ACCESS_DENIED", $"Not authorized to fetch from '{fetch.ChannelId}'"),
+                new ErrorMessage("ACCESS_DENIED", $"Not authorized to fetch from '{fetch.ChannelId}'", null, fetch.ChannelId),
                 cancellationToken);
             return;
         }
@@ -989,7 +989,7 @@ public sealed class ProtocolHandler(
         if (await accessStore.IsDeletedAsync(channelId, cancellationToken))
         {
             await connection.SendAsync(
-                new ErrorMessage("CHANNEL_DELETED", $"Channel '{channelId}' has been deleted"),
+                new ErrorMessage("CHANNEL_DELETED", $"Channel '{channelId}' has been deleted", null, channelId),
                 cancellationToken);
             return false;
         }
@@ -1021,7 +1021,9 @@ public sealed class ProtocolHandler(
                 await connection.SendAsync(
                     new ErrorMessage(
                         "APP_NOT_ALLOWED",
-                        $"App '{allowedAppId ?? channelId}' is not on this server's allow-list"),
+                        $"App '{allowedAppId ?? channelId}' is not on this server's allow-list",
+                        null,
+                        channelId),
                     cancellationToken);
                 return false;
             }
@@ -1034,7 +1036,7 @@ public sealed class ProtocolHandler(
         if (appId is null || !AppId.IsValid(appId))
         {
             await connection.SendAsync(
-                new ErrorMessage("UNKNOWN_APP", $"Channel '{channelId}' has no valid app namespace"),
+                new ErrorMessage("UNKNOWN_APP", $"Channel '{channelId}' has no valid app namespace", null, channelId),
                 cancellationToken);
             return false;
         }
@@ -1042,7 +1044,7 @@ public sealed class ProtocolHandler(
         if (!await appStore.ExistsAsync(appId, cancellationToken))
         {
             await connection.SendAsync(
-                new ErrorMessage("UNKNOWN_APP", $"App '{appId}' is not registered"),
+                new ErrorMessage("UNKNOWN_APP", $"App '{appId}' is not registered", null, channelId),
                 cancellationToken);
             return false;
         }

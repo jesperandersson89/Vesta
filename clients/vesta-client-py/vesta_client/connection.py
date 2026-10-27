@@ -817,6 +817,66 @@ class VestaConnection:
             msg["limit"] = limit
         await self._send(msg)
 
+    async def fetch_all(
+        self,
+        channel_id: str,
+        from_sequence: int = 0,
+        to_sequence: int | None = None,
+        page_size: int = 1000,
+        page_timeout: float = 10.0,
+    ) -> list[SequencedEvent]:
+        """
+        Fetch every event of a channel from ``from_sequence`` (through ``to_sequence`` when set), one
+        FETCH page at a time, and return them in sequence order.
+
+        The relay caps a page at its ``Protocol:MaxFetchLimit`` (default 1000), which the client cannot
+        know, so paging continues until the relay answers with an empty page. Batches are matched by
+        channel id: do not run this on a channel while another fetch or a catch-up ``subscribe`` for it
+        is in flight. Raises ``RuntimeError`` with the relay's error (for example ``ACCESS_DENIED``) or
+        ``TimeoutError`` when a page does not arrive within ``page_timeout`` seconds.
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be at least 1")
+
+        all_events: list[SequencedEvent] = []
+        next_sequence = from_sequence
+        while to_sequence is None or next_sequence <= to_sequence:
+            page: asyncio.Future[list[SequencedEvent]] = asyncio.get_running_loop().create_future()
+            orig_batch = self._on_events_batch
+            orig_error = self._on_error
+
+            def _on_batch(msg: EventsBatchMessage) -> None:
+                if msg.channel_id == channel_id and not page.done():
+                    page.set_result(list(msg.events))
+                if orig_batch:
+                    orig_batch(msg)
+
+            def _on_error(msg: ErrorMessage) -> None:
+                if msg.channel_id == channel_id and not page.done():
+                    page.set_exception(RuntimeError(f"{msg.code}: {msg.message}"))
+                if orig_error:
+                    orig_error(msg)
+
+            self._on_events_batch = _on_batch
+            self._on_error = _on_error
+            try:
+                await self.fetch(channel_id, next_sequence, to_sequence=to_sequence, limit=page_size)
+                try:
+                    events = await asyncio.wait_for(page, timeout=page_timeout)
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"No FETCH page for '{channel_id}' from sequence {next_sequence} within {page_timeout}s."
+                    ) from None
+            finally:
+                self._on_events_batch = orig_batch
+                self._on_error = orig_error
+
+            if not events:
+                break
+            all_events.extend(events)
+            next_sequence = events[-1].sequence + 1
+        return all_events
+
     # ── Channel management (ACL) ──────────────────────────────────────────────
 
     async def create_channel(

@@ -28,7 +28,7 @@ client                            server
 
 A client may subscribe to additional channels mid-session (`SUBSCRIBE`), request historical data (`FETCH`), or create new channels (`CREATE_CHANNEL`).
 
-Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more `EVENTS_BATCH` frames per channel, each holding at most the relay's `Protocol:MaxFetchLimit` events (default 1000), in ascending sequence order; a shorter-than-full batch is the last one. `FETCH` limits are clamped to the same value, so clients paging manually should continue from `lastSequence + 1`.
+Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more `EVENTS_BATCH` frames per channel, each holding at most the relay's `Protocol:MaxFetchLimit` events (default 1000), in ascending sequence order; a shorter-than-full batch is the last one. `FETCH` limits are clamped to the same value, so clients paging manually should continue from `lastSequence + 1`. Because the clamp is relay configuration the client cannot see, a short `FETCH` page does not prove the end of the channel: the SDKs' paging helpers (`FetchAllAsync` / `fetchAll` / `fetch_all`) keep requesting until the relay returns an empty page. Rejections of a `FETCH` (`ACCESS_DENIED`, `CHANNEL_DELETED`, `INVALID_CHANNEL`, `UNKNOWN_APP`, `APP_NOT_ALLOWED`) carry the `channelId` so a client can tell which request failed.
 
 ## Client → Server messages
 

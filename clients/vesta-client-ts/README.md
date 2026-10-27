@@ -76,7 +76,8 @@ The main class for managing a WebSocket connection to a Vesta server.
 - `publish(event)` — Publish a VestaEvent
 - `subscribe(channelId, fromSequence?)` — Subscribe to a channel
 - `unsubscribe(channelId)` — Unsubscribe from a channel
-- `fetch(channelId, fromSequence, options?)` — Fetch historical events
+- `fetch(channelId, fromSequence, options?)` — Fetch one page of historical events (answered through the `eventsBatch` event)
+- `fetchAll(channelId, options?)` — Fetch a channel's whole history by paging until the relay returns an empty page (`options`: `fromSequence`, `toSequence`, `pageSize`, `pageTimeoutMs`); resolves with the `SequencedEvent`s and rejects if the relay refuses or a page never arrives. Don't run it while a catch-up `subscribe` for the same channel is in flight
 - `updateSequence(channelId, sequence)` — Update catch-up position
 - `deleteChannel(channelId)` — Soft-delete a channel
 - `registerApp(appId)` — Register an app namespace (needed when the relay runs with `Protocol:RequireAppRegistration=true`)

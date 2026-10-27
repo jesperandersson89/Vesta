@@ -84,7 +84,8 @@ VestaConnection(
 - `await publish(event)` — Publish a VestaEvent
 - `await subscribe(channel_id, from_sequence=None)` — Subscribe
 - `await unsubscribe(channel_id)` — Unsubscribe
-- `await fetch(channel_id, from_sequence, to_sequence=None, limit=None)` — Fetch history
+- `await fetch(channel_id, from_sequence, to_sequence=None, limit=None)` — Fetch history (one page, answered through `on_events_batch`)
+- `await fetch_all(channel_id, from_sequence=0, to_sequence=None, page_size=1000, page_timeout=10.0)` — Fetch a channel's whole history by paging until the relay returns an empty page; returns the `SequencedEvent`s, raises `RuntimeError` if the relay refuses and `TimeoutError` if a page never arrives. Don't run it while a catch-up `subscribe` for the same channel is in flight
 - `update_sequence(channel_id, sequence)` — Update catch-up position
 - `await delete_channel(channel_id)` — Soft-delete a channel
 - `await register_app(app_id)` — Register an app namespace (needed when the relay requires app registration)

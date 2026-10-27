@@ -5,6 +5,7 @@ import type {
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
+    SequencedEvent,
     ServerMessage,
     VestaEvent,
     WelcomeMessage,
@@ -705,6 +706,68 @@ export class VestaConnection {
             toSequence: options?.toSequence ?? null,
             limit: options?.limit ?? null,
         });
+    }
+
+    /**
+     * Fetch every event of a channel from `fromSequence` (through `toSequence` when set), one FETCH page at a
+     * time, and resolve with them in sequence order.
+     *
+     * The relay caps a page at its `Protocol:MaxFetchLimit` (default 1000), which the client cannot know, so
+     * paging continues until the relay answers with an empty page. Batches are matched by channel id: do not
+     * run this on a channel while another fetch or a catch-up `subscribe` for it is in flight.
+     * Rejects with the relay's error (for example `ACCESS_DENIED`) or when a page does not arrive in
+     * `pageTimeoutMs` (default 10 000).
+     */
+    async fetchAll(
+        channelId: string,
+        options?: { fromSequence?: number; toSequence?: number; pageSize?: number; pageTimeoutMs?: number },
+    ): Promise<SequencedEvent[]> {
+        const pageSize = options?.pageSize ?? 1000;
+        if (pageSize < 1) throw new RangeError("pageSize must be at least 1");
+        const timeoutMs = options?.pageTimeoutMs ?? 10_000;
+        const toSequence = options?.toSequence;
+
+        const fetchPage = (fromSequence: number): Promise<SequencedEvent[]> =>
+            new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    this.off("eventsBatch", onBatch);
+                    this.off("error", onError);
+                };
+                const onBatch = (msg: EventsBatchMessage) => {
+                    if (msg.channelId !== channelId) return;
+                    cleanup();
+                    resolve(msg.events);
+                };
+                const onError = (msg: ErrorMessage) => {
+                    if (msg.channelId !== channelId) return;
+                    cleanup();
+                    reject(new Error(`${msg.code}: ${msg.message}`));
+                };
+                const timer = setTimeout(() => {
+                    cleanup();
+                    reject(new Error(`No FETCH page for '${channelId}' from sequence ${fromSequence} within ${timeoutMs} ms.`));
+                }, timeoutMs);
+
+                this.on("eventsBatch", onBatch);
+                this.on("error", onError);
+                try {
+                    this.fetch(channelId, fromSequence, { toSequence, limit: pageSize });
+                } catch (error) {
+                    cleanup();
+                    reject(error);
+                }
+            });
+
+        const all: SequencedEvent[] = [];
+        let next = options?.fromSequence ?? 0;
+        while (toSequence === undefined || next <= toSequence) {
+            const events = await fetchPage(next);
+            if (events.length === 0) break;
+            all.push(...events);
+            next = events[events.length - 1].sequence + 1;
+        }
+        return all;
     }
 
     // ── Channel management (ACL) ─────────────────────────────────────────────

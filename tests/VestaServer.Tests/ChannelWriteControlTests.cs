@@ -141,6 +141,22 @@ public class ChannelWriteControlTests(WebApplicationFactory<Program> baseFactory
         Assert.IsType<AckMessage>(await ReceiveAsync(anyone));
     }
 
+    [Fact]
+    public async Task Fetch_DeniedForNonMember_CarriesTheChannelIdSoClientsCanCorrelateIt()
+    {
+        const string channel = "fetchacl/room";
+        using WebSocket admin = await HelloAsync("fetch-admin");
+        await SendAsync(admin, new CreateChannelMessage(channel, "private", []));
+        Assert.IsType<AckMessage>(await ReceiveAsync(admin));
+
+        using WebSocket stranger = await HelloAsync("fetch-stranger");
+        await SendAsync(stranger, new FetchMessage(channel, FromSequence: 0));
+
+        ErrorMessage denied = Assert.IsType<ErrorMessage>(await ReceiveAsync(stranger));
+        Assert.Equal("ACCESS_DENIED", denied.Code);
+        Assert.Equal(channel, denied.ChannelId);
+    }
+
     private async Task<WebSocket> HelloAsync(string clientId, params string[] channels)
     {
         Microsoft.AspNetCore.TestHost.WebSocketClient client = _factory.Server.CreateWebSocketClient();

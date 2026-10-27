@@ -1032,6 +1032,83 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
+    /// Fetches every event of a channel from <paramref name="fromSequence"/> (through <paramref name="toSequence"/>
+    /// when set), one <c>FETCH</c> page at a time, and returns them in sequence order.
+    /// <para>
+    /// The relay caps a page at its <c>Protocol:MaxFetchLimit</c> (default 1000), which the client cannot know,
+    /// so paging continues until the relay answers with an empty page. The batches are matched by channel id:
+    /// do not run this on a channel while another fetch or a catch-up <c>SUBSCRIBE</c> for it is in flight.
+    /// </para>
+    /// </summary>
+    /// <param name="pageSize">The <c>limit</c> requested per page (the relay may return fewer).</param>
+    /// <param name="pageTimeout">How long to wait for each page. Defaults to 10 seconds.</param>
+    /// <exception cref="InvalidOperationException">The relay refused the fetch (for example <c>ACCESS_DENIED</c>).</exception>
+    /// <exception cref="TimeoutException">A page did not arrive within <paramref name="pageTimeout"/>.</exception>
+    public async Task<IReadOnlyList<SequencedEvent>> FetchAllAsync(
+        string channelId,
+        long fromSequence = 0,
+        long? toSequence = null,
+        int pageSize = 1000,
+        TimeSpan? pageTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        List<SequencedEvent> all = [];
+        long next = fromSequence;
+        TimeSpan timeout = pageTimeout ?? TimeSpan.FromSeconds(10);
+
+        while (toSequence is null || next <= toSequence)
+        {
+            TaskCompletionSource<IReadOnlyList<SequencedEvent>> page = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void OnBatch(EventsBatchMessage batch)
+            {
+                if (batch.ChannelId == channelId)
+                    page.TrySetResult(batch.Events);
+            }
+
+            void OnFetchError(ErrorMessage error)
+            {
+                if (error.ChannelId == channelId)
+                    page.TrySetException(new InvalidOperationException($"{error.Code}: {error.Message}"));
+            }
+
+            OnEventsBatch += OnBatch;
+            OnError += OnFetchError;
+            try
+            {
+                await FetchAsync(channelId, next, toSequence, pageSize, cancellationToken);
+
+                IReadOnlyList<SequencedEvent> events;
+                using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutSource.CancelAfter(timeout);
+                try
+                {
+                    events = await page.Task.WaitAsync(timeoutSource.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"No FETCH page for '{channelId}' from sequence {next} within {timeout}.");
+                }
+
+                if (events.Count == 0)
+                    break;
+
+                all.AddRange(events);
+                next = events[^1].Sequence + 1;
+            }
+            finally
+            {
+                OnEventsBatch -= OnBatch;
+                OnError -= OnFetchError;
+            }
+        }
+
+        return all;
+    }
+
+    /// <summary>
     /// Create a channel with explicit visibility and initial members.
     /// <c>private</c>: only the caller (admin) and listed members can read or publish.
     /// <c>broadcast</c>: anyone can subscribe/fetch, only the caller and listed members can publish.
