@@ -10,6 +10,7 @@ namespace VestaServer.Connections;
 public sealed class ConnectionManager
 {
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
+    private readonly ConcurrentDictionary<string, int> _peakJoined = new();
 
     /// <summary>
     /// Register a new client connection.
@@ -66,6 +67,28 @@ public sealed class ConnectionManager
                 count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// Records the app's joined-connection count after a connection joins, so a spike between two
+    /// <see cref="TakePeakJoined"/> samples is not missed. Only called for apps with a <c>max_connections</c> quota.
+    /// </summary>
+    public void NoteJoined(string appId)
+    {
+        int current = CountJoined(appId);
+        _peakJoined.AddOrUpdate(appId, current, (_, peak) => Math.Max(peak, current));
+    }
+
+    /// <summary>
+    /// Highest joined-connection count seen since the previous call (never below the current count), then
+    /// restarts the window at the current count. Used by the quota alert sweep.
+    /// </summary>
+    public int TakePeakJoined(string appId)
+    {
+        int current = CountJoined(appId);
+        int peak = _peakJoined.TryGetValue(appId, out int recorded) ? Math.Max(recorded, current) : current;
+        _peakJoined[appId] = current;
+        return peak;
     }
 
     /// <summary>

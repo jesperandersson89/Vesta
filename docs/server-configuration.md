@@ -296,7 +296,7 @@ After measuring, each sweep also evaluates [quota alerts](#appalerts) for the ap
 
 ## `AppAlerts`
 
-When the `AppQuotaPruner` is enabled, each sweep compares an app's measured usage with its quotas and records an alert in `app_alerts` whenever a threshold is crossed. Metrics: `messages` (vs `max_messages_per_month`), `storage` (vs `total_storage_bytes`), `channels` (vs `max_channels`). Apps without the corresponding quota raise nothing.
+When the `AppQuotaPruner` is enabled, each sweep compares an app's measured usage with its quotas and records an alert in `app_alerts` whenever a threshold is crossed. Metrics: `messages` (vs `max_messages_per_month`), `storage` (vs `total_storage_bytes`), `channels` (vs `max_channels`), `connections` (vs `max_connections`). Apps without the corresponding quota raise nothing. The `connections` metric is the **peak** number of joined connections since the previous sweep rather than a snapshot, so a spike between two sweeps is still seen; it resets each sweep, which means a connection alert clears one sweep after the app calms down, and (like the connection count itself) it is per relay process. `GET /admin/apps/{id}` also returns `joinedConnections` (the live count the cap applies to), which the admin dashboard shows as a meter.
 
 ```jsonc
 {

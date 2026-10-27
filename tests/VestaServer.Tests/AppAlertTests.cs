@@ -49,6 +49,27 @@ public class AppAlertEvaluatorTests
   }
 
   [Fact]
+  public void Evaluate_ConnectionCountAgainstMaxConnections_CrossesLikeAnyOtherMetric()
+  {
+    IReadOnlyList<AppAlertCrossing> result = AppAlertEvaluator.Evaluate(
+        new AppQuotas(MaxConnections: 500), messages: null, Period, null, null, Thresholds, connectionCount: 450);
+
+    AppAlertCrossing crossing = Assert.Single(result);
+    Assert.Equal(AppAlertMetrics.Connections, crossing.Metric);
+    Assert.Equal(80, crossing.ThresholdPercent);
+    Assert.Equal(450, crossing.Observed);
+    Assert.Equal(500, crossing.Limit);
+    Assert.Null(crossing.PeriodStart);
+  }
+
+  [Fact]
+  public void Evaluate_ConnectionCountWithoutQuotaOrMeasurement_Skips()
+  {
+    Assert.Empty(AppAlertEvaluator.Evaluate(new AppQuotas(), null, Period, null, null, Thresholds, connectionCount: 999));
+    Assert.Empty(AppAlertEvaluator.Evaluate(new AppQuotas(MaxConnections: 10), null, Period, null, null, Thresholds, connectionCount: null));
+  }
+
+  [Fact]
   public void Evaluate_MultipleMetrics_ReturnsEachIndependently()
   {
     IReadOnlyList<AppAlertCrossing> result = AppAlertEvaluator.Evaluate(

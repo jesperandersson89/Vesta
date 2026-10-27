@@ -652,6 +652,8 @@ public sealed class ProtocolHandler(
         }
 
         connection.JoinedApps[appId] = 0;
+        if (app?.Quotas.MaxConnections is not null)
+            connectionManager.NoteJoined(appId);
         return true;
     }
 

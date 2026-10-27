@@ -58,7 +58,12 @@ const copyBtn = (text) =>
 
 const skeleton = `<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>`;
 
-const METRIC_LABELS = { messages: "Messages / month", storage: "Storage", channels: "Channels" };
+const METRIC_LABELS = {
+    messages: "Messages / month",
+    storage: "Storage",
+    channels: "Channels",
+    connections: "Peak connections",
+};
 
 function fmtMetric(metric, value) {
     return metric === "storage" ? fmtBytes(value) : fmtNum(value);
@@ -464,6 +469,7 @@ async function viewApp(id) {
             ${meter("Messages this month", usage.messages ?? 0, q.maxMessagesPerMonth, fmtNum, warnPct)}
             ${meter("Storage", storage, q.totalStorageBytes, fmtBytes, warnPct)}
             ${meter("Channels", usage.channelCount, q.maxChannels, fmtNum, warnPct)}
+            ${meter("Connections joined now", app.joinedConnections ?? 0, q.maxConnections, fmtNum, warnPct)}
         </div></div>
 
         <div class="card"><div class="card-header">Messages per month</div>

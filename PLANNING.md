@@ -209,8 +209,12 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   **Cross-repo:** `PATCH /admin/apps/{id}/quotas` is replace-all, so a client that does not know the new
   fields (older Atrium) resets them to null on every call; Atrium's `RelayAppQuotas` now mirrors them.
   **Still open:** the connection count is per relay process and unlocked (can overshoot a little; multi-host
-  needs the shared backend of #15); `max_connections` alerts/usage in `app_alerts` and the admin dashboard
-  meter; Atrium's hidden Realtime tier now uses both quotas with indicative values (see its D10).
+  needs the shared backend of #15). ✅ **`max_connections` alerts + dashboard meter** (`connections` alert metric from
+  the `AppQuotaPruner` sweep, `joinedConnections` on `GET /admin/apps/{id}`). Decision: the alert observes the
+  **peak** joined count since the last sweep (`ConnectionManager.NoteJoined`/`TakePeakJoined`, tracked only for
+  apps with a `max_connections` quota), not a snapshot, because a 5-minute sample would miss a game's login
+  spike; the cost is that an alert clears one sweep late. Atrium's hidden Realtime tier now uses both quotas with
+  indicative values (see its D10).
 - **#30 Identity backup primitives.** ✅ **Done** in all three SDKs (`IdentityBackup` / `RelayBackup` /
   `RecoveryPhrase` in `VestaCore`; `vesta_client/backup.py`; `clients/vesta-client-ts/src/backup.ts`; new
   `docs/identity.md`, indexed). Encrypted export: Argon2id (64 MiB, 3 passes, p=1) → 64 bytes, first 32 =
@@ -306,7 +310,7 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 121 Client + 230 Server (incl. Testcontainers Postgres
+- Expected test totals (all green): C# 217 Core + 121 Client + 234 Server (incl. Testcontainers Postgres
   tests) + 9 AccountServer; TS 125; Py 142. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when

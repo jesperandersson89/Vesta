@@ -183,6 +183,7 @@ public static class AdminEndpoints
         throttlePerMinute = app.ThrottlePerMinute,
         ownerOnlyChannelCreation = app.OwnerOnlyChannelCreation,
         activeConnections = connections.CountByApp(app.Id),
+        joinedConnections = connections.CountJoined(app.Id),
       });
     });
 

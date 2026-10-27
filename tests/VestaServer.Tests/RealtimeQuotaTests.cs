@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Vesta;
+using VestaServer.Connections;
 using VestaServer.Storage;
 
 namespace VestaServer.Tests;
@@ -85,6 +86,29 @@ public class RealtimeQuotaTests(WebApplicationFactory<Program> baseFactory) : IC
   }
 
   [Fact]
+  public async Task TakePeakJoined_KeepsASpikeThatEndedBeforeTheSample_ThenFallsToTheCurrentCount()
+  {
+    await SetupAppAsync("rtpeak", new AppQuotas(MaxConnections: 10));
+    ConnectionManager connections = _factory.Services.GetRequiredService<ConnectionManager>();
+    List<WebSocket> sockets = [];
+    for (int i = 0; i < 3; i++)
+    {
+      WebSocket ws = await HelloAsync($"rt-peak-{i}");
+      sockets.Add(ws);
+      await SendAsync(ws, new PublishMessage("rtpeak/world", CreateEvent("rtpeak/world", $"rt-peak-{i}")));
+      Assert.IsType<AckMessage>(await ReceiveAsync(ws));
+    }
+
+    foreach (WebSocket ws in sockets)
+      await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+
+    Assert.True(connections.TakePeakJoined("rtpeak") >= 3);
+    await WaitUntilAsync(() => connections.TakePeakJoined("rtpeak") == 0);
+    foreach (WebSocket ws in sockets)
+      ws.Dispose();
+  }
+
+  [Fact]
   public async Task MaxConnections_DoesNotAffectOtherApps()
   {
     await SetupAppAsync("rtcapped", new AppQuotas(MaxConnections: 1));
@@ -97,6 +121,16 @@ public class RealtimeQuotaTests(WebApplicationFactory<Program> baseFactory) : IC
     await SendAsync(other, new PublishMessage("rtfree/world", CreateEvent("rtfree/world", "rt-other-2")));
 
     Assert.IsType<AckMessage>(await ReceiveAsync(other));
+  }
+
+  private static async Task WaitUntilAsync(Func<bool> condition)
+  {
+    DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+    while (!condition())
+    {
+      Assert.True(DateTime.UtcNow < deadline, "Condition was not met within 10 seconds.");
+      await Task.Delay(50);
+    }
   }
 
   private async Task SetupAppAsync(string appId, AppQuotas quotas)

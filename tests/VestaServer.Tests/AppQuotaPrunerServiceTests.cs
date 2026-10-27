@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net.WebSockets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -6,6 +7,7 @@ using Npgsql;
 using Testcontainers.PostgreSql;
 using Vesta;
 using VestaServer.Data;
+using VestaServer.Connections;
 using VestaServer.Storage;
 
 namespace VestaServer.Tests;
@@ -172,6 +174,66 @@ public sealed class AppQuotaPrunerServiceTests : IAsyncLifetime
     await _appStore.SetQuotasAsync("alertedapp", new AppQuotas(MaxMessagesPerMonth: 1000));
     await pruner.SweepOnceAsync(CancellationToken.None);
     Assert.Empty(await alerts.ListAsync("alertedapp", activeOnly: true));
+  }
+
+  [Fact]
+  public async Task SweepOnce_ConnectionPeakNearCap_RaisesAlertAndResolvesOnceTheAppGoesQuiet()
+  {
+    NpgsqlAppAlertStore alerts = new(_dataSource);
+    ConnectionManager connections = new();
+    AppQuotaPrunerService pruner = new(
+        _dataSource,
+        _appStore,
+        _accountant,
+        _usageAccountant,
+        Options.Create(new AppQuotaPrunerOptions { Enabled = true }),
+        NullLogger<AppQuotaPrunerService>.Instance,
+        alerts,
+        new NpgsqlChannelAccessStore(_dataSource),
+        Options.Create(new AppAlertOptions { ThresholdsPercent = [80, 100] }),
+        connections);
+    await _appStore.RegisterAsync("connalerts", "owner");
+    await _appStore.SetQuotasAsync("connalerts", new AppQuotas(MaxConnections: 5));
+
+    List<ClientConnection> open = [];
+    for (int i = 0; i < 4; i++)
+    {
+      ClientConnection connection = new(new OpenSocket());
+      connection.JoinedApps["connalerts"] = 0;
+      connections.Add(connection);
+      connections.NoteJoined("connalerts");
+      open.Add(connection);
+    }
+
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    AppAlert alert = Assert.Single(await alerts.ListAsync("connalerts", activeOnly: true));
+    Assert.Equal(AppAlertMetrics.Connections, alert.Metric);
+    Assert.Equal(80, alert.ThresholdPercent);
+    Assert.Equal(4, alert.Observed);
+    Assert.Equal(5, alert.LimitValue);
+
+    foreach (ClientConnection connection in open)
+      connections.Remove(connection);
+
+    // The window that just ended still contained the four connections; the next one is empty.
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    Assert.Single(await alerts.ListAsync("connalerts", activeOnly: true));
+    await pruner.SweepOnceAsync(CancellationToken.None);
+    Assert.Empty(await alerts.ListAsync("connalerts", activeOnly: true));
+  }
+
+  private sealed class OpenSocket : WebSocket
+  {
+    public override WebSocketCloseStatus? CloseStatus => null;
+    public override string? CloseStatusDescription => null;
+    public override WebSocketState State => WebSocketState.Open;
+    public override string? SubProtocol => null;
+    public override void Abort() { }
+    public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+    public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+    public override void Dispose() { }
+    public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
   }
 
   private async Task BackdateAsync(Guid eventId, TimeSpan offset)

@@ -8,6 +8,9 @@ public static class AppAlertMetrics
   public const string Messages = "messages";
   public const string Storage = "storage";
   public const string Channels = "channels";
+
+  /// <summary>Peak concurrent connections that had joined the app since the previous sweep, against <c>max_connections</c>.</summary>
+  public const string Connections = "connections";
 }
 
 /// <summary>Quota-threshold alert configuration (section <c>AppAlerts</c>). Evaluated by <see cref="AppQuotaPrunerService"/>.</summary>
@@ -46,12 +49,14 @@ public static class AppAlertEvaluator
       DateOnly messagesPeriod,
       long? storageBytes,
       long? channelCount,
-      IReadOnlyList<int> thresholds)
+      IReadOnlyList<int> thresholds,
+      long? connectionCount = null)
   {
     List<AppAlertCrossing> crossings = [];
     Add(crossings, AppAlertMetrics.Messages, quotas.MaxMessagesPerMonth, messages, messagesPeriod, thresholds);
     Add(crossings, AppAlertMetrics.Storage, quotas.TotalStorageBytes, storageBytes, null, thresholds);
     Add(crossings, AppAlertMetrics.Channels, quotas.MaxChannels, channelCount, null, thresholds);
+    Add(crossings, AppAlertMetrics.Connections, quotas.MaxConnections, connectionCount, null, thresholds);
     return crossings;
   }
 

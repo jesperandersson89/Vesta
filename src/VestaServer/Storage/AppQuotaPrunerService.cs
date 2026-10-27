@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using Npgsql;
+using VestaServer.Connections;
 
 namespace VestaServer.Storage;
 
@@ -38,7 +39,8 @@ public sealed class AppQuotaPrunerService(
     ILogger<AppQuotaPrunerService> logger,
     IAppAlertStore? alertStore = null,
     IChannelAccessStore? channelStore = null,
-    IOptions<AppAlertOptions>? alertOptions = null) : BackgroundService
+    IOptions<AppAlertOptions>? alertOptions = null,
+    ConnectionManager? connections = null) : BackgroundService
 {
   private readonly AppQuotaPrunerOptions _options = options.Value;
   private readonly int[] _alertThresholds = alertOptions?.Value.ThresholdsPercent ?? [80, 100];
@@ -131,7 +133,8 @@ public sealed class AppQuotaPrunerService(
         periodStart,
         accountant.Get(app.Id),
         channelCount,
-        _alertThresholds);
+        _alertThresholds,
+        app.Quotas.MaxConnections is null ? null : connections?.TakePeakJoined(app.Id));
     await alertStore.SyncAsync(app.Id, crossings, cancellationToken);
   }
 
