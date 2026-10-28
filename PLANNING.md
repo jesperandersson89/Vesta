@@ -355,6 +355,10 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
 - By default the relay does not restrict who may create channels under an app namespace (only the creator becomes
   channel admin); the per-app `owner_only_channel_creation` flag (#26) closes the squatting hole when set.
+- SDK gotcha (found by the 2026-10-28 live smoke test): `REGISTER_APP` and `CREATE_CHANNEL` are answered with an
+  ACK whose event id is the nil GUID, and the TS and Python SDKs consume it internally (registration promise /
+  ignore) instead of emitting `ack`, so an app calling `registerApp` / `createChannel` gets no success signal, only
+  an `error` on failure. Confirm by waiting briefly for no error, or fix by surfacing it (open).
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via
