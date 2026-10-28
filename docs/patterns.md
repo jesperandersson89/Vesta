@@ -38,6 +38,27 @@ The `broadcast` write rule is spam and quota protection: strangers can't fill th
 - **Create the channel first.** Unless the operator has turned on [owner-only channel creation](server-configuration.md#owner-only-channel-creation) for your app, the relay lets any client create a channel under any app namespace, so a stranger could register `mygame/shop` as their own broadcast channel before you do. Your client-side check still rejects their events, but your service could not claim the name. Create channels at deploy time, and on a relay you do not operate ask the operator to enable owner-only creation.
 - **Run production relays with `Protocol:RequireSignedEvents = true` and `Protocol:RequireHelloProof = true`** ([server-configuration.md](server-configuration.md#signature-verification)). Write control relies on publishes being signed; private-channel reads (for example a per-player receipt inbox) rely on the connection having proven its key.
 
+## Durable state and presence: separate channels
+
+A game sends two very different kinds of traffic. Keep them on different channels, because catch-up, storage and snapshots all work per channel.
+
+| Kind        | Examples                                         | How to publish                                                                                                                       | Channel (example)               |
+| ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| **Durable** | inventory, purchases, world edits, chat          | Ordinary events: stored, ordered, replayed to late joiners                                                                           | `mygame/world`, `mygame/shop`   |
+| **Presence**| position, aim, "typing", "online now"            | [`volatile: true`](events.md#volatile) for streams nobody needs later, [`replace: true`](events.md#replace) for "last known value", [`metadata.ttlSeconds`](events.md#metadatattlseconds--ephemeral-events) for "online now" | `mygame/room-7/presence`        |
+
+Why not one channel:
+
+- **Catch-up replays everything stored since the client's last position.** A client with no local position (new device, cleared storage) starts at 0. Presence stored in the durable channel makes every join fetch it all; presence on its own channel stays tiny or is never stored.
+- **Storage and the monthly message allowance count stored events.** Volatile events are neither stored nor counted toward `max_messages_per_month` (they still draw from the publish rate limit, or from `volatile_rate_per_minute` when the operator set one). A `replace` stream keeps one row per `(channel, client, eventType)`, but every publish still counts as a message.
+- **Access rules differ.** The durable channel is usually `broadcast` (one trusted writer, see above); presence is writable by every player.
+
+### Snapshotting
+
+- **Snapshot the durable projections.** Restore, then fetch only what is newer: `store.RestoreAsync(...)`, then `FetchAsync(channel, fromSequence: projection.LastSequence + 1)` (see [projections.md](projections.md#snapshotting)). Save at shutdown and every few hundred events. Use `FetchAll` / `fetchAll` / `fetch_all` for a gap longer than the relay's per-page limit (`Protocol:MaxFetchLimit`).
+- **Do not snapshot presence.** Start empty and let the next updates or heartbeats fill it in; a restored position from last week is wrong anyway.
+- **A snapshot only helps a returning client.** The relay prunes old events when the operator sets `retention_days` (one window for every channel in the app) or `max_events_per_channel` (a cap on each channel), so a first-time join, or a client offline longer than the retention window, cannot rebuild from history. For state that must outlive that, have the authority service publish a periodic checkpoint event carrying the full state, signed by the pinned key and republished more often than the retention window; new clients start from the latest checkpoint and verify it like any other event.
+
 ## What the relay will never validate
 
 None of these can be enforced by Vesta, so design for them:

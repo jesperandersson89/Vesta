@@ -205,8 +205,10 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   now `FetchAll` the identity channel and replay it (`DeviceGroupMembersTests`, `device-group-members.test.mjs`,
   `test_device_group_members.py`). Behaviour change: they no longer subscribe (the result is a snapshot, no live
   channel is left behind), the timeout is per page (default 10 s, was 5 s overall), and a relay that does not answer
-  now throws instead of silently returning an empty group; an empty channel answers at once. **Still open:**
-  (c) docs guidance on partitioning durable state from presence channels, and on snapshotting.
+  now throws instead of silently returning an empty group; an empty channel answers at once. ✅ **(c) done:**
+  `docs/patterns.md` § Durable state and presence: separate channels (what goes volatile / replace / TTL, why presence
+  gets its own channel, snapshot the durable projections but not presence, retention means a snapshot only helps a
+  returning client so authority services republish a checkpoint).
 - **#29 Realtime quota fields.** ✅ **Done** (`AppQuotas.MaxConnections` / `VolatileRatePerMinute`, `apps`
   columns `max_connections` / `volatile_rate_per_minute` via migration `AddAppRealtimeQuotas`, Npgsql store,
   admin GUI quota list; `RealtimeQuotaTests`, `NpgsqlAppStoreQuotaTests`; `docs/server-configuration.md`).
@@ -298,7 +300,7 @@ Atrium link at the live portal URL; optional `examples/Shopkeeper` demo of the #
 
 - **Shared version lives in 3 manifests**: `Directory.Build.props` (`VersionPrefix`),
   `clients/vesta-client-ts/package.json`, `clients/vesta-client-py/vesta_client/__init__.py`
-  (`pyproject.toml` reads it dynamically). Current: **0.3.0**.
+  (`pyproject.toml` reads it dynamically). Current: **0.3.1**.
 - Bump all three → `powershell -File .github/scripts/check-version.ps1 -Tag vX.Y.Z` →
   `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` verifies, publishes NuGet
   (`VestaProtocol.Core`, `VestaProtocol.Client`), npm + PyPI (`vesta-client`) via OIDC trusted
