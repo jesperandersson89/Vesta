@@ -358,6 +358,13 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
 - By default the relay does not restrict who may create channels under an app namespace (only the creator becomes
   channel admin); the per-app `owner_only_channel_creation` flag (#26) closes the squatting hole when set.
+- SDK gotcha (2026-10-28 pause test), **still open:** when a relay answers HELLO with an `ERROR` (for example
+  `UNKNOWN_APP` because a channel in the HELLO belongs to an unregistered namespace), the Python SDK's
+  `RelaysExhaustedError.info.attempts[].reason` is only "Expected WELCOME, got ErrorMessage": the code and message
+  are dropped, which made a registration script look like a connectivity failure. Register with `channels=[]` first;
+  the fix is to put the error code/message in the attempt reason (check the TS and C# SDKs for the same loss).
+- A registered app namespace with no quotas still has the relay's default 600 events/min per client, and its
+  publishes are counted toward the monthly message total, so usage can be pre-loaded before Atrium applies a tier.
 - SDK gotcha (found by the 2026-10-28 live smoke test), **fixed:** `REGISTER_APP`, `CREATE_CHANNEL`,
   `GRANT_ACCESS` and `DELETE_CHANNEL` are answered with an ACK whose event id is the nil GUID. C# always raised it
   through `OnAck`, but the TS and Python SDKs swallowed it, so `registerApp` / `createChannel` gave no success
