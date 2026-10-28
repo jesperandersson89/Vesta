@@ -325,8 +325,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 132 Client + 235 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 137; Py 153. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 217 Core + 133 Client + 235 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 139; Py 155. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the
@@ -355,10 +355,13 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
 - By default the relay does not restrict who may create channels under an app namespace (only the creator becomes
   channel admin); the per-app `owner_only_channel_creation` flag (#26) closes the squatting hole when set.
-- SDK gotcha (found by the 2026-10-28 live smoke test): `REGISTER_APP` and `CREATE_CHANNEL` are answered with an
-  ACK whose event id is the nil GUID, and the TS and Python SDKs consume it internally (registration promise /
-  ignore) instead of emitting `ack`, so an app calling `registerApp` / `createChannel` gets no success signal, only
-  an `error` on failure. Confirm by waiting briefly for no error, or fix by surfacing it (open).
+- SDK gotcha (found by the 2026-10-28 live smoke test), **fixed:** `REGISTER_APP`, `CREATE_CHANNEL`,
+  `GRANT_ACCESS` and `DELETE_CHANNEL` are answered with an ACK whose event id is the nil GUID. C# always raised it
+  through `OnAck`, but the TS and Python SDKs swallowed it, so `registerApp` / `createChannel` gave no success
+  signal. They now emit it through `ack` / `on_ack` like C# (the internal register-first handshake still consumes
+  its own); `control-ack.test.mjs`, `test_control_ack.py`, `ControlAckTests`. Decision: surface the existing ACK
+  rather than make `registerApp` / `createChannel` return promises, because a promise a caller ignores turns a
+  relay error into an unhandled rejection. Promise helpers (`createChannelAndWait`) remain a possible follow-up.
 - Pre-existing build warnings, ignore: NU1902 `Microsoft.Build.Tasks.Git` 8.0.0, NU1903 `SSH.NET`
   2025.1.0 (VestaServer.Tests).
 - C# relay picker opens a loopback web page; tests disable it via

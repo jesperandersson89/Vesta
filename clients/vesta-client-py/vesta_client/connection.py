@@ -1261,9 +1261,12 @@ class VestaConnection:
                     self._on_events_batch(m)
             case AckMessage() as m:
                 if m.event_id == NIL_EVENT_ID:
-                    # Registration acknowledgement, not an event.
+                    # Control ACK (REGISTER_APP, CREATE_CHANNEL, GRANT_ACCESS, DELETE_CHANNEL): no event, no
+                    # sequence. The internal register-first handshake consumes its own; the rest is the app's.
                     if self._registration is not None and not self._registration.done():
                         self._registration.set_result(None)
+                    elif self._on_ack:
+                        self._on_ack(m)
                     return
                 self.update_sequence(m.channel_id, m.sequence)
                 if self._local_store is not None:

@@ -49,6 +49,12 @@ internal sealed class ScriptedFetchRelay : IAsyncDisposable
 
             while (socket.State == WebSocketState.Open && await ReceiveAsync(socket) is { } message)
             {
+                if (message is CreateChannelMessage create)
+                {
+                    await SendAsync(socket, new AckMessage(create.ChannelId, Guid.Empty, 0));
+                    continue;
+                }
+
                 if (message is not FetchMessage fetch)
                     continue;
 

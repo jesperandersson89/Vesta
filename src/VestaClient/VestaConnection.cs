@@ -93,7 +93,8 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     public event Action<EventsBatchMessage>? OnEventsBatch;
 
     /// <summary>
-    /// Fired when a publish is acknowledged by the server.
+    /// Fired when the server acknowledges a publish, or (with <see cref="Guid.Empty"/> as the event id and sequence 0)
+    /// a control request: <c>REGISTER_APP</c>, <c>CREATE_CHANNEL</c>, <c>GRANT_ACCESS</c>, <c>DELETE_CHANNEL</c>.
     /// </summary>
     public event Action<AckMessage>? OnAck;
 

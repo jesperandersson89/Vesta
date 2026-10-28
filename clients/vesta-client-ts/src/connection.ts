@@ -214,6 +214,10 @@ export interface VestaConnectionOptions {
 export interface VestaConnectionEvents {
     event: (msg: EventMessage) => void;
     eventsBatch: (msg: EventsBatchMessage) => void;
+    /**
+     * A `PUBLISH` was stored, or (with the nil event id `00000000-0000-0000-0000-000000000000` and sequence 0) a
+     * control request succeeded: `registerApp`, `createChannel`, `grantAccess`, `deleteChannel`.
+     */
     ack: (msg: AckMessage) => void;
     error: (msg: ErrorMessage) => void;
     /** A semantic "your app is being limited" signal — see {@link classifyErrorCode}. */
@@ -1122,8 +1126,10 @@ export class VestaConnection {
 
             case "ACK":
                 if (msg.eventId === NIL_EVENT_ID) {
-                    // Registration acknowledgement, not an event.
-                    this.registration?.resolve();
+                    // Control ACK (REGISTER_APP, CREATE_CHANNEL, GRANT_ACCESS, DELETE_CHANNEL): no event, no sequence.
+                    // The internal register-first handshake consumes its own; everything else is the app's to see.
+                    if (this.registration) this.registration.resolve();
+                    else this.emit("ack", msg);
                     break;
                 }
                 this.updateSequence(msg.channelId, msg.sequence);
