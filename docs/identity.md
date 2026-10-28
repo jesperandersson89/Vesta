@@ -5,16 +5,16 @@ A Vesta identity is an Ed25519 keypair; the `clientId` (`base64url(sha256(public
 | Situation                                                | Use                                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------- |
 | One device might break or be replaced                    | [Pair a second device early](#pair-a-second-device-early)           |
-| Player should be able to save a backup file / password manager entry | [Encrypted export](#encrypted-export)                  |
-| Player should be able to write something down            | [Recovery phrase](#recovery-phrase)                                 |
-| Player lost every device and only remembers a login      | [Relay-stored backup](#relay-stored-backup)                         |
-| Player should log in with a username and password on any device | [Developer-hosted accounts](#developer-hosted-accounts)      |
+| A user should be able to save a backup file / password manager entry | [Encrypted export](#encrypted-export)                  |
+| A user should be able to write something down            | [Recovery phrase](#recovery-phrase)                                 |
+| A user lost every device and only remembers a login      | [Relay-stored backup](#relay-stored-backup)                         |
+| Users should log in with a username and password on any device | [Developer-hosted accounts](#developer-hosted-accounts)       |
 
-None of these is automatic. The SDK gives you the primitives; your game decides what to offer and when to prompt (the best moment is right after first launch, before there is anything to lose).
+None of these is automatic. The SDK gives you the primitives; your app decides what to offer and when to prompt (the best moment is right after first launch, before there is anything to lose). A personal notes app might offer only the recovery phrase; a club app whose members expect "log in anywhere" wants an account server; a tool for one household probably just pairs devices.
 
 ## Pair a second device early
 
-Device groups let several keys vouch for each other ([protocol.md](protocol.md), `CreateDeviceGroupAsync` / `JoinDeviceGroupAsync` / `LinkDeviceAsync`). Private keys never move: each device keeps its own key, and your app treats the *group* as one player. If one device is lost, the others carry on and can unlink it. This only helps if the app keys player data by group membership rather than by a single `clientId`, and if a second device was paired **before** the loss.
+Device groups let several keys vouch for each other ([protocol.md](protocol.md), `CreateDeviceGroupAsync` / `JoinDeviceGroupAsync` / `LinkDeviceAsync`). Private keys never move: each device keeps its own key, and your app treats the *group* as one person. If one device is lost, the others carry on and can unlink it. This only helps if the app keys user data by group membership rather than by a single `clientId`, and if a second device was paired **before** the loss.
 
 ## Encrypted export
 
@@ -46,11 +46,11 @@ A wrong password, a damaged blob or an unsupported version throws `IdentityBacku
 
 `identity.ToRecoveryPhrase()` / `toRecoveryPhrase()` / `to_recovery_phrase()` returns 24 words from the BIP-39 English list; `FromRecoveryPhrase` reverses it (case and extra whitespace ignored, a typo is caught by the checksum). It encodes the seed directly (BIP-39 entropy-to-mnemonic: 256 bits plus an 8-bit SHA-256 checksum) and does **not** use BIP-39's PBKDF2 stretching or passphrase, so it is not interchangeable with a crypto-wallet seed. Vectors: 32 × `0x00` → `abandon` ×23 `art`; 32 × `0xFF` → `zoo` ×23 `vote`.
 
-The phrase is the identity with no password in front of it. Tell players to write it down offline and never type it into anything but your game.
+The phrase is the identity with no password in front of it. Tell users to write it down offline and never type it into anything but your app.
 
 ## Relay-stored backup
 
-For the player who lost every device and remembers only a login. The encrypted identity is parked on the relay and found again from `(app, username, password)` alone, so there is no account to create and no extra server.
+For the user who lost every device and remembers only a login. The encrypted identity is parked on the relay and found again from `(app, username, password)` alone, so there is no account to create and no extra server.
 
 ```
 backup = RelayBackup.Derive(appId, username, password)     // one Argon2id run
@@ -94,7 +94,7 @@ The key never leaves the client in plaintext, so this does not reopen the reject
 
 ## Developer-hosted accounts
 
-If your game wants a conventional login ("username + password, any device") and you are willing to run a small service, keep the encrypted identity there instead of on a relay. The account server holds only an opaque blob and a verifier, so it **cannot read the key and never learns the password**; the identity stays a normal Vesta keypair, so the relay and every other player see nothing different.
+If your app wants a conventional login ("username + password, any device") and you are willing to run a small service, keep the encrypted identity there instead of on a relay. The account server holds only an opaque blob and a verifier, so it **cannot read the key and never learns the password**; the identity stays a normal Vesta keypair, so the relay and every other user see nothing different.
 
 ```
 sign up:  keys = RelayBackup.Derive(appId, username, password)
@@ -112,4 +112,4 @@ log in:   keys = RelayBackup.Derive(appId, username, password)        // same de
 
 ### If you stop running it
 
-The point of building accounts this way is that the game survives its developer. Give players a way to **download their blob** (and show them the [recovery phrase](#recovery-phrase)): with the blob and the password they can restore the identity without your service, point the game at any other relay or account server, and start over there. What is lost is whatever only your service held (balances, purchases, the shopkeeper's ledger, see [patterns.md](patterns.md)); the identity and the freedom to move are not.
+The point of building accounts this way is that the app survives its developer. Give users a way to **download their blob** (and show them the [recovery phrase](#recovery-phrase)): with the blob and the password they can restore the identity without your service, point the app at any other relay or account server, and start over there. What is lost is whatever only your service held (balances, bookings, the trusted writer's ledger, see [patterns.md](patterns.md#if-you-stop-maintaining-the-app)); the identity and the freedom to move are not.

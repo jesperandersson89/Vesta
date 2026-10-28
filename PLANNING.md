@@ -12,6 +12,31 @@ A protocol + runtime for networked apps where **the relay is like a git remote o
 tracker, not the authority**. Clients own their data (local SQLite log, self-sovereign Ed25519
 identity); any relay can be swapped for another and the app runs unchanged.
 
+### Target audience (decided 2026-10-28)
+
+Vesta is for people who want to ship a connected app **without promising to run its backend
+forever**. In order of priority:
+
+1. **DIY / tinkerers** — side projects, tools for friends, clubs and households, IFTTT-style glue
+   between a sensor and a dashboard. They cannot guarantee a server in five years and should not
+   have to.
+2. **Idealists** — the "software should outlive its maker" crowd (the *Stop Killing Games*
+   sentiment, but for general applications): self-verifying logs, interchangeable relays, no
+   dead-server lock-in, built in from the start.
+3. **Companies seeking goodwill** — run a relay while it makes sense, hand users their data when
+   it does not. They may self-host; Atrium is the convenience for those who would rather not.
+
+**Explicitly not a target: fast-tick real-time games.** Without substantial refactoring (UDP /
+binary transport, server-side simulation authority, tick-rate scheduling) a storing JSON-over-
+WebSocket relay is the wrong shape, and we will not bend the core toward it. If it ever happens
+it is a *separate flavour/version*, not a mode of this relay. Consequences: the docs use
+general vocabulary (users, members, a trusted writer / service; not players, shopkeeper,
+`mygame/`), the `README` has a "Who Vesta is for" + "Good fit / not a fit" table that says so,
+and the #25–#32 hardening items below stay because they are general (ACL, limits, identity
+proof) — they were merely *found* through a game evaluation. Turn-based / slow multiplayer is
+fine and stays in the fit table. Atrium's hidden Realtime tier (its D10) remains scaffolded
+and unpriced; its blurb no longer leads with games.
+
 ## Core principles (non-negotiable)
 
 1. **Data belongs to the client.** The server stores and forwards signed, immutable events; it
@@ -144,10 +169,12 @@ independence, federation, relay recovery, SDK publishing, relay container image,
 rate-limited `/admin/auth/*`, self-contained GUI with no CDN dependency).
 
 **Open:** #13 client READMEs (TS/Py getting-started), #14 observability (metrics, structured
-logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store).
+logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store),
+#33 per-channel encryption (below).
 
-**Open — game readiness** (from a multiplayer-game-with-store evaluation; the relay stays pure:
-every item is signature verification, ACL, or operator-configurable limits, never payload logic):
+**Hardening** (originally surfaced by a multiplayer-game-with-store evaluation, kept because every
+item is general: signature verification, ACL, or operator-configurable limits, never payload logic;
+games themselves are not a target, see *Target audience*):
 
 - **#25 Channel write control.** ✅ **Done** (relay + docs + SDK types/docstrings; `ChannelWriteControlTests`,
   `NpgsqlChannelAccessStoreTests` against Postgres):
@@ -184,8 +211,8 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   proven connections.
   Relay-wide defaults for the other quotas (payload size etc.) are unchanged (null = unlimited).
   **Deviations from the original plan:** (1) the per-IP limits ship **off** — enabling them requires
-  `ForwardedHeaders:Enabled` on the relay first, otherwise they cap every player behind the proxy at once
-  (players behind one NAT also share an IP); (2) `MaxConnectionsPerClientId` waited for #32 because
+  `ForwardedHeaders:Enabled` on the relay first, otherwise they cap every user behind the proxy at once
+    (users behind one NAT also share an IP); (2) `MaxConnectionsPerClientId` waited for #32 because
   without a key proof it would let anyone lock out a known client id; (3)
   `MaxChannelsPerClientPerApp` counts distinct channels published to rather than implicitly created
   ones, and `HelloRatePerMinutePerIp` became `ConnectionAttemptsPerMinutePerIp` (enforced at the
@@ -290,11 +317,37 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
+- **#33 Per-channel encryption.** ⏳ **Open** (decided 2026-10-28, not designed in detail). Today every
+  payload is stored in the clear, so the relay operator (and anyone with the database) can read it; the
+  README's fit table says so. The decision is that confidentiality is **configurable per channel**, not
+  per app and not relay-wide: most channels (a noticeboard, presence) gain nothing from it, and encrypted
+  channels cost more to operate (no `ttlSeconds`-style inspection of payload, no export in readable form,
+  key distribution traffic), so an operator must be able to count and price them.
+  Sketch: (1) a channel is flagged `encrypted` at `CREATE_CHANNEL` (never implicitly, like `broadcast`),
+  stored in `channels`, returned by `/admin/*` and `WELCOME`; the relay **never** holds a key — it only
+  knows the flag, so it can count encrypted channels per app and refuse a plaintext-looking publish if it
+  wants to (it cannot verify ciphertext, only the flag). (2) Clients encrypt `payload` with a per-channel
+  symmetric key (AEAD; the outer `VestaEvent` fields, `eventType` and the signature stay in the clear so
+  ordering, `replace` and ACL keep working — decide whether `eventType` may leak and whether to allow an
+  opaque `eventType` convention). (3) Key distribution reuses what exists: members' public keys are known
+  to the channel admin via `channel_access` / device groups, so the admin wraps the channel key to each
+  member's key (X25519 derived from Ed25519) in signed `vesta.channel-key` events on the channel itself;
+  rotation on member removal is a new wrapped key, old history stays readable to old members (accepted;
+  forward secrecy is out of scope). (4) Projections get a decrypt step before the projector; snapshots
+  store plaintext locally (the device already holds the key). (5) Rejected alternatives: relay-held keys
+  (violates "relay is not the authority"), app-wide encryption (makes every presence heartbeat pay), and
+  encrypting the whole event (breaks sequencing, `replace`, idempotency on `id`).
+  **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel** (a `max_encrypted_channels`
+  quota or a per-channel add-on), which needs the count exposed on `GET /admin/apps/{id}` and the quota in
+  `AppQuotas` (replace-all, so Atrium's `RelayAppQuotas` must learn the field in the same release). All
+  three SDKs must ship it together (byte-compatible vectors like #30). Until shipped, docs tell developers
+  not to put secrets in events.
 
 **Deferred:** device-group phases 2–6; relay Layer C (re-seed empty relay from client logs);
 admin scoped keys (read-only vs full), client-side importer for the export format; validate
 `VestaProtocol.Client` (NSec native + SQLite) under Unity IL2CPP/Mono and Godot C#; point the README
-Atrium link at the live portal URL; optional `examples/Shopkeeper` demo of the #26 pattern.
+Atrium link at the live portal URL; optional `examples/TrustedWriter` demo of the #26 pattern (a
+non-game example such as the tool-library "librarian" from `docs/patterns.md`).
 
 ## Releasing
 

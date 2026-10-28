@@ -4,6 +4,35 @@
 
 If the server disappears tomorrow, the application still works locally and can reconnect to any other Vesta-compatible host.
 
+## Who Vesta is for
+
+Vesta is for people who want to ship a connected app **without promising to run its backend forever**:
+
+- **Tinkerers and side projects.** You built a shared shopping list, a club roster, a home-automation
+  dashboard or a tool for your friends, and you can't guarantee a server will be up in five years. With
+  Vesta the data lives on your users' devices, and they can point the app at any other relay if yours
+  goes away.
+- **Apps that should outlive their maker.** If you believe software shouldn't die when its company
+  does, Vesta is a way to build that in from the start: signed, self-verifying event logs, self-sovereign
+  identities, and a relay that is interchangeable by design.
+- **Companies that want to hand users ownership.** Host a relay for as long as it makes sense, let users
+  take their data and keep going when it doesn't. No lock-in to offer, nothing to migrate when you stop.
+
+Your **users never deal with Vesta**: they just use your app. Only you, the developer, pick a relay (run
+one, or use a hosted one) and register an app namespace on it.
+
+### Good fit / not a fit
+
+| Good fit                                                                                      | Not a fit (today)                                                                                              |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Group chat, comments, activity feeds (append-only logs)                                        | **Fast-tick real-time games** (shooters, physics): WebSocket + JSON + a storing relay is the wrong shape; a separate realtime flavour may come later |
+| Shared lists, boards, notes; anything that must work offline and merge later                  | **Confidential data needing end-to-end encryption**: the relay stores payloads in the clear today. Per-channel encryption is planned (see [PLANNING.md](PLANNING.md)); until then, treat payloads as visible to the relay operator |
+| Your own data synced across your devices (phone + laptop) with no account                      | **Files, photos, binary blobs**: payloads are JSON with a size cap; keep large media elsewhere and sync links/metadata |
+| Community tools: club rosters, rotas, noticeboards, event sign-ups, neighbourhood sharing      | **Search, queries, joins**: a channel is an ordered stream, not a database. You derive state client-side with projections |
+| Hobby automation and IFTTT-style glue: a sensor on a Pi publishing, a browser subscribing      | **A plain CRUD/REST backend**: everything is event-sourced; if you want rows and PUT/GET, this isn't it |
+| Turn-based or slow multiplayer (chess, board games, play-by-post), presence and "who's online" | **Server-side business rules**: the relay never validates payloads. Rules live in clients, or in a small service you run that signs the authoritative events ([docs/patterns.md](docs/patterns.md)) |
+| One trusted writer, many readers: announcements, a service publishing confirmations            |                                                                                                                |
+
 ## Core Principles
 
 - **Data belongs to the client** — all state is reconstructable from the client's local log
@@ -59,7 +88,8 @@ examples/
 ├── AccountServer/      # Reference account server: password login on any device, key never exposed
 ├── colorwheel-py/      # Python tkinter color picker (real-time sync)
 ├── collab-edit-py/     # Python collaborative text editor
-└── clipboard-ts/       # TypeScript shared clipboard (Node.js)
+├── clipboard-ts/       # TypeScript shared clipboard (Node.js)
+└── chess-web/          # TypeScript browser chess (turn-based multiplayer)
 
 tests/
 ├── VestaCore.Tests/
@@ -151,8 +181,9 @@ The server assigns a per-channel monotonic **sequence number** and broadcasts to
 
 ## Key Features
 
-- **Replace events** — `replace: true` tells the server to keep only the latest event per (channel, client, type). Ideal for presence, cursors, LWW state.
-- **Volatile events** — `volatile: true` skips DB storage entirely, just relays to current subscribers. Ideal for real-time ephemeral data.
+- **Replace events** — `replace: true` tells the server to keep only the latest event per (channel, client, type). Ideal for presence, "last known value" state, device status.
+- **Volatile events** — `volatile: true` skips DB storage entirely, just relays to current subscribers. Ideal for typing indicators, live cursors and other throwaway signals.
+- **Channel access control** — `private` (members only) and `broadcast` (anyone reads, only listed writers publish) channels, so a small service you run can be the one trusted writer. See [docs/patterns.md](docs/patterns.md).
 - **Offline-first** — clients queue events to a local outbox and sync on reconnect.
 - **Auto-reconnect** — exponential backoff with seamless catch-up via sequence tracking.
 - **Server independence** — clients fail over across an ordered list of relays and follow an owner-signed relay manifest, so an app survives its relay (or developer) going away. Each user can also pin a personal relay override. See [docs/protocol.md](docs/protocol.md#relay-manifests-server-independence).

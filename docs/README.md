@@ -1,15 +1,15 @@
 # Vesta Documentation
 
-Reference docs for the Vesta protocol, SDK, and server. For high-level architecture decisions and rationale, read [PLANNING.md](../PLANNING.md). For quick-start instructions, see the top-level [README.md](../README.md).
+Reference docs for the Vesta protocol, SDK, and server. For high-level architecture decisions and rationale, read [PLANNING.md](../PLANNING.md). For quick-start instructions, and for **who Vesta is for and what it is (not) a good fit for**, see the top-level [README.md](../README.md#who-vesta-is-for).
 
 ## Contents
 
 | Doc                                                | Audience         | What it covers                                                                                |
 | -------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| [patterns.md](patterns.md)                         | App developers   | **Start here.** Which recipe fits which kind of app; one trusted writer (announcements, confirmations); durable state vs live signals; what the relay never validates; what happens if you stop maintaining the app |
 | [events.md](events.md)                             | App developers   | The `VestaEvent` shape, signing, `metadata`, `replace`, `volatile`, TTL/ephemeral events      |
 | [projections.md](projections.md)                   | App developers   | SDK conflict-resolution primitives (`EventReducer`, `AppendOnlyLog`, `LwwRegister`, `LwwMap`) |
-| [patterns.md](patterns.md)                         | App developers   | Recipes for what the relay won't do: one trusted writer (shop, world state), durable state vs presence channels and snapshotting, what is never validated |
-| [identity.md](identity.md)                         | App developers   | Keys, backup and recovery: encrypted export, 24-word recovery phrase, relay-stored backup, pairing a second device |
+| [identity.md](identity.md)                         | App developers   | Keys, backup and recovery: encrypted export, 24-word recovery phrase, relay-stored backup, pairing a second device, username/password accounts |
 | [protocol.md](protocol.md)                         | SDK implementers | Wire-level message types and the connection lifecycle                                         |
 | [relay-recovery.md](relay-recovery.md)             | App devs, SDK implementers | What the user sees when every relay is down: the headless recovery session, peer cache, trust rules |
 | [operating-a-relay.md](operating-a-relay.md)       | Relay operators only | Running the relay image for *other people's* apps. Not needed to build an app                 |
