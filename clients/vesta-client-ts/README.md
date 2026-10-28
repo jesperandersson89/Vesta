@@ -93,7 +93,7 @@ The main class for managing a WebSocket connection to a Vesta server.
 - `linkDevice(groupId, targetPublicKey, reason?)` — Vouch for another device
 - `joinDeviceGroup(groupId, deviceName?)` — Announce this device joining an existing group
 - `unlinkDevice(groupId, targetPublicKey, reason?)` — Remove a device from the group
-- `getDeviceGroupMembers(groupId, timeoutMs?)` — Replay the identity channel and return current membership as `DeviceGroup`
+- `getDeviceGroupMembers(groupId, timeoutMs?)` — Fetch the whole identity channel (all pages) and return current membership as `DeviceGroup`; a snapshot, it does not subscribe
 
 #### Events
 

@@ -200,10 +200,13 @@ every item is signature verification, ACL, or operator-configurable limits, neve
   `SUBSCRIBE` for the same channel (documented, not enforced); the relay now puts the `channelId` on FETCH
   rejections (`ACCESS_DENIED`, `CHANNEL_DELETED`, `INVALID_CHANNEL`, `UNKNOWN_APP`, `APP_NOT_ALLOWED`) so a
   failed page is attributable. Tests: `FetchAllTests` (C#, scripted loopback relay), `fetch-all.test.mjs`,
-  `test_fetch_all.py`. `VestaTestClient` was left alone (test-only client). **Still open:**
-  (b) the one-shot `GetDeviceGroupMembers` helpers resolve on the first batch — fine
-  for tiny identity channels, wrong for a channel larger than `MaxFetchLimit`; (c) docs guidance on
-  partitioning durable state from presence channels, and on snapshotting.
+  `test_fetch_all.py`. `VestaTestClient` was left alone (test-only client). ✅ **(b) fixed:** the one-shot
+  `GetDeviceGroupMembers` helpers resolved on the first batch, wrong for a channel larger than `MaxFetchLimit`; they
+  now `FetchAll` the identity channel and replay it (`DeviceGroupMembersTests`, `device-group-members.test.mjs`,
+  `test_device_group_members.py`). Behaviour change: they no longer subscribe (the result is a snapshot, no live
+  channel is left behind), the timeout is per page (default 10 s, was 5 s overall), and a relay that does not answer
+  now throws instead of silently returning an empty group; an empty channel answers at once. **Still open:**
+  (c) docs guidance on partitioning durable state from presence channels, and on snapshotting.
 - **#29 Realtime quota fields.** ✅ **Done** (`AppQuotas.MaxConnections` / `VolatileRatePerMinute`, `apps`
   columns `max_connections` / `volatile_rate_per_minute` via migration `AddAppRealtimeQuotas`, Npgsql store,
   admin GUI quota list; `RealtimeQuotaTests`, `NpgsqlAppStoreQuotaTests`; `docs/server-configuration.md`).
@@ -325,8 +328,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 133 Client + 235 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 139; Py 155. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 217 Core + 135 Client + 235 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 141; Py 157. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

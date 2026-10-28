@@ -1053,53 +1053,22 @@ class VestaConnection:
     async def get_device_group_members(
         self,
         group_id: str,
-        timeout: float = 5.0,
+        timeout: float = 10.0,
     ):
         """
-        Subscribe to the group's identity channel, replay the full history into a
-        ``DeviceGroupProjection``, and return the current membership as a
-        ``DeviceGroup``.
+        Fetch the full history of the group's identity channel (every page, see :meth:`fetch_all`),
+        replay it into a ``DeviceGroupProjection``, and return the current membership as a
+        ``DeviceGroup``. ``timeout`` is the wait per page; a relay that does not answer raises ``TimeoutError``.
 
-        This is a one-shot convenience method for occasional inspection.
-        For continuous tracking, subscribe to the channel directly and feed
+        This is a one-shot convenience method for occasional inspection and does not subscribe, so the
+        result is a snapshot. For continuous tracking, subscribe to the channel directly and feed
         events into your own ``DeviceGroupProjection``.
         """
         from vesta_client.device_groups import DeviceGroupProjection, device_group_channel
-        channel_id = device_group_channel(group_id)
         projection = DeviceGroupProjection(group_id)
-        batch_event = asyncio.Event()
-
-        orig_batch = self._on_events_batch
-        orig_event = self._on_event
-
-        def _on_batch(msg: EventsBatchMessage) -> None:
-            if msg.channel_id == channel_id:
-                projection.apply_batch(msg.events)
-                batch_event.set()
-            if orig_batch:
-                orig_batch(msg)
-
-        def _on_evt(msg: EventMessage) -> None:
-            if msg.event.channel_id == channel_id:
-                projection.apply(
-                    SequencedEvent(event=msg.event, sequence=msg.sequence, received_at=msg.received_at)
-                )
-            if orig_event:
-                orig_event(msg)
-        self._on_events_batch = _on_batch
-        self._on_event = _on_evt
-        try:
-            await self.subscribe(channel_id, from_sequence=0)
-            try:
-                await asyncio.wait_for(batch_event.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                pass  # Channel may be empty; return whatever we have.
-        finally:
-            self._on_events_batch = orig_batch
-            self._on_event = orig_event
-
+        events = await self.fetch_all(device_group_channel(group_id), page_timeout=timeout)
+        projection.apply_batch(events)
         return projection.state
-
     def _require_identity(self, method_name: str) -> VestaIdentity:
         if self._identity is None:
             raise RuntimeError(

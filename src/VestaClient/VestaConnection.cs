@@ -1273,68 +1273,28 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
-    /// Subscribe to the given group's identity channel, fetch the full history, replay it
-    /// into a <see cref="DeviceGroupProjection"/>, and return the materialized membership.
+    /// Fetch the full history of the given group's identity channel (every page, see <see cref="FetchAllAsync"/>),
+    /// replay it into a <see cref="DeviceGroupProjection"/>, and return the materialized membership.
     /// <para>
     /// This is a one-shot convenience method intended for occasional inspection (e.g. "show
-    /// me my linked devices"). For continuous tracking, subscribe to the channel directly
-    /// and feed events into your own <see cref="DeviceGroupProjection"/>.
+    /// me my linked devices"). It does not subscribe, so the result is a snapshot. For continuous tracking,
+    /// subscribe to the channel directly and feed events into your own <see cref="DeviceGroupProjection"/>.
     /// </para>
     /// </summary>
     /// <param name="groupId">The group ID to query.</param>
-    /// <param name="timeout">How long to wait for the catch-up batch. Defaults to 5 seconds.</param>
+    /// <param name="timeout">How long to wait for each page. Defaults to 10 seconds.</param>
+    /// <exception cref="TimeoutException">The relay did not answer a page within <paramref name="timeout"/>.</exception>
     public async Task<DeviceGroup> GetDeviceGroupMembersAsync(
         string groupId,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
-        string channelId = DeviceGroupChannel.For(groupId);
         DeviceGroupProjection projection = new(groupId);
-
-        TaskCompletionSource<bool> batchReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        void OnBatch(EventsBatchMessage batch)
-        {
-            if (batch.ChannelId != channelId)
-                return;
-            projection.Apply(batch.Events);
-            batchReceived.TrySetResult(true);
-        }
-
-        void OnEvt(EventMessage evt)
-        {
-            if (evt.Event.ChannelId != channelId)
-                return;
-            projection.Apply(new SequencedEvent(evt.Event, evt.Sequence, evt.ReceivedAt));
-        }
-
-        OnEventsBatch += OnBatch;
-        OnEvent += OnEvt;
-        try
-        {
-            await SubscribeAsync(channelId, fromSequence: 0, cancellationToken);
-
-            using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
-            try
-            {
-                await batchReceived.Task.WaitAsync(cts.Token);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // No batch arrived within the timeout — the channel may be empty.
-                // Return whatever the projection has (likely an empty group).
-            }
-        }
-        finally
-        {
-            OnEventsBatch -= OnBatch;
-            OnEvent -= OnEvt;
-        }
-
+        IReadOnlyList<SequencedEvent> events = await FetchAllAsync(
+            DeviceGroupChannel.For(groupId), pageTimeout: timeout, cancellationToken: cancellationToken);
+        projection.Apply(events);
         return projection.State;
     }
-
     private VestaIdentity RequireIdentity(string methodName)
     {
         if (_identity is null)

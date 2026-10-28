@@ -101,7 +101,7 @@ VestaConnection(
 - `await link_device(group_id, target_public_key, reason=None)` — Vouch for another device
 - `await join_device_group(group_id, device_name=None)` — Announce this device joining an existing group
 - `await unlink_device(group_id, target_public_key, reason=None)` — Remove a device from the group
-- `await get_device_group_members(group_id, timeout=5.0)` — Replay the identity channel and return current membership as `DeviceGroup`
+- `await get_device_group_members(group_id, timeout=10.0)` — Fetch the whole identity channel (all pages) and return current membership as `DeviceGroup`; a snapshot, it does not subscribe
 
 #### Event callbacks
 

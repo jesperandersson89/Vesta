@@ -946,58 +946,19 @@ export class VestaConnection {
     }
 
     /**
-     * Subscribe to the group's identity channel, replay the full history into a
-     * `DeviceGroupProjection`, and resolve with the current membership.
+     * Fetch the full history of the group's identity channel (every page, see {@link fetchAll}), replay it into
+     * a `DeviceGroupProjection`, and resolve with the current membership.
      *
-     * This is a one-shot convenience method for occasional inspection.
-     * For continuous tracking, subscribe to the channel directly and feed
-     * events into your own `DeviceGroupProjection`.
+     * This is a one-shot convenience method for occasional inspection and does not subscribe, so the result
+     * is a snapshot. For continuous tracking, subscribe to the channel directly and feed events into your own
+     * `DeviceGroupProjection`. `timeoutMs` is the wait per page; a relay that does not answer rejects.
      */
-    getDeviceGroupMembers(
-        groupId: string,
-        timeoutMs = 5000,
-    ): Promise<DeviceGroup> {
-        const channelId = deviceGroupChannel(groupId);
+    async getDeviceGroupMembers(groupId: string, timeoutMs = 10_000): Promise<DeviceGroup> {
         const projection = new DeviceGroupProjection(groupId);
-
-        return new Promise((resolve) => {
-            let settled = false;
-
-            const onBatch = (msg: EventsBatchMessage) => {
-                if (msg.channelId !== channelId) return;
-                projection.applyBatch(msg.events);
-                if (!settled) {
-                    settled = true;
-                    cleanup();
-                    resolve(projection.state);
-                }
-            };
-
-            const onEvt = (msg: EventMessage) => {
-                if (msg.channelId !== channelId) return;
-                projection.apply({ event: msg.event, sequence: msg.sequence, receivedAt: msg.receivedAt });
-            };
-
-            const timer = setTimeout(() => {
-                if (!settled) {
-                    settled = true;
-                    cleanup();
-                    resolve(projection.state);
-                }
-            }, timeoutMs);
-
-            const cleanup = () => {
-                clearTimeout(timer);
-                this.off("eventsBatch", onBatch);
-                this.off("event", onEvt);
-            };
-
-            this.on("eventsBatch", onBatch);
-            this.on("event", onEvt);
-            this.subscribe(channelId, 0);
-        });
+        const events = await this.fetchAll(deviceGroupChannel(groupId), { pageTimeoutMs: timeoutMs });
+        projection.applyBatch(events);
+        return projection.state;
     }
-
     private requireIdentity(methodName: string): VestaIdentity {
         if (!this.identity) {
             throw new Error(
