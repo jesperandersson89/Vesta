@@ -735,6 +735,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         await SendAsync(hello, cancellationToken);
 
         // Receive WELCOME (and possibly a CHALLENGE or error messages before it)
+        string? handshakeError = null;
         while (true)
         {
             ProtocolMessage? raw = await ReceiveOneAsync(cancellationToken);
@@ -756,11 +757,12 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             }
             else if (response is ErrorMessage error)
             {
+                handshakeError = $"{error.Code}: {error.Message}";
                 HandleErrorMessage(error);
             }
             else if (response is null)
             {
-                throw new InvalidOperationException("Connection closed during handshake");
+                throw new InvalidOperationException(handshakeError ?? "Connection closed during handshake");
             }
         }
 

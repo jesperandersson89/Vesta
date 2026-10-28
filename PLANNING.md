@@ -328,8 +328,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   `powershell -File` for the `.ps1` scripts.
 - Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
   clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 135 Client + 235 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 141; Py 157. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 217 Core + 136 Client + 235 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 142; Py 158. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the
@@ -358,11 +358,13 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
   does not know a newly added quota field resets it — mirror new `AppQuotas` fields in Atrium first.
 - By default the relay does not restrict who may create channels under an app namespace (only the creator becomes
   channel admin); the per-app `owner_only_channel_creation` flag (#26) closes the squatting hole when set.
-- SDK gotcha (2026-10-28 pause test), **still open:** when a relay answers HELLO with an `ERROR` (for example
-  `UNKNOWN_APP` because a channel in the HELLO belongs to an unregistered namespace), the Python SDK's
-  `RelaysExhaustedError.info.attempts[].reason` is only "Expected WELCOME, got ErrorMessage": the code and message
-  are dropped, which made a registration script look like a connectivity failure. Register with `channels=[]` first;
-  the fix is to put the error code/message in the attempt reason (check the TS and C# SDKs for the same loss).
+- SDK gotcha (2026-10-28 pause test), **fixed:** when a relay answers HELLO with an `ERROR` (for example
+  `UNKNOWN_APP` because a channel in the HELLO belongs to an unregistered namespace), the attempt's failure reason
+  in `RelaysExhaustedError` / `RelaysExhaustedException` was only "Expected WELCOME, got ErrorMessage" (Python), the
+  socket close reason (TS) or "Connection closed during handshake" (C#): the code and message were dropped, which
+  made a registration script look like a connectivity failure. All three now report `CODE: message`
+  (`RefusedHelloTests`, `relay-recovery.test.mjs`, `HelloProofHandshakeTests`). Registering still needs
+  `channels=[]` first.
 - A registered app namespace with no quotas still has the relay's default 600 events/min per client, and its
   publishes are counted toward the monthly message total, so usage can be pre-loaded before Atrium applies a tier.
 - SDK gotcha (found by the 2026-10-28 live smoke test), **fixed:** `REGISTER_APP`, `CREATE_CHANNEL`,

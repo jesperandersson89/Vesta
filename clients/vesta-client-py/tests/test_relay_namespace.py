@@ -21,6 +21,7 @@ from vesta_client import (
     RelayAdoptResult,
     RelayDirectory,
     RelayOverride,
+    RelaysExhaustedError,
     VestaAppConfig,
     VestaConnection,
     VestaIdentity,
@@ -352,6 +353,29 @@ class AdoptRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result.failure_reason)
             self.assertIsNone(store.get_override())
             await conn.dispose()
+
+
+class RefusedHelloTests(unittest.IsolatedAsyncioTestCase):
+    async def test_error_answering_hello_becomes_the_attempt_reason(self) -> None:
+        class RefusingSocket(FakeSocket):
+            async def send(self, data: str) -> None:
+                await super().send(data)
+                self.inject({"type": "ERROR", "code": "UNKNOWN_APP", "message": "App 'chess' is not registered"})
+
+        async def fake_connect(_url: str, **_kwargs: Any) -> RefusingSocket:
+            return RefusingSocket()
+
+        conn = VestaConnection(
+            "wss://home.example/ws", "test-client", ["chess/room"], auto_reconnect=False, relay_exhaustion_passes=1
+        )
+        with mock.patch("vesta_client.connection.websockets.connect", side_effect=fake_connect):
+            with self.assertRaises(RelaysExhaustedError) as caught:
+                await conn.connect()
+
+        self.assertEqual(
+            caught.exception.info.attempts[0].reason, "UNKNOWN_APP: App 'chess' is not registered"
+        )
+        await conn.dispose()
 
 
 if __name__ == "__main__":

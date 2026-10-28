@@ -536,6 +536,8 @@ class VestaConnection:
                 await ws.send(json.dumps({"type": "PROVE", "signature": proof}))
                 raw = await ws.recv()
                 msg = parse_server_message(json.loads(raw))
+            if isinstance(msg, ErrorMessage):
+                raise RuntimeError(f"{msg.code}: {msg.message}")
             if not isinstance(msg, WelcomeMessage):
                 raise RuntimeError(f"Expected WELCOME, got {type(msg).__name__}")
         except BaseException:

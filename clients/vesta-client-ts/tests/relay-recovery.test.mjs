@@ -156,6 +156,53 @@ test("VestaConnection with all relays unreachable fires relaysExhausted with per
     assert.equal(info.attempts[0].reason, "connection refused");
 });
 
+test("VestaConnection records a relay ERROR sent before WELCOME as the attempt's failure reason", async () => {
+    class ErrorSocket {
+        constructor() {
+            this.readyState = 0;
+            this._listeners = new Map();
+        }
+        addEventListener(event, listener) {
+            if (!this._listeners.has(event)) this._listeners.set(event, new Set());
+            this._listeners.get(event).add(listener);
+        }
+        removeEventListener() {}
+        send() {
+            setImmediate(() => {
+                const error = { type: "ERROR", code: "UNKNOWN_APP", message: "App 'chess' is not registered" };
+                for (const l of this._listeners.get("message") ?? []) l({ data: JSON.stringify(error) });
+                for (const l of this._listeners.get("close") ?? []) l({ reason: "" });
+            });
+        }
+        close() {}
+    }
+    const relay = "ws://refuses.example/ws";
+    const conn = new VestaConnection({
+        relays: [relay],
+        clientId: "test-client",
+        channels: ["chess/room"],
+        createSocket: () => {
+            const socket = new ErrorSocket();
+            setImmediate(() => {
+                socket.readyState = 1;
+                for (const l of socket._listeners.get("open") ?? []) l({});
+            });
+            return socket;
+        },
+        autoReconnect: true,
+        relayExhaustionPasses: 1,
+        initialReconnectDelay: 1,
+        maxReconnectDelay: 2,
+    });
+    conn.on("error", () => {});
+    const info = await new Promise((resolve) => {
+        conn.on("relaysExhausted", resolve);
+        conn.connect();
+    });
+    conn.dispose();
+    assert.equal(info.attempts[0].reason, "UNKNOWN_APP: App 'chess' is not registered");
+});
+
 test("RelayRecoverySession: exhaustion signal moves to exhausted with attempts", () => {
     const { host, session } = setup();
 

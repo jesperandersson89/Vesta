@@ -47,6 +47,22 @@ public class HelloProofHandshakeTests
         Assert.Equal("scripted-relay", connection.ServerId);
     }
 
+    [Fact]
+    public async Task Connect_ToARelayThatAnswersHelloWithAnError_ReportsTheErrorAsTheFailureReason()
+    {
+        using VestaIdentity identity = VestaIdentity.Generate();
+        await using ScriptedRelay relay = await ScriptedRelay.StartAsync(
+            challenge: null,
+            refusal: new ErrorMessage("UNKNOWN_APP", "App 'game' is not registered"));
+        await using VestaConnection connection = CreateConnection(identity, relay.Url);
+
+        RelaysExhaustedException exception = await Assert.ThrowsAsync<RelaysExhaustedException>(
+            () => connection.ConnectAsync(relay.Url, ["game/farm"]));
+
+        RelayAttempt attempt = Assert.Single(exception.Info.Attempts);
+        Assert.Equal("UNKNOWN_APP: App 'game' is not registered", attempt.Reason);
+    }
+
     private static VestaConnection CreateConnection(VestaIdentity identity, Uri relay)
     {
         VestaAppConfig config = new("game", identity.PublicKey, [relay]);
@@ -68,7 +84,7 @@ public class HelloProofHandshakeTests
             Url = url;
         }
 
-        public static async Task<ScriptedRelay> StartAsync(string? challenge)
+        public static async Task<ScriptedRelay> StartAsync(string? challenge, ErrorMessage? refusal = null)
         {
             WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -80,6 +96,13 @@ public class HelloProofHandshakeTests
             {
                 using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
                 await ReceiveAsync(socket, messages);
+                if (refusal is not null)
+                {
+                    await SendAsync(socket, refusal);
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+                    return;
+                }
+
                 if (challenge is not null)
                 {
                     await SendAsync(socket, new ChallengeMessage(challenge));

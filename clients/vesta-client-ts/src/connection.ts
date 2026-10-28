@@ -257,6 +257,8 @@ export class VestaConnection {
     private activeRelayIndex = 0;
     private notifiedRelayIndex = -1;
     private attemptReachedWelcome = false;
+    /** The relay's ERROR (code: message) received before WELCOME on the current attempt, kept as its failure reason. */
+    private attemptHandshakeError: string | null = null;
     private consecutiveFailures = 0;
     private exhaustionRaised = false;
     private readonly lastAttempts = new Map<string, string>();
@@ -404,6 +406,7 @@ export class VestaConnection {
         if (this.socket) return;
 
         this.attemptReachedWelcome = false;
+        this.attemptHandshakeError = null;
         const attemptedRelay: string = this.activeRelay;
         this.resolveActiveNamespace(attemptedRelay);
         const socket: VestaSocket = this.createSocket(attemptedRelay);
@@ -450,7 +453,7 @@ export class VestaConnection {
             if (!reached && !this.disposed) {
                 this.recordAttemptFailure(
                     attemptedRelay,
-                    attemptError ?? (ev.reason || "Connection closed before the relay accepted it"),
+                    attemptError ?? this.attemptHandshakeError ?? (ev.reason || "Connection closed before the relay accepted it"),
                 );
             }
 
@@ -1101,6 +1104,7 @@ export class VestaConnection {
                 break;
 
             case "ERROR":
+                if (!this.attemptReachedWelcome) this.attemptHandshakeError = `${msg.code}: ${msg.message}`;
                 if (this.registration) {
                     if (msg.code === "DUPLICATE_APP") this.registration.resolve();
                     else this.registration.reject(new Error(`${msg.code}: ${msg.message}`));
