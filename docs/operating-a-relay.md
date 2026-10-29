@@ -67,6 +67,13 @@ The admin GUI is served at `/admin/` and the admin API under `/admin/*`; both ca
 
 Bring your own platform. The requirements are: run the container, provide PostgreSQL 16+, terminate TLS in front of it, and **forward WebSocket upgrades** on `/ws`. Do not scale beyond one instance yet — rate-limit buckets and admin tokens are in-process (PLANNING.md TODO #15).
 
+### TLS
+
+The relay speaks plain HTTP/WebSocket on 8080 and never holds a certificate. Put it behind something that does — Caddy or nginx with Let's Encrypt, a cloud platform's ingress (App Service, Fly, Cloud Run), or a CDN — and hand app developers the resulting **`wss://`** URL. This is not optional for real users:
+
+- **Mobile apps require it.** iOS (App Transport Security) and Android (cleartext traffic blocked since API 28) refuse plain `ws://` to public hosts. A relay that only offers `ws://` cannot be used from a phone.
+- TLS protects the connection, **not the stored data**. Payloads are stored as sent and are readable by you, the operator; per-channel encryption so that even the relay cannot read them is planned ([PLANNING.md](../PLANNING.md) #33). Tell developers not to put secrets in events until then.
+
 Health endpoints for orchestrators:
 
 - `GET /health` — liveness (process is up).

@@ -317,35 +317,101 @@ games themselves are not a target, see *Target audience*):
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
-- **#33 Per-channel encryption.** ⏳ **Open** (decided 2026-10-28, not designed in detail). Today every
-  payload is stored in the clear, so the relay operator (and anyone with the database) can read it; the
-  README's fit table says so. The decision is that confidentiality is **configurable per channel**, not
-  per app and not relay-wide: most channels (a noticeboard, presence) gain nothing from it, and encrypted
-  channels cost more to operate (no `ttlSeconds`-style inspection of payload, no export in readable form,
-  key distribution traffic), so an operator must be able to count and price them.
-  Sketch: (1) a channel is flagged `encrypted` at `CREATE_CHANNEL` (never implicitly, like `broadcast`),
-  stored in `channels`, returned by `/admin/*` and `WELCOME`; the relay **never** holds a key — it only
-  knows the flag, so it can count encrypted channels per app and refuse a plaintext-looking publish if it
-  wants to (it cannot verify ciphertext, only the flag). (2) Clients encrypt `payload` with a per-channel
-  symmetric key (AEAD; the outer `VestaEvent` fields, `eventType` and the signature stay in the clear so
-  ordering, `replace` and ACL keep working — decide whether `eventType` may leak and whether to allow an
-  opaque `eventType` convention). (3) Key distribution reuses what exists: members' public keys are known
-  to the channel admin via `channel_access` / device groups, so the admin wraps the channel key to each
-  member's key (X25519 derived from Ed25519) in signed `vesta.channel-key` events on the channel itself;
-  rotation on member removal is a new wrapped key, old history stays readable to old members (accepted;
-  forward secrecy is out of scope). (4) Projections get a decrypt step before the projector; snapshots
-  store plaintext locally (the device already holds the key). (5) Rejected alternatives: relay-held keys
-  (violates "relay is not the authority"), app-wide encryption (makes every presence heartbeat pay), and
-  encrypting the whole event (breaks sequencing, `replace`, idempotency on `id`).
-  **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel** (a `max_encrypted_channels`
-  quota or a per-channel add-on), which needs the count exposed on `GET /admin/apps/{id}` and the quota in
-  `AppQuotas` (replace-all, so Atrium's `RelayAppQuotas` must learn the field in the same release). All
-  three SDKs must ship it together (byte-compatible vectors like #30). Until shipped, docs tell developers
-  not to put secrets in events.
+- **#33 Per-channel encryption.** ⏳ **Open — design below, no code yet** (audience decision 2026-10-28,
+  design 2026-10-29). Today every payload is stored in the clear, so the relay operator (and anyone with
+  the database, and any *stranger's relay a user fails over to*) can read it; the README's fit table says
+  so. The decision is that confidentiality is **configurable per channel**, not per app and not
+  relay-wide: most channels (a noticeboard, presence) gain nothing from it, and encrypted channels cost
+  more to operate (no readable export, key-distribution traffic, no payload-shape debugging), so an
+  operator must be able to count and price them. **TLS is not this**: `wss://` protects the pipe and is
+  already required (see *Mobile & TLS* below); #33 is about the relay never seeing plaintext, which is
+  what makes relay fungibility safe for private data.
+
+  **Design (reviewable, each bullet is a decision):**
+  1. **Flag, not mode.** `CreateChannelMessage` gains `bool? Encrypted = null` (additive). `encrypted`
+     **implies `private`** (keys are distributed by membership, so `public`/`broadcast` + encrypted is
+     meaningless; relay rejects the combination with `INVALID_CHANNEL`). Never implicit, like `broadcast`.
+     Stored as `channels.encrypted` (generated migration), returned on `GET /admin/channels*` and
+     `GET /admin/apps/{id}` as `encryptedChannels` (count). `WELCOME` gains `features: ["encrypted-channels"]`
+     (additive) so an SDK **refuses** to create an encrypted channel against a relay that does not advertise
+     it — an old relay would silently ignore the unknown field and store plaintext.
+  2. **Relay enforces shape, never content.** A `PUBLISH` to an encrypted channel must have a payload of
+     exactly `{ "enc": 1, "kid": <int>, "n": "<b64url 12 B>", "ct": "<b64url>" }` or be a `vesta.*` control
+     event; anything else → `ERROR { code: "ENCRYPTION_REQUIRED" }`. This is a cheap guard against a
+     misconfigured client leaking plaintext, not a security boundary. Everything else on the relay is
+     unchanged: `sequence`, `replace`, `volatile`, `ttlSeconds`, idempotency on `id`, ACL and signature
+     verification all operate on cleartext fields. **`eventType` stays in the clear** (it drives `replace`
+     and projections). Apps that must hide it publish one opaque type and carry the real type inside the
+     plaintext, accepting coarser `replace`; documented, not special-cased.
+  3. **Payload crypto.** AES-256-GCM (already in all three SDKs from #30 — deliberately not XChaCha, which
+     Python `cryptography` lacks), 96-bit random nonce, AAD = `"vesta-enc-v1\n{channelId}\n{eventId}\n{eventType}"`
+     so a ciphertext cannot be re-homed under another event. Plaintext is the canonical-JSON app payload.
+     Signing is unchanged: the Ed25519 signature covers the ciphertext object, so authorship is still
+     verifiable by the relay and by non-members. Random-nonce budget (2^32 per key) is enforced by
+     rotation, not counting.
+  4. **Keys.** A channel key is 32 random bytes with an integer `epoch` (= `kid`), starting at 1. Each
+     identity gets an X25519 keypair **derived from its Ed25519 seed**, `HKDF-SHA256(ikm = seed, salt = "",
+     info = "vesta-x25519-v1")` — derived, not converted, because Ed25519→X25519 conversion is not available
+     in NSec / `cryptography` without extra libraries, and the derived public key is what gets announced
+     anyway. Private keys never move, consistent with device groups.
+  5. **Distribution — the relay stores no public keys** (`GRANT_ACCESS` is by `clientId`, a hash), so the
+     sketch's "admin reads members' keys from `channel_access`" does not work. Instead, on the channel
+     itself: a member publishes a signed `vesta.channel-key-request { x25519PublicKey }` (its `clientId`
+     is derivable from the Ed25519 key in the signature check, so the request is self-authenticating); an
+     **admin** answers with `vesta.channel-key { recipient, keys: [{ epoch, epk, n, ct }] }` where each key
+     is sealed ECIES-style (ephemeral X25519 `epk` × recipient key → HKDF → AES-256-GCM). A new member
+     receives *every* epoch so it can read history; after rotation existing members receive only the new
+     one. Ordinary (non-`replace`) events; they ride the normal catch-up. **Admin must be online** to onboard
+     a member; an admin may pre-seal for `initialMembers` when it already knows their X25519 keys (invite
+     flow below). Recipients accept `vesta.channel-key` only from admins they trust: the **app passes the
+     admin public key(s)** when opening the channel (exactly the trusted-writer pattern), or an invite
+     (`ChannelInvite`, a `PairingPayload`-style b64url of `channelId + adminPublicKey + inviteeHint`) carries
+     it. No trust-on-first-use.
+  6. **Rotation & revocation.** Rotation = new epoch sealed to the remaining members. It is only
+     meaningful with a `REVOKE_ACCESS` message, **which does not exist yet** — add it in the same release
+     (admin-only, mirror of `GRANT_ACCESS`, audited). Revoked members keep what they could already read
+     (no forward secrecy; accepted — they had it on disk anyway). Device groups: a member's other devices
+     are separate `clientId`s and request keys themselves; the app treats the group as one person.
+  7. **SDK surface (names tentative, identical in all three).** `connection.OpenEncryptedChannelAsync(
+     channelId, adminPublicKeys, keyStore)` subscribes, sends the key request, decrypts incoming events
+     (`EVENT`/`EVENTS_BATCH`) and encrypts on `PublishAsync`; `IChannelKeyStore` is **pluggable** like
+     `IProjectionStore` (SQLite default on .NET, file / `localStorage`-`IndexedDB` in TS, file in Python)
+     so mobile SDKs can back it with Keychain / Android Keystore. Projections get a decrypt step before the
+     projector (`EncryptedReducer<T>` wrapper or a hook on `EventReducer`); local snapshots store plaintext
+     (the device holds the key). Events that fail to decrypt (unknown epoch yet) are **buffered** until the
+     key arrives, then applied in sequence order. Shared byte-exact vectors as in #30: X25519 derivation,
+     sealing, payload encryption.
+  8. **Rejected alternatives.** Relay-held or relay-escrowed keys (relay becomes the authority); app-wide
+     encryption (every presence heartbeat pays); encrypting the whole event (breaks sequencing, `replace`,
+     idempotency); Ed25519→X25519 conversion (library gaps); per-message ratchets / MLS (forward secrecy is
+     out of scope for v1 and the operational cost is disproportionate for the audience); public/broadcast
+     + encrypted (no membership → no key distribution).
+  9. **Phasing.** (A) relay: flag, `REVOKE_ACCESS`, shape check, `features`, admin exposure,
+     `max_encrypted_channels` quota → `server-v0.4`; (B) SDK primitives + vectors in all three; (C) key
+     distribution events + `OpenEncryptedChannel` + an example (`examples/PrivateNotes` or an encrypted
+     mode for `ChatRoom.CLI`) + `docs/encryption.md` (new file, indexed) → SDK `0.4.0`; (D) Atrium quota
+     / add-on. A and B are independent; C needs both.
+
+  **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel**: `AppQuotas.MaxEncryptedChannels`
+  (`max_encrypted_channels`, enforced at `CREATE_CHANNEL`, `QUOTA_EXCEEDED`) and the `encryptedChannels`
+  count on `GET /admin/apps/{id}`; the quota PATCH is replace-all, so Atrium's `RelayAppQuotas` must learn
+  the field in the same release. Until shipped, docs tell developers not to put secrets in events.
+
+- **Mobile & TLS (clarified 2026-10-29).** iOS (App Transport Security) and Android (cleartext traffic
+  blocked since API 28) refuse plain `ws://` to public hosts, so a mobile app needs a **`wss://`** relay —
+  which every real relay already is: the relay image does not terminate TLS by design, the operator's
+  proxy/platform holds the certificate (Atrium's App Service URL is `wss://` with a platform cert; a
+  self-hoster uses Caddy / nginx + Let's Encrypt / a CDN). Nothing in the protocol or relay changes for
+  mobile; `docker-compose.yml`'s `ws://localhost` is dev-only. The **actual mobile gap is SDK platform
+  coverage**: C# under .NET MAUI (NSec native + SQLite, unvalidated — same bucket as the deferred Unity/
+  Godot item), TS under React Native / Capacitor (the browser code path; needs a non-`localStorage` store
+  and a secure key store for #33), and no Swift/Kotlin SDK. Tracked under *Deferred*.
 
 **Deferred:** device-group phases 2–6; relay Layer C (re-seed empty relay from client logs);
-admin scoped keys (read-only vs full), client-side importer for the export format; validate
-`VestaProtocol.Client` (NSec native + SQLite) under Unity IL2CPP/Mono and Godot C#; point the README
+admin scoped keys (read-only vs full), client-side importer for the export format; **mobile SDK
+coverage** — validate `VestaProtocol.Client` (NSec native + SQLite) under .NET MAUI, Unity IL2CPP/Mono
+and Godot C#, validate the TS SDK under React Native / Capacitor (needs a non-`localStorage` store),
+and decide whether a Swift/Kotlin SDK is ever in scope; point the README
 Atrium link at the live portal URL; optional `examples/TrustedWriter` demo of the #26 pattern (a
 non-game example such as the tool-library "librarian" from `docs/patterns.md`).
 
