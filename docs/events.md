@@ -128,7 +128,9 @@ Payloads are stored **as sent**: on an ordinary channel the relay operator (and 
 { "enc": 1, "kid": 3, "n": "<base64url 12-byte nonce>", "ct": "<base64url ciphertext+tag>" }
 ```
 
-The envelope is the signed `payload`, so everything on this page still applies: the signature covers the ciphertext, `replace` and `ttlSeconds` work unchanged, and `eventType` stays in the clear (it drives `replace` and projections; an app that must hide it uses one opaque type and carries the real type inside the plaintext). The SDK-side encryption, key distribution and decrypting projections are the next phases of `PLANNING.md` #33; until they ship, treat encrypted channels as a relay capability without an SDK yet.
+The envelope is the signed `payload`, so everything on this page still applies: the signature covers the ciphertext, `replace` and `ttlSeconds` work unchanged, and `eventType` stays in the clear (it drives `replace` and projections; an app that must hide it uses one opaque type and carries the real type inside the plaintext).
+
+The primitives that produce and open envelopes ship in all three SDKs (`ChannelCrypto` in C#, `channel-crypto.ts`, `channel_crypto.py`): AES-256-GCM over the canonical JSON of the payload with the channel id, event id and event type as associated data, plus X25519-based sealing of a channel key to a member's key pair (derived from their Ed25519 seed). They are byte-compatible across languages (shared vectors in each test suite). What is **not** built yet is the glue — key requests and key distribution on the channel, a key store, and decrypting projections — so for now an app that wants an encrypted channel calls the primitives itself. See `PLANNING.md` #33 for the exact byte formats and the remaining phases.
 
 ## Client identity
 

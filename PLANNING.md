@@ -319,7 +319,7 @@ games themselves are not a target, see *Target audience*):
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
-- **#33 Per-channel encryption.** ⏳ **Phase A done (relay + wire types, 2026-10-29); phases B–D open.**
+- **#33 Per-channel encryption.** ⏳ **Phases A (relay + wire types) and B (SDK crypto primitives) done, 2026-10-29; C–D open.**
   (Audience decision 2026-10-28, design 2026-10-29.) Today every payload is stored in the clear, so the
   relay operator (and anyone with
   the database, and any *stranger's relay a user fails over to*) can read it; the README's fit table says
@@ -415,8 +415,35 @@ games themselves are not a target, see *Target audience*):
   channel for unknown ids (pre-existing behaviour, left alone); (5) `CreateChannelAsync`'s store signature
   gained `encrypted` *before* the cancellation token — all callers are in the relay and tests. **Cross-repo:**
   Atrium's `RelayAppQuotas` must add `MaxEncryptedChannels` before its next deploy against a `0.4` relay, or
-  every quota PATCH resets the column to null (replace-all). **Still open:** phases B–D; the admin GUI does
+  every quota PATCH resets the column to null (replace-all). **Still open:** phases C–D; the admin GUI does
   not show the flag yet; `VestaTestClient` unchanged.
+
+  ✅ **Phase B shipped (2026-10-29, unreleased).** The crypto primitives, byte-compatible across the three SDKs:
+  C# `ChannelKeyPair` / `ChannelKey` / `SealedChannelKey` / `ChannelCrypto` (`VestaCore/Identity/ChannelCrypto.cs`),
+  TS `channel-crypto.ts` (`ChannelKeyPair`, `encryptPayload`, `decryptPayload`, `sealKey`, `openKey`,
+  `isEnvelope`, `readEpoch`, `generateChannelKey`), Python `channel_crypto.py` (same names, snake_case). Exact
+  spec, now pinned by vectors: (1) X25519 scalar = `HKDF-SHA256(ikm = Ed25519 seed, salt = "", info =
+  "vesta-x25519-v1", 32)`; (2) payload: plaintext = RFC 8785 canonical JSON of the app payload, AES-256-GCM,
+  12-byte nonce, AAD = `"vesta-enc-v1\n{channelId}\n{eventId lower-case}\n{eventType}"`, ciphertext‖tag →
+  `{enc:1,kid,n,ct}`; (3) sealing: ephemeral X25519 × recipient → raw shared secret → `HKDF-SHA256(salt = epk ‖
+  recipientPub, info = "vesta-channel-key-seal-v1", 32)` → AES-256-GCM over the 32-byte key with AAD =
+  `"vesta-channel-key-v1\n{channelId}\n{epoch}\n{recipientClientId}"` → `{epoch, epk, n, ct}` (48-byte ct).
+  **Vectors** (seeds `0x00..0x1f` / `0x20..0x3f`, key `0x42×32`, fixed nonces and ephemeral `0x07×32`) were
+  generated with Python `cryptography` and are pinned in `ChannelCryptoTests.cs`, `channel-crypto.test.mjs`,
+  `test_channel_crypto.py`; the generator is not in the repo (one-off). **Decisions / gotchas:** (a) NSec's
+  `SharedSecret` needs `SharedSecretCreationParameters { ExportPolicy = AllowPlaintextExport }` to hand out the raw
+  X25519 bytes; with that, HKDF and AES-GCM use the .NET built-ins (`System.Security.Cryptography.HKDF`,
+  `AesGcm`) and NSec is only the X25519 engine; (b) **TS gained a dependency**, `@noble/curves` (^1.9.7, same
+  author as the existing `@noble/*`), because `@noble/ed25519` has no X25519 and WebCrypto X25519 is still
+  uneven across browsers — HKDF is `@noble/hashes/hkdf`, AES-GCM stays WebCrypto, so encrypt/decrypt/seal/open
+  are async in TS and sync elsewhere; (c) `JsonCanonicalizer` (C#) rejects a top-level scalar, so a scalar/array
+  payload falls back to its raw JSON text (already canonical) — covered by a round-trip test in all three;
+  (d) the event id is lower-cased in the AAD so C# `Guid` formatting and a TS/Py string agree; (e) AES-GCM
+  failures surface as `AuthenticationTagMismatchException` (a `CryptographicException` subclass) in .NET —
+  tests use `ThrowsAny`; (f) `is_envelope` in Python must exclude `bool` (a subclass of `int`). Tests: 10 / 11 / 11.
+  Test totals now Core 243, TS 159, Py 176. **Still open:** phase C wires these into `VestaConnection`
+  (`vesta.channel-key-request` / `vesta.channel-key` events, `OpenEncryptedChannel`, `IChannelKeyStore`,
+  decrypting projections, buffering of events whose epoch key has not arrived) and phase D (Atrium).
 
   **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel**: `AppQuotas.MaxEncryptedChannels`
   (`max_encrypted_channels`, enforced at `CREATE_CHANNEL`, `QUOTA_EXCEEDED`) and the `encryptedChannels`
@@ -476,8 +503,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
 - Python dev interpreter: `.venv` at the repo root (`.venv\Scripts\python.exe`; the Store `python` on PATH
   lacks `cryptography`). Run `python -m unittest discover -s tests` **from `clients/vesta-client-py`**
   (from the repo root the package is not importable). TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 233 Core + 142 Client + 245 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 148; Py 165. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 243 Core + 142 Client + 245 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 159; Py 176. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

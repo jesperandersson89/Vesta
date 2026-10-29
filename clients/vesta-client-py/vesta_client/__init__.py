@@ -8,6 +8,18 @@ from vesta_client.connection import (
     set_relay_picker_enabled,
     set_relay_picker_factory,
 )
+from vesta_client.channel_crypto import (
+    ChannelCryptoError,
+    ChannelKey,
+    ChannelKeyPair,
+    SealedChannelKey,
+    decrypt_payload,
+    encrypt_payload,
+    is_envelope,
+    open_key,
+    read_epoch,
+    seal_key,
+)
 from vesta_client.events import create_event
 from vesta_client.federation import (
     DiscoverableApp,
@@ -139,6 +151,16 @@ from vesta_client.types import (
 __all__ = [
     "__version__",
     "AckMessage",
+    "ChannelCryptoError",
+    "ChannelKey",
+    "ChannelKeyPair",
+    "SealedChannelKey",
+    "decrypt_payload",
+    "encrypt_payload",
+    "is_envelope",
+    "open_key",
+    "read_epoch",
+    "seal_key",
     "IdentityBackupError",
     "IdentityBackupOptions",
     "RecoveryPhraseError",

@@ -19,6 +19,21 @@ export {
 } from "./backup.js";
 export type { IdentityBackupOptions } from "./backup.js";
 export {
+    ChannelCryptoError,
+    ChannelKeyPair,
+    decryptPayload,
+    encryptPayload,
+    ENVELOPE_VERSION,
+    generateChannelKey,
+    isEnvelope,
+    KEY_BYTES,
+    NONCE_BYTES,
+    openKey,
+    readEpoch,
+    sealKey,
+} from "./channel-crypto.js";
+export type { ChannelKey, EncryptedEnvelope, SealedChannelKey } from "./channel-crypto.js";
+export {
     ANNOUNCE_EVENT_TYPE,
     buildAnnounce,
     buildLink,
