@@ -173,7 +173,7 @@ rate-limited `/admin/auth/*`, self-contained GUI with no CDN dependency).
 
 **Open:** #13 client READMEs (TS/Py getting-started), #14 observability (metrics, structured
 logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store),
-#33 per-channel encryption (below).
+**the 0.4.0 release** (relay image + SDKs; #33 is built but unreleased, see its entry below for the order).
 
 **Hardening** (originally surfaced by a multiplayer-game-with-store evaluation, kept because every
 item is general: signature verification, ACL, or operator-configurable limits, never payload logic;
@@ -320,7 +320,7 @@ games themselves are not a target, see *Target audience*):
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
-- **#33 Per-channel encryption.** ✅ **Phases A (relay), B (primitives) and C (SDK glue) done, 2026-10-29; D (Atrium) open; unreleased.**
+- **#33 Per-channel encryption.** ✅ **Done end to end, 2026-10-29: A (relay), B (primitives), C (SDK glue), D (Atrium: per-tier caps, meter, pricing); unreleased.**
   (Audience decision 2026-10-28, design 2026-10-29.) Today every payload is stored in the clear, so the
   relay operator (and anyone with
   the database, and any *stranger's relay a user fails over to*) can read it; the README's fit table says
@@ -478,7 +478,15 @@ games themselves are not a target, see *Target audience*):
   `test_encrypted_channel.py`). Totals: Core 247, Client 149, Server 245, TS 163, Py 180. **Still open:** an example
   app (deferred until SDK `0.4.0` is published, because examples pin the published packages); a `DecryptingReducer`
   convenience wrapper (apps currently wire `OnEvent` to `reducer.Apply` themselves); multi-admin key handoff; the
-  admin GUI badge; phase D (Atrium tier values / add-on).
+  admin GUI badge.
+
+  ✅ **Phase D shipped in Atrium (2026-10-29, its D11).** Encrypted channels are capped per tier — Free 1, Pro 50,
+  Realtime 100 — via `RelayAppQuotas.MaxEncryptedChannels`, with an "Encrypted channels n / N" meter on the app
+  page and a Pricing line; a per-channel paid add-on is deferred with Atrium's other price decisions. **Release
+  order:** `server-v0.4.0` (this relay) → Atrium bumps `relayImageTag` → Atrium portal deploy, in that order, because
+  the portal now promises a cap the `0.3.1` relay does not enforce. **Release checklist for 0.4.0 (not done):** bump
+  the three SDK manifests + `Directory.Build.props`, `check-version.ps1`, tag `v0.4.0` and `server-v0.4.0`, then
+  Dependabot bumps the examples; after that, add the encrypted example app and the TS/Py README sections (#13).
 
   **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel**: `AppQuotas.MaxEncryptedChannels`
   (`max_encrypted_channels`, enforced at `CREATE_CHANNEL`, `QUOTA_EXCEEDED`) and the `encryptedChannels`
