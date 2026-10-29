@@ -23,17 +23,21 @@ internal sealed class ScriptedFetchRelay : IAsyncDisposable
     public Uri Url { get; }
     public ConcurrentQueue<FetchMessage> Fetches { get; }
 
-    private ScriptedFetchRelay(WebApplication app, ConcurrentQueue<FetchMessage> fetches, Uri url)
+    /// <summary>Control messages the relay saw (CREATE_CHANNEL, REVOKE_ACCESS), in order.</summary>
+    public ConcurrentQueue<ProtocolMessage> Controls { get; }
+
+    private ScriptedFetchRelay(WebApplication app, ConcurrentQueue<FetchMessage> fetches, ConcurrentQueue<ProtocolMessage> controls, Uri url)
     {
         _app = app;
         Fetches = fetches;
+        Controls = controls;
         Url = url;
     }
 
-    public static Task<ScriptedFetchRelay> StartAsync(int eventCount, int maxPage, bool refuse = false, bool silent = false) =>
-        StartAsync(Enumerable.Range(1, eventCount).Select(i => Stored(Channel, i)).ToList(), maxPage, refuse, silent);
+    public static Task<ScriptedFetchRelay> StartAsync(int eventCount, int maxPage, bool refuse = false, bool silent = false, IReadOnlyList<string>? features = null) =>
+        StartAsync(Enumerable.Range(1, eventCount).Select(i => Stored(Channel, i)).ToList(), maxPage, refuse, silent, features);
 
-    public static async Task<ScriptedFetchRelay> StartAsync(IReadOnlyList<SequencedEvent> stored, int maxPage, bool refuse = false, bool silent = false)
+    public static async Task<ScriptedFetchRelay> StartAsync(IReadOnlyList<SequencedEvent> stored, int maxPage, bool refuse = false, bool silent = false, IReadOnlyList<string>? features = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -41,17 +45,26 @@ internal sealed class ScriptedFetchRelay : IAsyncDisposable
         app.UseWebSockets();
 
         ConcurrentQueue<FetchMessage> fetches = new();
+        ConcurrentQueue<ProtocolMessage> controls = new();
         app.Map("/ws", async (HttpContext context) =>
         {
             using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
             await ReceiveAsync(socket); // HELLO
-            await SendAsync(socket, new WelcomeMessage("scripted-relay", []));
+            await SendAsync(socket, new WelcomeMessage("scripted-relay", [], features));
 
             while (socket.State == WebSocketState.Open && await ReceiveAsync(socket) is { } message)
             {
                 if (message is CreateChannelMessage create)
                 {
+                    controls.Enqueue(create);
                     await SendAsync(socket, new AckMessage(create.ChannelId, Guid.Empty, 0));
+                    continue;
+                }
+
+                if (message is RevokeAccessMessage revoke)
+                {
+                    controls.Enqueue(revoke);
+                    await SendAsync(socket, new AckMessage(revoke.ChannelId, Guid.Empty, 0));
                     continue;
                 }
 
@@ -80,7 +93,7 @@ internal sealed class ScriptedFetchRelay : IAsyncDisposable
 
         await app.StartAsync();
         Uri http = new(app.Urls.First());
-        return new ScriptedFetchRelay(app, fetches, new Uri($"ws://{http.Host}:{http.Port}/ws"));
+        return new ScriptedFetchRelay(app, fetches, controls, new Uri($"ws://{http.Host}:{http.Port}/ws"));
     }
 
     public static SequencedEvent Stored(string channel, long sequence) => new(

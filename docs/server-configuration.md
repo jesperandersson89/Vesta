@@ -122,13 +122,14 @@ With a non-empty `AllowedApps`, only the listed app namespaces may be used or re
 
 ### App quotas & rate limits
 
-All nine per-app limits are enforced today (set via `IAppStore.SetQuotasAsync`, `PATCH /admin/apps/{id}/quotas`, or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
+All ten per-app limits are enforced today (set via `IAppStore.SetQuotasAsync`, `PATCH /admin/apps/{id}/quotas`, or a direct `UPDATE apps SET ... WHERE id = '<app>'`). Synchronous limits run on the request hot path; quota-driven pruning runs in a background sweep.
 
 | Column                    | Enforced where                        | Error frame on breach                      |
 | ------------------------- | -------------------------------------- | ------------------------------------------- |
 | `max_payload_bytes`       | `PUBLISH` (payload + metadata)         | `ERROR { code: "QUOTA_EXCEEDED" }`          |
 | `publish_rate_per_minute` | `PUBLISH` (per `(app, client)`)        | `ERROR { code: "RATE_LIMITED" }`            |
 | `max_channels`            | `CREATE_CHANNEL`                       | `ERROR { code: "QUOTA_EXCEEDED" }`          |
+| `max_encrypted_channels`  | `CREATE_CHANNEL` with `encrypted: true` | `ERROR { code: "QUOTA_EXCEEDED" }` (carries the channel id) |
 | `total_storage_bytes`     | `PUBLISH` (cached rollup + add)        | `ERROR { code: "QUOTA_EXCEEDED" }`          |
 | `max_messages_per_month`  | `PUBLISH` (cached rollup + increment)  | `ERROR { code: "MESSAGE_QUOTA_EXCEEDED" }`  |
 | `volatile_rate_per_minute`| `PUBLISH` of `volatile` events (per `(app, client)`, own bucket) | `ERROR { code: "RATE_LIMITED" }` |
@@ -146,6 +147,8 @@ All nine per-app limits are enforced today (set via `IAppStore.SetQuotasAsync`, 
 
 - `volatile_rate_per_minute` gives `volatile` events a token bucket of their own, keyed `(app, client)`. Volatile events then no longer draw from `publish_rate_per_minute`. When it is `null`, volatile events share the publish bucket exactly as before (and the `Protocol:Defaults:PublishRatePerMinute` default if the app sets no rate either), so setting nothing changes nothing. Volatile events still skip storage and never count toward `max_messages_per_month`.
 - `max_connections` caps concurrent connections per app. A connection *joins* an app on its first `SUBSCRIBE`, `CREATE_CHANNEL`, `PUBLISH` or `HELLO` channel in the namespace and counts until it disconnects; a connection over the cap gets `CONNECTION_LIMITED` (carrying the event id for a `PUBLISH`, and dropping the channel from `WELCOME` for `HELLO`). Joining further channels of the same app is free. The count is in-memory and per relay process, and checked without a lock, so a burst of simultaneous joins can overshoot by a few.
+
+**Encrypted channels.** `max_encrypted_channels` caps how many [end-to-end encrypted channels](protocol.md#encrypted-channels) (`channels.encrypted = true`) a registered app may own, counted at `CREATE_CHANNEL { encrypted: true }`; plain channels are unaffected and still count only toward `max_channels`. The relay never holds a key and cannot read these channels, so an operator cannot inspect or search their payloads, and the JSON Lines export carries ciphertext for them; this quota is how an operator limits or prices that. `GET /admin/apps/{id}` reports the current `encryptedChannels` count.
 
 A `null` quota means no limit. Quotas only attach to **registered** apps — unregistered namespaces are subject only to the global checks (signature verification, channel ACL).
 
@@ -199,14 +202,14 @@ Tokens are kept in-process; a server restart invalidates everything. Multi-host 
 | -------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
 | `POST`   | `/admin/auth/challenge`   | Issue a nonce. No auth.                                                                         |
 | `POST`   | `/admin/auth/verify`      | Exchange a signed nonce for a bearer token. No auth.                                            |
-| `GET`    | `/admin/channels`         | List channels. Query: `?app=<prefix>` filter, `?includeDeleted=true\|false` (default true).     |
-| `GET`    | `/admin/channels/{id}`    | Channel detail: visibility, timestamps, event count / payload bytes / latest sequence, members. |
+| `GET`    | `/admin/channels`         | List channels (`id`, `visibility`, `encrypted`, timestamps). Query: `?app=<prefix>` filter, `?includeDeleted=true\|false` (default true). |
+| `GET`    | `/admin/channels/{id}`    | Channel detail: visibility, `encrypted`, timestamps, event count / payload bytes / latest sequence, members. |
 | `DELETE` | `/admin/channels/{id}`    | Soft-delete a channel (same effect as the protocol `DELETE_CHANNEL` message).                   |
 | `GET`    | `/admin/apps`             | List active apps with quotas, current storage usage, `deletedAt` and `activeAlerts`. `?includeDeleted=true` also lists soft-deleted apps. |
-| `GET`    | `/admin/apps/{id}`        | App detail including channel count, storage rollup, `deletedAt` and `activeConnections` (open connections subscribed to the app; best-effort). |
-| `GET`    | `/admin/apps/{id}/usage`  | Current-period usage rollup: `{ id, periodStart, messages, storageBytes, channelCount, quotas }`. |
+| `GET`    | `/admin/apps/{id}`        | App detail including `channelCount`, `encryptedChannels`, storage rollup, `deletedAt` and `activeConnections` (open connections subscribed to the app; best-effort). |
+| `GET`    | `/admin/apps/{id}/usage`  | Current-period usage rollup: `{ id, periodStart, messages, storageBytes, channelCount, encryptedChannels, quotas }`. |
 | `GET`    | `/admin/apps/{id}/usage/history` | `?months=12` (1–36) → `[{ periodStart, messages }]`, oldest first, from `app_usage`. In-memory mode only has the current period. |
-| `GET`    | `/admin/apps/{id}/channels` | Every channel of the app (including deleted) with `eventCount`, `payloadBytes`, `latestSequence`, busiest first. |
+| `GET`    | `/admin/apps/{id}/channels` | Every channel of the app (including deleted) with `encrypted`, `eventCount`, `payloadBytes`, `latestSequence`, busiest first. |
 | `GET`    | `/admin/apps/{id}/alerts` | The app's quota alerts (`?active=true` hides resolved). |
 | `GET`    | `/admin/apps/{id}/export` | Streams the app's data as [JSON Lines](#json-lines-export-format). Works for soft-deleted apps. |
 | `DELETE` | `/admin/apps/{id}`        | Soft-delete the app and its channels and disconnect its subscribers (`204`; `404` if unknown). Idempotent. See [App deletion](#app-deletion). |

@@ -87,4 +87,33 @@ public sealed class NpgsqlChannelAccessStoreTests : IAsyncLifetime
 
     Assert.Equal(ChannelVisibility.Broadcast, Assert.Single(channels).Visibility);
   }
+
+  [Fact]
+  public async Task Encrypted_RoundTrips_CountsPerApp_AndIsFalseForPlainOrUnknownChannels()
+  {
+    await _store.CreateChannelAsync("enc/secret", ChannelVisibility.Private, "owner", ["friend"], encrypted: true);
+    await _store.CreateChannelAsync("enc/plain", ChannelVisibility.Private, "owner", []);
+
+    Assert.True(await _store.IsEncryptedAsync("enc/secret"));
+    Assert.False(await _store.IsEncryptedAsync("enc/plain"));
+    Assert.False(await _store.IsEncryptedAsync("enc/never-created"));
+    Assert.Equal(1, await _store.CountEncryptedChannelsByAppAsync("enc"));
+    Assert.Equal(2, await _store.CountChannelsByAppAsync("enc"));
+
+    IReadOnlyList<ChannelSummary> channels = await _store.ListChannelsAsync("enc", includeDeleted: false);
+    Assert.True(channels.Single(c => c.Id == "enc/secret").Encrypted);
+    Assert.False(channels.Single(c => c.Id == "enc/plain").Encrypted);
+  }
+
+  [Fact]
+  public async Task RevokeAccess_RemovesTheRow_AndIsIdempotent()
+  {
+    await _store.CreateChannelAsync("revoke/room", ChannelVisibility.Private, "owner", ["leaver"]);
+    Assert.True(await _store.CanAccessAsync("revoke/room", "leaver"));
+
+    Assert.True(await _store.RevokeAccessAsync("revoke/room", "leaver"));
+    Assert.False(await _store.CanAccessAsync("revoke/room", "leaver"));
+    Assert.False(await _store.RevokeAccessAsync("revoke/room", "leaver"));
+    Assert.True(await _store.IsAdminAsync("revoke/room", "owner"));
+  }
 }

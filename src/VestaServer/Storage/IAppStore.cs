@@ -14,6 +14,7 @@ namespace VestaServer.Storage;
 /// <param name="MaxMessagesPerMonth">Hard ceiling on events PUBLISHed to the app namespace within the current calendar-month usage period. Checked at PUBLISH against the durable rollup maintained by <see cref="IAppUsageAccountant"/>.</param>
 /// <param name="MaxConnections">Maximum concurrent connections that have joined the app (first SUBSCRIBE / CREATE_CHANNEL / PUBLISH in its namespace until disconnect). Checked at join; over the cap answers <c>CONNECTION_LIMITED</c>.</param>
 /// <param name="VolatileRatePerMinute">Maximum <c>volatile</c> events any single client may PUBLISH per minute, in a bucket of its own. When null, volatile events share <paramref name="PublishRatePerMinute"/> (and the relay default) with persisted ones.</param>
+/// <param name="MaxEncryptedChannels">Maximum end-to-end encrypted channels (<c>channels.encrypted</c>) the app may own. Checked at CREATE_CHANNEL with <c>encrypted: true</c>; over the cap answers <c>QUOTA_EXCEEDED</c>. Lets an operator price confidentiality separately.</param>
 public sealed record AppQuotas(
     int? MaxPayloadBytes = null,
     int? PublishRatePerMinute = null,
@@ -23,7 +24,8 @@ public sealed record AppQuotas(
     long? TotalStorageBytes = null,
     long? MaxMessagesPerMonth = null,
     int? MaxConnections = null,
-    int? VolatileRatePerMinute = null)
+    int? VolatileRatePerMinute = null,
+    int? MaxEncryptedChannels = null)
 {
   public static AppQuotas None { get; } = new();
 }

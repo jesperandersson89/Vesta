@@ -39,6 +39,7 @@ from vesta_client.types import (
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
+    RelayFeatures,
     SequencedEvent,
     ServerMessage,
     VestaEvent,
@@ -47,6 +48,10 @@ from vesta_client.types import (
 )
 
 logger = logging.getLogger("vesta_client")
+
+
+class NotSupportedError(RuntimeError):
+    """The connected relay does not advertise a capability the requested operation needs."""
 
 # Error codes meaning "the relay does not accept this app namespace".
 NAMESPACE_ERROR_CODES = frozenset(
@@ -169,6 +174,7 @@ class VestaConnection:
         self._disposed = False
         self._is_connected = False
         self._server_id: str | None = None
+        self._features: list[str] = []
         self._has_reached_welcome_once = False
         self._closing = False
         self._reconnect_task: asyncio.Task | None = None
@@ -213,6 +219,15 @@ class VestaConnection:
     @property
     def server_id(self) -> str | None:
         return self._server_id
+
+    @property
+    def features(self) -> list[str]:
+        """Optional relay capabilities advertised in WELCOME (see ``RelayFeatures``); empty on older relays."""
+        return list(self._features)
+
+    def supports_feature(self, feature: str) -> bool:
+        """True when the connected relay advertised ``feature`` in WELCOME."""
+        return feature in self._features
 
     @property
     def channels(self) -> list[str]:
@@ -558,6 +573,7 @@ class VestaConnection:
         self._exhaustion_raised = False
         self._last_attempts.clear()
         self._server_id = msg.server_id
+        self._features = list(msg.features)
         if not register_first:
             self._channels = list(msg.channels)
         self._picker_shown = False
@@ -686,7 +702,7 @@ class VestaConnection:
                 signed: VestaEvent = sign_event(VestaEvent.from_dict(new_event), self._identity)
                 new_event = signed.to_dict()
             return {**msg, "channelId": channel_id, "event": new_event}
-        if msg_type in ("SUBSCRIBE", "UNSUBSCRIBE", "FETCH", "CREATE_CHANNEL", "GRANT_ACCESS", "DELETE_CHANNEL"):
+        if msg_type in ("SUBSCRIBE", "UNSUBSCRIBE", "FETCH", "CREATE_CHANNEL", "GRANT_ACCESS", "REVOKE_ACCESS", "DELETE_CHANNEL"):
             return {**msg, "channelId": map_id(msg["channelId"])}
         return msg
 
@@ -931,6 +947,7 @@ class VestaConnection:
         *,
         visibility: str = "private",
         members: list[str] | None = None,
+        encrypted: bool = False,
     ) -> None:
         """
         Create a channel with explicit visibility and initial members.
@@ -938,13 +955,27 @@ class VestaConnection:
         ``visibility`` is ``"public"``, ``"private"`` (only the caller and the listed
         members may read or publish) or ``"broadcast"`` (anyone may subscribe/fetch, only
         the caller and the listed members may publish). The caller is auto-subscribed.
+
+        ``encrypted`` marks the channel end-to-end encrypted (requires ``"private"``): the
+        relay then refuses any app payload that is not an encrypted envelope
+        (``ENCRYPTION_REQUIRED``). Raises ``NotSupportedError`` when the connected relay does
+        not advertise ``RelayFeatures.ENCRYPTED_CHANNELS``, because an older relay would
+        silently ignore the flag and store plaintext.
         """
-        await self._send({
+        if encrypted and not self.supports_feature(RelayFeatures.ENCRYPTED_CHANNELS):
+            raise NotSupportedError(
+                "The connected relay does not support encrypted channels "
+                f"(missing '{RelayFeatures.ENCRYPTED_CHANNELS}' in WELCOME)."
+            )
+        message: dict[str, Any] = {
             "type": "CREATE_CHANNEL",
             "channelId": channel_id,
             "visibility": visibility,
             "initialMembers": list(members) if members else [],
-        })
+        }
+        if encrypted:
+            message["encrypted"] = True
+        await self._send(message)
 
     async def grant_access(
         self,
@@ -962,6 +993,19 @@ class VestaConnection:
             "channelId": channel_id,
             "clientId": client_id,
             "role": role,
+        })
+
+    async def revoke_access(self, channel_id: str, client_id: str) -> None:
+        """Remove a client's access to a private or broadcast channel (caller must be admin).
+
+        Idempotent; an admin cannot revoke itself. On an encrypted channel, rotate the channel
+        key afterwards. Needs a relay that advertises ``RelayFeatures.ENCRYPTED_CHANNELS``
+        (older relays answer ``UNKNOWN_MESSAGE``).
+        """
+        await self._send({
+            "type": "REVOKE_ACCESS",
+            "channelId": channel_id,
+            "clientId": client_id,
         })
 
     async def register_app(self, app_id: str) -> None:

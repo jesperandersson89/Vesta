@@ -43,6 +43,9 @@ public static class VestaErrorCodes
     /// <summary>The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event.</summary>
     public const string ConnectionLimited = "CONNECTION_LIMITED";
 
+    /// <summary>The channel is end-to-end encrypted and the payload was not an encrypted envelope; the event can never succeed as sent.</summary>
+    public const string EncryptionRequired = "ENCRYPTION_REQUIRED";
+
     /// <summary>
     /// The outcome of classifying a server error code.
     /// </summary>
@@ -71,7 +74,7 @@ public static class VestaErrorCodes
         // Doomed events that are client/protocol errors, not "limits": still dead-letter so the
         // offline outbox doesn't re-send them on every reconnect.
         "INVALID_CHANNEL" or "INVALID_SIGNATURE" or "SIGNATURE_REQUIRED" or
-        "CLIENT_ID_MISMATCH" or "PROTOCOL_NAMESPACE_RESERVED" or "CHANNEL_DELETED"
+        "CLIENT_ID_MISMATCH" or "PROTOCOL_NAMESPACE_RESERVED" or "CHANNEL_DELETED" or EncryptionRequired
             => new Classification(IsLimit: false, IsTransient: false, IsEventFatal: true),
 
         // Unknown codes: be conservative — don't dead-letter, don't claim it's a limit.

@@ -84,12 +84,18 @@ export interface FetchMessage {
     limit?: number | null;
 }
 
-/** Client → Server: Create a channel with explicit visibility and initial members. */
+/**
+ * Client → Server: Create a channel with explicit visibility and initial members.
+ * `encrypted` marks the channel end-to-end encrypted (must be `private`): the relay then requires
+ * every non-`vesta.*` payload to be an encrypted envelope and never holds a key. Only send it to a
+ * relay that advertises `RelayFeatures.EncryptedChannels` in WELCOME.
+ */
 export interface CreateChannelMessage {
     type: "CREATE_CHANNEL";
     channelId: string;
     visibility: "public" | "private" | "broadcast";
     initialMembers: string[];
+    encrypted?: boolean | null;
 }
 
 /** Client → Server: Grant access to a private channel (admin only). */
@@ -98,6 +104,16 @@ export interface GrantAccessMessage {
     channelId: string;
     clientId: string;
     role: "member" | "admin" | "reader";
+}
+
+/**
+ * Client → Server: Remove a client's access entry from a private or broadcast channel (admin only).
+ * Idempotent; an admin cannot revoke itself. Needs a relay with `RelayFeatures.EncryptedChannels`.
+ */
+export interface RevokeAccessMessage {
+    type: "REVOKE_ACCESS";
+    channelId: string;
+    clientId: string;
 }
 
 /** Client → Server: Register an app namespace. The connecting client becomes the owner. */
@@ -118,12 +134,26 @@ export interface DeleteChannelMessage {
     channelId: string;
 }
 
-/** Server → Client: Handshake confirmation. */
+/**
+ * Server → Client: Handshake confirmation. `features` names optional relay capabilities (see
+ * `RelayFeatures`); it is absent on relays that predate the field, which means "none".
+ */
 export interface WelcomeMessage {
     type: "WELCOME";
     serverId: string;
     channels: string[];
+    features?: string[] | null;
 }
+
+/** Names of optional relay capabilities advertised in `WelcomeMessage.features`. */
+export const RelayFeatures = {
+    /**
+     * The relay understands `CreateChannelMessage.encrypted`, enforces the encrypted envelope on
+     * encrypted channels and supports `REVOKE_ACCESS`. Never create an encrypted channel on a relay
+     * that does not advertise this: an older relay would ignore the flag and store plaintext.
+     */
+    EncryptedChannels: "encrypted-channels",
+} as const;
 
 /** Server → Client: A single real-time event. */
 export interface EventMessage {
@@ -169,6 +199,7 @@ export type ClientMessage =
     | FetchMessage
     | CreateChannelMessage
     | GrantAccessMessage
+    | RevokeAccessMessage
     | RegisterAppMessage
     | DeleteChannelMessage
     | ProveMessage;

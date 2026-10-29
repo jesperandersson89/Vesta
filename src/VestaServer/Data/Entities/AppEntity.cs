@@ -47,4 +47,7 @@ public sealed class AppEntity
 
   /// <summary>Per-client volatile publishes per minute, in a separate bucket. Null = volatile shares <see cref="PublishRatePerMinute"/>.</summary>
   public int? VolatileRatePerMinute { get; set; }
+
+  /// <summary>Maximum end-to-end encrypted channels the app may own. Nullable means "no limit". Checked at CREATE_CHANNEL.</summary>
+  public int? MaxEncryptedChannels { get; set; }
 }

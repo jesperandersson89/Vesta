@@ -154,6 +154,15 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     public IReadOnlyList<string> Channels { get; private set; } = [];
 
     /// <summary>
+    /// Optional capabilities the relay advertised in WELCOME (see <see cref="RelayFeatures"/>).
+    /// Empty on relays that predate the field.
+    /// </summary>
+    public IReadOnlyList<string> Features { get; private set; } = [];
+
+    /// <summary>True when the connected relay advertised <paramref name="feature"/> in WELCOME.</summary>
+    public bool SupportsFeature(string feature) => Features.Contains(feature, StringComparer.Ordinal);
+
+    /// <summary>
     /// The relay the connection is currently using (or last attempted). Null
     /// before the first <see cref="ConnectAsync(Uri, IReadOnlyList{string}, IReadOnlyDictionary{string, long}, CancellationToken)"/> call.
     /// </summary>
@@ -750,6 +759,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             {
                 ServerId = welcome.ServerId;
                 Channels = welcome.Channels;
+                Features = welcome.Features ?? [];
                 _namespaceConfirmed = !registerFirst
                     && _channels!.Count > 0
                     && welcome.Channels.Any(c => _channels.Contains(c));
@@ -843,6 +853,7 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
             FetchMessage f => f with { ChannelId = ToRemote(f.ChannelId) },
             CreateChannelMessage c => c with { ChannelId = ToRemote(c.ChannelId) },
             GrantAccessMessage g => g with { ChannelId = ToRemote(g.ChannelId) },
+            RevokeAccessMessage r => r with { ChannelId = ToRemote(r.ChannelId) },
             DeleteChannelMessage d => d with { ChannelId = ToRemote(d.ChannelId) },
             _ => message,
         };
@@ -1160,15 +1171,27 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     /// Create a channel with explicit visibility and initial members.
     /// <c>private</c>: only the caller (admin) and listed members can read or publish.
     /// <c>broadcast</c>: anyone can subscribe/fetch, only the caller and listed members can publish.
+    /// <paramref name="encrypted"/> marks the channel end-to-end encrypted (requires <c>private</c>):
+    /// the relay then refuses any app payload that is not an <see cref="EncryptedPayload"/> envelope
+    /// (<c>ENCRYPTION_REQUIRED</c>). Throws <see cref="NotSupportedException"/> when the connected
+    /// relay does not advertise <see cref="RelayFeatures.EncryptedChannels"/>, because an older relay
+    /// would silently ignore the flag and store plaintext.
     /// The caller is auto-subscribed.
     /// </summary>
     public async Task CreateChannelAsync(
         string channelId,
         string visibility = "private",
         IReadOnlyList<string>? initialMembers = null,
+        bool encrypted = false,
         CancellationToken cancellationToken = default)
     {
-        CreateChannelMessage message = new(channelId, visibility, initialMembers ?? []);
+        if (encrypted && !SupportsFeature(RelayFeatures.EncryptedChannels))
+        {
+            throw new NotSupportedException(
+                $"The connected relay does not support encrypted channels (missing '{RelayFeatures.EncryptedChannels}' in WELCOME).");
+        }
+
+        CreateChannelMessage message = new(channelId, visibility, initialMembers ?? [], encrypted ? true : null);
         await SendAsync(message, cancellationToken);
     }
 
@@ -1183,6 +1206,21 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
         CancellationToken cancellationToken = default)
     {
         GrantAccessMessage message = new(channelId, clientId, role);
+        await SendAsync(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Remove a client's access to a private or broadcast channel. Caller must be the channel admin
+    /// and cannot revoke itself. Idempotent. On an encrypted channel, rotate the channel key afterwards.
+    /// Needs a relay that advertises <see cref="RelayFeatures.EncryptedChannels"/> (older relays answer
+    /// <c>UNKNOWN_MESSAGE</c>).
+    /// </summary>
+    public async Task RevokeAccessAsync(
+        string channelId,
+        string clientId,
+        CancellationToken cancellationToken = default)
+    {
+        RevokeAccessMessage message = new(channelId, clientId);
         await SendAsync(message, cancellationToken);
     }
 

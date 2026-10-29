@@ -22,6 +22,15 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     };
   }
 
+  public async Task<bool> IsEncryptedAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    const string sql = "SELECT encrypted FROM channels WHERE id = $1";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
+    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+    return result is bool encrypted && encrypted;
+  }
+
   public async Task<bool> CanAccessAsync(string channelId, string? clientId, CancellationToken cancellationToken = default)
   {
     ChannelVisibility? visibility = await GetVisibilityAsync(channelId, cancellationToken);
@@ -60,6 +69,7 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
       ChannelVisibility visibility,
       string adminClientId,
       IReadOnlyList<string> memberClientIds,
+      bool encrypted = false,
       CancellationToken cancellationToken = default)
   {
     await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -68,12 +78,13 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     string visibilityStr = ChannelVisibilityNames.Format(visibility);
 
     const string insertChannelSql = """
-            INSERT INTO channels (id, visibility) VALUES ($1, $2)
+            INSERT INTO channels (id, visibility, encrypted) VALUES ($1, $2, $3)
             """;
     await using (NpgsqlCommand cmd = new(insertChannelSql, connection, tx))
     {
       cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
       cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = visibilityStr });
+      cmd.Parameters.Add(new NpgsqlParameter<bool> { TypedValue = encrypted });
       try
       {
         await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -116,10 +127,33 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     await cmd.ExecuteNonQueryAsync(cancellationToken);
   }
 
+  public async Task<bool> RevokeAccessAsync(
+      string channelId,
+      string clientId,
+      CancellationToken cancellationToken = default)
+  {
+    const string sql = "DELETE FROM channel_access WHERE channel_id = $1 AND client_id = $2";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = channelId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = clientId });
+    int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
+    return rows > 0;
+  }
+
   public async Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
   {
     // Matches the app slug exactly or any channel starting with "{appId}/".
     const string sql = "SELECT COUNT(*) FROM channels WHERE id = $1 OR id LIKE $2";
+    await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
+    object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+    return result is long l ? (int)l : Convert.ToInt32(result);
+  }
+
+  public async Task<int> CountEncryptedChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
+  {
+    const string sql = "SELECT COUNT(*) FROM channels WHERE encrypted AND (id = $1 OR id LIKE $2)";
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId });
     cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = appId + "/%" });
@@ -164,13 +198,13 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
     // shapes are small enough that branching beats string-building.
     string sql;
     if (appPrefix is null && includeDeleted)
-      sql = "SELECT id, visibility, created_at, deleted_at FROM channels";
+      sql = "SELECT id, visibility, created_at, deleted_at, encrypted FROM channels";
     else if (appPrefix is null)
-      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE deleted_at IS NULL";
+      sql = "SELECT id, visibility, created_at, deleted_at, encrypted FROM channels WHERE deleted_at IS NULL";
     else if (includeDeleted)
-      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE id = $1 OR id LIKE $2";
+      sql = "SELECT id, visibility, created_at, deleted_at, encrypted FROM channels WHERE id = $1 OR id LIKE $2";
     else
-      sql = "SELECT id, visibility, created_at, deleted_at FROM channels WHERE deleted_at IS NULL AND (id = $1 OR id LIKE $2)";
+      sql = "SELECT id, visibility, created_at, deleted_at, encrypted FROM channels WHERE deleted_at IS NULL AND (id = $1 OR id LIKE $2)";
 
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
     if (appPrefix is not null)
@@ -188,7 +222,8 @@ public sealed class NpgsqlChannelAccessStore(NpgsqlDataSource dataSource) : ICha
       DateTimeOffset createdAt = reader.GetFieldValue<DateTimeOffset>(2);
       DateTimeOffset? deletedAt = reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3);
       ChannelVisibility visibility = ChannelVisibilityNames.Parse(visibilityStr);
-      result.Add(new ChannelSummary(id, visibility, createdAt, deletedAt));
+      bool encrypted = reader.GetBoolean(4);
+      result.Add(new ChannelSummary(id, visibility, createdAt, deletedAt, encrypted));
     }
     return result;
   }

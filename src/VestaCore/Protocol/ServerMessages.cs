@@ -11,10 +11,13 @@ public sealed record ChallengeMessage(string Nonce) : ProtocolMessage;
 
 /// <summary>
 /// SERVER → CLIENT: Response to HELLO. Confirms connection and lists available channels.
+/// <see cref="Features"/> names optional relay capabilities (see <see cref="RelayFeatures"/>); it is
+/// <c>null</c> on relays that predate the field, which clients must treat as "no optional features".
 /// </summary>
 public sealed record WelcomeMessage(
     string ServerId,
-    IReadOnlyList<string> Channels
+    IReadOnlyList<string> Channels,
+    IReadOnlyList<string>? Features = null
 ) : ProtocolMessage;
 
 /// <summary>

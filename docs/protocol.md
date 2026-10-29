@@ -40,8 +40,9 @@ Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more 
 | `PROVE`          | `ProveMessage`         | Answer to a `CHALLENGE`: Ed25519 signature over the nonce, proving the client holds the key behind its `clientId`. See [HELLO key-possession proof](#hello-key-possession-proof). |
 | `UNSUBSCRIBE`    | `UnsubscribeMessage`   | Stop receiving real-time events for a channel.                                                                                                                                                                                                                                                                                               |
 | `FETCH`          | `FetchMessage`         | Request a batch of historical events: `(channelId, fromSequence, toSequence?, limit?)`.                                                                                                                                                                                                                                                      |
-| `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[])`. Issuer becomes admin.                                                                                                                                                                                                                                              |
+| `CREATE_CHANNEL` | `CreateChannelMessage` | Explicitly create a channel: `(channelId, visibility, initialMembers[], encrypted?)`. Issuer becomes admin. `encrypted: true` marks the channel [end-to-end encrypted](#encrypted-channels) (requires `private`).                                                                                                                                                              |
 | `GRANT_ACCESS`   | `GrantAccessMessage`   | Admin-only: grant `member`/`admin`/`reader` role on a private or broadcast channel.                                                                                                                                                                                                                                                                                |
+| `REVOKE_ACCESS`  | `RevokeAccessMessage`  | Admin-only: remove a client's access entry `(channelId, clientId)` from a private or broadcast channel. Idempotent (an unknown client still gets `ACK`); an admin cannot revoke itself (`ACCESS_DENIED`), so a channel never loses its last admin. Relays that predate it answer `UNKNOWN_MESSAGE`; check for the `encrypted-channels` [feature](#relay-features). |
 | `REGISTER_APP`   | `RegisterAppMessage`   | Register an app namespace (`appId`, optional `discoverable`). Connecting client becomes the app owner. `discoverable` opts the app into [server-to-server discovery](#server-to-server-discovery-federation). See [server-configuration.md](server-configuration.md#app-registration).                                                                                                                                                                                       |
 | `DELETE_CHANNEL` | `DeleteChannelMessage` | **Server admin only.** Soft-delete a channel: stamps a deletion tombstone. Existing events are retained for a future hard-delete sweep; further `PUBLISH` / `SUBSCRIBE` / `FETCH` / `CREATE_CHANNEL` for that channel are rejected with `CHANNEL_DELETED`. Idempotent. See [server-configuration.md](server-configuration.md#server-admins). |
 
@@ -50,11 +51,11 @@ Catch-up (after `HELLO` or `SUBSCRIBE { fromSequence }`) arrives as one or more 
 | `$type`        | Record               | Purpose                                                                                                                                                                                                                                                        |
 | -------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CHALLENGE`    | `ChallengeMessage`   | Sent instead of `WELCOME` when a `HELLO` set `proofSupported` and carried a `publicKey`: `(nonce)`. The client must reply `PROVE` before the handshake completes. |
-| `WELCOME`      | `WelcomeMessage`     | Response to `HELLO`. Confirms connection and lists accessible channels.                                                                                                                                                                                        |
+| `WELCOME`      | `WelcomeMessage`     | Response to `HELLO`. Confirms connection and lists accessible channels. `features` lists optional relay capabilities (see [Relay features](#relay-features)); absent on older relays.                                                                                                                                                        |
 | `EVENT`        | `EventMessage`       | A single real-time event pushed to subscribers: `(channelId, event, sequence, receivedAt)`.                                                                                                                                                                    |
 | `EVENTS_BATCH` | `EventsBatchMessage` | A batch of `SequencedEvent` (response to `FETCH` or initial catch-up after `HELLO`).                                                                                                                                                                           |
 | `ACK`          | `AckMessage`         | Acknowledges a `PUBLISH`: `(channelId, eventId, sequence)`. Also answers a successful `REGISTER_APP`, `CREATE_CHANNEL`, `GRANT_ACCESS` and `DELETE_CHANNEL` with the nil event id (`00000000-0000-0000-0000-000000000000`) and sequence `0`; all three SDKs surface it through their ack callback/event, so an app can tell a control request succeeded (failures arrive as `ERROR`). |
-| `ERROR`        | `ErrorMessage`       | `(code, message, eventId?, channelId?)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), plus the per-app limit codes `RATE_LIMITED`, `QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED` (over `max_messages_per_month`), `CONNECTION_LIMITED` (per-connection cap such as subscriptions; not tied to an event), `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED` (app not on the server's allow-list), `APP_PAUSED` (an operator paused the app: publishes and channel creation are refused until it is resumed; transient). An operator-imposed throttle is reported as `RATE_LIMITED`. On publish rejections the relay stamps the optional `eventId` / `channelId` so the client can correlate the failure to the exact event. |
+| `ERROR`        | `ErrorMessage`       | `(code, message, eventId?, channelId?)`. Codes include `unauthorized`, `channel_not_found`, `invalid_signature`, `NOT_ADMIN` (caller is not a server admin), `CHANNEL_DELETED` (channel has been soft-deleted), `CHANNEL_NOT_FOUND` (target of `DELETE_CHANNEL` doesn't exist), plus the per-app limit codes `RATE_LIMITED`, `QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED` (over `max_messages_per_month`), `CONNECTION_LIMITED` (per-connection cap such as subscriptions; not tied to an event), `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED` (app not on the server's allow-list), `APP_PAUSED` (an operator paused the app: publishes and channel creation are refused until it is resumed; transient), `ENCRYPTION_REQUIRED` (a non-envelope payload was published to an [encrypted channel](#encrypted-channels)). An operator-imposed throttle is reported as `RATE_LIMITED`. On publish rejections the relay stamps the optional `eventId` / `channelId` so the client can correlate the failure to the exact event. |
 
 ### Limits and the client's reaction
 
@@ -64,6 +65,18 @@ When the relay limits an app (managed quotas on Atrium, or `AppQuotas` on a self
 - **dead-letter** the offending outbox entry for non-transient codes (`QUOTA_EXCEEDED`, `MESSAGE_QUOTA_EXCEEDED`, `UNKNOWN_APP`, `ACCESS_DENIED`, `APP_NOT_ALLOWED`) so a doomed offline event is never re-sent on every reconnect. Transient limits (`RATE_LIMITED`, `APP_PAUSED`) are left in the outbox to retry later. `CONNECTION_LIMITED` surfaces via `OnLimited` but dead-letters nothing.
 
 The TypeScript and Python `ErrorMessage` types carry the same optional `eventId` / `channelId` fields, and both clients now ship the same classification + dead-letter behavior as C#.
+
+`ENCRYPTION_REQUIRED` (a plaintext publish to an [encrypted channel](#encrypted-channels)) is classified like the other protocol errors (`INVALID_SIGNATURE`, `CHANNEL_DELETED`, …): not a limit, but event-fatal, so the outbox entry is dead-lettered.
+
+## Relay features
+
+`WELCOME.features` is an optional list of capability names the relay supports. A relay that predates the field sends none, and clients must treat that as "no optional features". Current names (`RelayFeatures` in C#/TS, `RelayFeatures` class in Python):
+
+| Feature              | Meaning                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `encrypted-channels` | `CREATE_CHANNEL.encrypted` is understood and enforced, `REVOKE_ACCESS` exists. The SDKs refuse to create an encrypted channel on a relay without it (`NotSupportedException` / `Error` / `NotSupportedError`), because an older relay would ignore the flag and store plaintext. |
+
+Clients read it as `connection.Features` / `connection.features` and `SupportsFeature(name)` / `supportsFeature(name)` / `supports_feature(name)`.
 
 ## Wire format
 
@@ -129,7 +142,26 @@ A `broadcast` channel is the building block for "one trusted writer, everyone re
 
 The app owner is the only identity that may publish to `{appId}/vesta/relays` (the relay manifest channel) on a registered app; everyone can still read it. Unregistered apps keep the channel open.
 
-Admin is a role within a private or broadcast channel — only admins can `GRANT_ACCESS`.
+Admin is a role within a private or broadcast channel — only admins can `GRANT_ACCESS` and `REVOKE_ACCESS`.
+
+## Encrypted channels
+
+> **Status: relay side shipped (phase A); the SDK encryption and key distribution (phases B–C) are not yet built.** Until they are, an encrypted channel is only useful to an app that produces the envelope itself. See `PLANNING.md` #33 for the full design.
+
+A channel created with `CREATE_CHANNEL { encrypted: true }` is **end-to-end encrypted**: the relay never holds a key and cannot read payloads. What the relay *does* enforce:
+
+- **Must be `private`.** Keys are distributed by membership, so `public` or `broadcast` + `encrypted` is rejected with `INVALID_CHANNEL`. Encrypted channels are never created implicitly.
+- **Envelope shape on `PUBLISH`.** Every event whose `eventType` is not `vesta.*` must have exactly this payload, or the relay answers `ERROR { code: "ENCRYPTION_REQUIRED", eventId, channelId }`:
+
+  ```json
+  { "enc": 1, "kid": 3, "n": "<base64url, 12 bytes>", "ct": "<base64url>" }
+  ```
+
+  `enc` is the envelope version, `kid` the key epoch (non-negative integer), `n` the AES-256-GCM nonce and `ct` the ciphertext + tag. The relay checks the *shape* only (it cannot verify ciphertext); this is a guard against a misconfigured client leaking plaintext, not a security boundary. `vesta.*` control events (key distribution) are exempt and stay in the clear. The canonical check is [`EncryptedPayload.IsEnvelope`](../src/VestaCore/Events/EncryptedPayload.cs).
+- **Everything else is unchanged.** `sequence`, `replace`, `volatile`, `metadata.ttlSeconds`, idempotency on `id`, ACL and signature verification all operate on cleartext fields; the Ed25519 signature covers the envelope. `eventType` stays in the clear.
+- **Quota.** `max_encrypted_channels` (see [server-configuration.md](server-configuration.md#app-quotas--rate-limits)) caps how many a registered app may own; the admin API reports `encrypted` per channel and `encryptedChannels` per app, so an operator can count and price them.
+
+Only create an encrypted channel on a relay that advertises `encrypted-channels` in [`WELCOME.features`](#relay-features). `REVOKE_ACCESS` exists so that an admin can remove a member and then rotate the channel key.
 
 ## Relay manifests (server independence)
 

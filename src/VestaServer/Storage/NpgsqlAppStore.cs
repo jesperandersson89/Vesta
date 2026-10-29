@@ -12,7 +12,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
             max_payload_bytes, publish_rate_per_minute, max_channels,
             max_events_per_channel, retention_days, total_storage_bytes, discoverable,
             max_messages_per_month, deleted_at, paused_at, throttle_per_minute,
-            max_connections, volatile_rate_per_minute, owner_only_channel_creation
+            max_connections, volatile_rate_per_minute, owner_only_channel_creation,
+            max_encrypted_channels
             """;
 
   public async Task<AppInfo?> GetAsync(string appId, CancellationToken cancellationToken = default)
@@ -84,7 +85,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
                 total_storage_bytes = $7,
                 max_messages_per_month = $8,
                 max_connections = $9,
-                volatile_rate_per_minute = $10
+                volatile_rate_per_minute = $10,
+                max_encrypted_channels = $11
             WHERE id = $1
             """;
     await using NpgsqlCommand cmd = dataSource.CreateCommand(sql);
@@ -98,6 +100,7 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxMessagesPerMonth ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxConnections ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.VolatileRatePerMinute ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)quotas.MaxEncryptedChannels ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer });
     int rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
     return rows > 0;
   }
@@ -185,7 +188,8 @@ public sealed class NpgsqlAppStore(NpgsqlDataSource dataSource) : IAppStore
         TotalStorageBytes: reader.IsDBNull(8) ? null : reader.GetInt64(8),
         MaxMessagesPerMonth: reader.IsDBNull(10) ? null : reader.GetInt64(10),
         MaxConnections: reader.IsDBNull(14) ? null : reader.GetInt32(14),
-        VolatileRatePerMinute: reader.IsDBNull(15) ? null : reader.GetInt32(15));
+        VolatileRatePerMinute: reader.IsDBNull(15) ? null : reader.GetInt32(15),
+        MaxEncryptedChannels: reader.IsDBNull(17) ? null : reader.GetInt32(17));
     return new AppInfo(
         reader.GetString(0),
         reader.GetString(1),

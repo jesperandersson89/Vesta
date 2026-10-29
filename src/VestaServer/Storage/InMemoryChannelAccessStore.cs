@@ -19,6 +19,11 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.FromResult<ChannelVisibility?>(null);
   }
 
+  public Task<bool> IsEncryptedAsync(string channelId, CancellationToken cancellationToken = default)
+  {
+    return Task.FromResult(_channels.TryGetValue(channelId, out ChannelInfo? info) && info.Encrypted);
+  }
+
   public Task<bool> CanAccessAsync(string channelId, string? clientId, CancellationToken cancellationToken = default)
   {
     if (!_channels.TryGetValue(channelId, out ChannelInfo? info))
@@ -65,9 +70,10 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
       ChannelVisibility visibility,
       string adminClientId,
       IReadOnlyList<string> memberClientIds,
+      bool encrypted = false,
       CancellationToken cancellationToken = default)
   {
-    ChannelInfo info = new(visibility);
+    ChannelInfo info = new(visibility, encrypted);
     info.Members[adminClientId] = ChannelRoles.Admin;
     foreach (string member in memberClientIds)
     {
@@ -93,6 +99,15 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     return Task.CompletedTask;
   }
 
+  public Task<bool> RevokeAccessAsync(
+      string channelId,
+      string clientId,
+      CancellationToken cancellationToken = default)
+  {
+    bool removed = _channels.TryGetValue(channelId, out ChannelInfo? info) && info.Members.TryRemove(clientId, out _);
+    return Task.FromResult(removed);
+  }
+
   public Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
   {
     string prefix = appId + "/";
@@ -100,6 +115,18 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     foreach (string id in _channels.Keys)
     {
       if (id == appId || id.StartsWith(prefix, StringComparison.Ordinal))
+        count++;
+    }
+    return Task.FromResult(count);
+  }
+
+  public Task<int> CountEncryptedChannelsByAppAsync(string appId, CancellationToken cancellationToken = default)
+  {
+    string prefix = appId + "/";
+    int count = 0;
+    foreach (KeyValuePair<string, ChannelInfo> kv in _channels)
+    {
+      if (kv.Value.Encrypted && (kv.Key == appId || kv.Key.StartsWith(prefix, StringComparison.Ordinal)))
         count++;
     }
     return Task.FromResult(count);
@@ -137,7 +164,7 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     {
       if (!includeDeleted && kv.Value.DeletedAt is not null) continue;
       if (appPrefix is not null && kv.Key != appPrefix && !kv.Key.StartsWith(prefix!, StringComparison.Ordinal)) continue;
-      result.Add(new ChannelSummary(kv.Key, kv.Value.Visibility, kv.Value.CreatedAt, kv.Value.DeletedAt));
+      result.Add(new ChannelSummary(kv.Key, kv.Value.Visibility, kv.Value.CreatedAt, kv.Value.DeletedAt, kv.Value.Encrypted));
     }
     return Task.FromResult<IReadOnlyList<ChannelSummary>>(result);
   }
@@ -191,9 +218,10 @@ public sealed class InMemoryChannelAccessStore : IChannelAccessStore
     _channels.TryAdd(channelId, new ChannelInfo(ChannelVisibility.Public));
   }
 
-  private sealed class ChannelInfo(ChannelVisibility visibility)
+  private sealed class ChannelInfo(ChannelVisibility visibility, bool encrypted = false)
   {
     public ChannelVisibility Visibility { get; } = visibility;
+    public bool Encrypted { get; } = encrypted;
     public DateTimeOffset CreatedAt { get; } = DateTimeOffset.UtcNow;
     public ConcurrentDictionary<string, string> Members { get; } = new();
     public DateTimeOffset? DeletedAt { get; set; }

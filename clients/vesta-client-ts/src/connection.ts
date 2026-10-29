@@ -10,6 +10,7 @@ import type {
     VestaEvent,
     WelcomeMessage,
 } from "./types.js";
+import { RelayFeatures } from "./types.js";
 import { VestaIdentity } from "./identity.js";
 import type { IdentityBackupOptions, RelayBackup } from "./backup.js";
 import {
@@ -251,6 +252,7 @@ export class VestaConnection {
     private disposed = false;
     private _isConnected = false;
     private _serverId: string | null = null;
+    private _features: string[] = [];
     private hasReachedWelcomeOnce = false;
     private _channels: string[];
     private relayCandidates: string[];
@@ -339,6 +341,16 @@ export class VestaConnection {
     /** The server ID from the WELCOME message. */
     get serverId(): string | null {
         return this._serverId;
+    }
+
+    /** Optional relay capabilities advertised in WELCOME (see `RelayFeatures`); empty on older relays. */
+    get features(): readonly string[] {
+        return this._features;
+    }
+
+    /** True when the connected relay advertised `feature` in WELCOME. */
+    supportsFeature(feature: string): boolean {
+        return this._features.includes(feature);
     }
 
     /** Currently subscribed channels. */
@@ -847,17 +859,27 @@ export class VestaConnection {
      * Create a channel with explicit visibility and initial members.
      * `private`: only the caller (admin) and listed members can read or publish.
      * `broadcast`: anyone can subscribe/fetch, only the caller and listed members can publish.
+     * `encrypted` marks the channel end-to-end encrypted (requires `private`): the relay then refuses
+     * any app payload that is not an encrypted envelope (`ENCRYPTION_REQUIRED`). Throws when the
+     * connected relay does not advertise `RelayFeatures.EncryptedChannels`, because an older relay
+     * would silently ignore the flag and store plaintext.
      * The caller is auto-subscribed.
      */
     createChannel(
         channelId: string,
-        options?: { visibility?: "public" | "private" | "broadcast"; members?: string[] },
+        options?: { visibility?: "public" | "private" | "broadcast"; members?: string[]; encrypted?: boolean },
     ): void {
+        if (options?.encrypted && !this.supportsFeature(RelayFeatures.EncryptedChannels)) {
+            throw new Error(
+                `The connected relay does not support encrypted channels (missing '${RelayFeatures.EncryptedChannels}' in WELCOME).`,
+            );
+        }
         this.sendRaw({
             type: "CREATE_CHANNEL",
             channelId,
             visibility: options?.visibility ?? "private",
             initialMembers: options?.members ?? [],
+            ...(options?.encrypted ? { encrypted: true } : {}),
         });
     }
 
@@ -875,6 +897,19 @@ export class VestaConnection {
             channelId,
             clientId,
             role,
+        });
+    }
+
+    /**
+     * Remove a client's access to a private or broadcast channel. Caller must be the channel admin
+     * and cannot revoke itself. Idempotent. On an encrypted channel, rotate the channel key afterwards.
+     * Needs a relay that advertises `RelayFeatures.EncryptedChannels` (older relays answer `UNKNOWN_MESSAGE`).
+     */
+    revokeAccess(channelId: string, clientId: string): void {
+        this.sendRaw({
+            type: "REVOKE_ACCESS",
+            channelId,
+            clientId,
         });
     }
 
@@ -1025,6 +1060,7 @@ export class VestaConnection {
                     msg.channels.some((c: string) => requested.includes(c));
                 this._isConnected = true;
                 this._serverId = msg.serverId;
+                this._features = msg.features ? [...msg.features] : [];
                 if (!registerFirst) this._channels = [...msg.channels];
                 this.pickerShown = false;
                 this.reconnectAttempt = 0;
@@ -1194,6 +1230,7 @@ export class VestaConnection {
             case "FETCH":
             case "CREATE_CHANNEL":
             case "GRANT_ACCESS":
+            case "REVOKE_ACCESS":
             case "DELETE_CHANNEL":
                 return { ...msg, channelId: map(msg.channelId) };
             default:

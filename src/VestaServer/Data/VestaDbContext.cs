@@ -29,6 +29,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.Id).HasColumnName("id");
             entity.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
             entity.Property(e => e.Visibility).HasColumnName("visibility").HasDefaultValue("public");
+            entity.Property(e => e.Encrypted).HasColumnName("encrypted").HasDefaultValue(false);
             entity.Property(e => e.Metadata).HasColumnName("metadata").HasColumnType("jsonb");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_channels_deleted_at");
@@ -112,6 +113,7 @@ public sealed class VestaDbContext(DbContextOptions<VestaDbContext> options) : D
             entity.Property(e => e.MaxMessagesPerMonth).HasColumnName("max_messages_per_month");
             entity.Property(e => e.MaxConnections).HasColumnName("max_connections");
             entity.Property(e => e.VolatileRatePerMinute).HasColumnName("volatile_rate_per_minute");
+            entity.Property(e => e.MaxEncryptedChannels).HasColumnName("max_encrypted_channels");
 
             entity.HasIndex(e => e.OwnerClientId).HasDatabaseName("IX_apps_owner_client_id");
             entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_apps_deleted_at");

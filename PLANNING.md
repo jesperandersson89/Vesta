@@ -83,7 +83,8 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
 ## Protocol decisions
 
 - Messages: HELLO/WELCOME, PUBLISH/EVENT/ACK, SUBSCRIBE, FETCH/EVENTS_BATCH, ERROR,
-  CREATE_CHANNEL, DELETE_CHANNEL (admin), REGISTER_APP. Details: [docs/protocol.md](docs/protocol.md).
+  CREATE_CHANNEL, GRANT_ACCESS/REVOKE_ACCESS, DELETE_CHANNEL (admin), REGISTER_APP. WELCOME carries an
+  optional `features` list (`encrypted-channels`). Details: [docs/protocol.md](docs/protocol.md).
 - **Signing:** RFC 8785 JCS canonical JSON + Ed25519 over every client-authored field except
   `signature`; `sequence`, `receivedAt` and `metadata` are never signed. Libraries:
   `JsonCanonicalization` (C#), `canonicalize` (TS), `json-canonicalization` (Py).
@@ -94,10 +95,11 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
   admin status or a per-client-id connection cap; `Protocol:RequireHelloProof` makes it mandatory (off by
   default for old SDKs).
 - **Channels:** slug `[a-z0-9][a-z0-9\-/]*[a-z0-9]`, max 128; created implicitly in open mode;
-  ACL modes open/private/broadcast via `CREATE_CHANNEL` (roles admin/member/reader). Soft-delete via `deleted_at`, hard-delete
+  ACL modes open/private/broadcast via `CREATE_CHANNEL` (roles admin/member/reader); `encrypted: true`
+  (private only) makes the relay require the `EncryptedPayload` envelope on every app event (#33). Soft-delete via `deleted_at`, hard-delete
   by `ChannelDeletionPrunerService` after a grace period.
 - **Apps:** `AppId` = one slug segment, max 64. `REGISTER_APP` + `Protocol:RequireAppRegistration`
-  gates everything per app (`UNKNOWN_APP`). Six quotas in `AppQuotas` enforced hot-path +
+  gates everything per app (`UNKNOWN_APP`). Ten quotas in `AppQuotas` enforced hot-path +
   `AppQuotaPrunerService`; errors `QUOTA_EXCEEDED` / `RATE_LIMITED`.
 - **App lifecycle (admin API):** apps are *soft-deleted* (`apps.deleted_at`) with their channels
   stamped with the same timestamp; restore undoes exactly that cascade. `AppDeletionPrunerService`
@@ -317,8 +319,9 @@ games themselves are not a target, see *Target audience*):
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
-- **#33 Per-channel encryption.** ⏳ **Open — design below, no code yet** (audience decision 2026-10-28,
-  design 2026-10-29). Today every payload is stored in the clear, so the relay operator (and anyone with
+- **#33 Per-channel encryption.** ⏳ **Phase A done (relay + wire types, 2026-10-29); phases B–D open.**
+  (Audience decision 2026-10-28, design 2026-10-29.) Today every payload is stored in the clear, so the
+  relay operator (and anyone with
   the database, and any *stranger's relay a user fails over to*) can read it; the README's fit table says
   so. The decision is that confidentiality is **configurable per channel**, not per app and not
   relay-wide: most channels (a noticeboard, presence) gain nothing from it, and encrypted channels cost
@@ -392,6 +395,29 @@ games themselves are not a target, see *Target audience*):
      mode for `ChatRoom.CLI`) + `docs/encryption.md` (new file, indexed) → SDK `0.4.0`; (D) Atrium quota
      / add-on. A and B are independent; C needs both.
 
+  ✅ **Phase A shipped (2026-10-29, unreleased — next `server-v0.4.0` / SDK `0.4.0`).** `CreateChannelMessage.Encrypted`
+  (`bool?`, omitted when false so old relays see the old wire shape), `RevokeAccessMessage` (`REVOKE_ACCESS`),
+  `WelcomeMessage.Features` (`["encrypted-channels"]`, `RelayFeatures` constants), `EncryptedPayload.IsEnvelope`
+  (VestaCore, shared by relay and C# SDK), `channels.encrypted` + `apps.max_encrypted_channels` (migration
+  `AddEncryptedChannels`), `IChannelAccessStore.{IsEncrypted,RevokeAccess,CountEncryptedChannelsByApp}Async`,
+  `ChannelSummary.Encrypted`, `AppQuotas.MaxEncryptedChannels`, admin JSON `encrypted` / `encryptedChannels`,
+  new error code `ENCRYPTION_REQUIRED` (classified event-fatal, not a limit, in all three SDKs). SDKs:
+  `CreateChannelAsync(..., encrypted:)` / `createChannel({ encrypted })` / `create_channel(encrypted=)` refuse
+  (throw) unless `Features` contains the capability; `RevokeAccessAsync` / `revokeAccess` / `revoke_access`;
+  `Features` + `SupportsFeature`. Tests: `EncryptedChannelTests` (relay, 8), `EncryptedPayloadTests` (core, 16
+  cases), Npgsql store round-trips, `EncryptedChannelClientTests` (C#, 6), `encrypted-channels.test.mjs` (6),
+  `test_encrypted_channels.py` (7). **Decisions made while building:** (1) the shape check sits *after* ACL
+  and before signature verification, so a non-member still gets `ACCESS_DENIED` first and the relay never
+  spends a signature check on a plaintext leak; (2) the relay does the `IsEncryptedAsync` lookup only when
+  the payload is *not* an envelope and the type is not `vesta.*`, so plain-channel publishes pay nothing;
+  (3) `REVOKE_ACCESS` refuses self-revocation rather than tracking an admin count — the cheap invariant that
+  a channel keeps at least one admin; (4) the in-memory `GrantAccessAsync` still auto-creates a private
+  channel for unknown ids (pre-existing behaviour, left alone); (5) `CreateChannelAsync`'s store signature
+  gained `encrypted` *before* the cancellation token — all callers are in the relay and tests. **Cross-repo:**
+  Atrium's `RelayAppQuotas` must add `MaxEncryptedChannels` before its next deploy against a `0.4` relay, or
+  every quota PATCH resets the column to null (replace-all). **Still open:** phases B–D; the admin GUI does
+  not show the flag yet; `VestaTestClient` unchanged.
+
   **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel**: `AppQuotas.MaxEncryptedChannels`
   (`max_encrypted_channels`, enforced at `CREATE_CHANNEL`, `QUOTA_EXCEEDED`) and the `encryptedChannels`
   count on `GET /admin/apps/{id}`; the quota PATCH is replace-all, so Atrium's `RelayAppQuotas` must learn
@@ -447,10 +473,11 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
 
 - Shell is **Windows PowerShell 5.1**: chain with `;` not `&&`; `pwsh` is not installed — use
   `powershell -File` for the `.ps1` scripts.
-- Python dev interpreter: `.venv` at the repo root. Run `python -m unittest discover -s
-  clients/vesta-client-py/tests`. TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 217 Core + 136 Client + 235 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 142; Py 158. Docker **is** available in this dev environment, so run the full server suite
+- Python dev interpreter: `.venv` at the repo root (`.venv\Scripts\python.exe`; the Store `python` on PATH
+  lacks `cryptography`). Run `python -m unittest discover -s tests` **from `clients/vesta-client-py`**
+  (from the repo root the package is not importable). TS: `npm test` in `clients/vesta-client-ts`.
+- Expected test totals (all green): C# 233 Core + 142 Client + 245 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 148; Py 165. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

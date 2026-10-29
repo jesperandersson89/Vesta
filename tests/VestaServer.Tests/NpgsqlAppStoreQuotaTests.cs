@@ -43,7 +43,8 @@ public sealed class NpgsqlAppStoreQuotaTests : IAsyncLifetime
     await _store.RegisterAsync("quotaapp", "owner-1");
     AppQuotas quotas = new(
         MaxPayloadBytes: 1, PublishRatePerMinute: 2, MaxChannels: 3, MaxEventsPerChannel: 4,
-        RetentionDays: 5, TotalStorageBytes: 6, MaxMessagesPerMonth: 7, MaxConnections: 8, VolatileRatePerMinute: 9);
+        RetentionDays: 5, TotalStorageBytes: 6, MaxMessagesPerMonth: 7, MaxConnections: 8, VolatileRatePerMinute: 9,
+        MaxEncryptedChannels: 10);
 
     Assert.True(await _store.SetQuotasAsync("quotaapp", quotas));
 
@@ -61,6 +62,7 @@ public sealed class NpgsqlAppStoreQuotaTests : IAsyncLifetime
     AppQuotas stored = (await _store.GetAsync("plainapp"))!.Quotas;
     Assert.Null(stored.MaxConnections);
     Assert.Null(stored.VolatileRatePerMinute);
+    Assert.Null(stored.MaxEncryptedChannels);
     Assert.Equal(10, stored.PublishRatePerMinute);
   }
 

@@ -61,7 +61,8 @@ public sealed record ChannelSummary(
     string Id,
     ChannelVisibility Visibility,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? DeletedAt);
+    DateTimeOffset? DeletedAt,
+    bool Encrypted = false);
 
 /// <summary>A (clientId, role) pair on a private channel.</summary>
 public sealed record ChannelMember(string ClientId, string Role);
@@ -76,6 +77,12 @@ public interface IChannelAccessStore
   /// Returns the visibility of a channel, or <c>null</c> if the channel does not exist.
   /// </summary>
   Task<ChannelVisibility?> GetVisibilityAsync(string channelId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Returns true when the channel exists and was created with <c>encrypted: true</c>. Channels that
+  /// do not exist (and implicitly created ones) are never encrypted.
+  /// </summary>
+  Task<bool> IsEncryptedAsync(string channelId, CancellationToken cancellationToken = default);
 
   /// <summary>
   /// Returns true if the given client is allowed to read (subscribe / fetch) the channel.
@@ -100,6 +107,7 @@ public interface IChannelAccessStore
   /// <summary>
   /// Create a new channel with the specified visibility and members.
   /// The <paramref name="adminClientId"/> is recorded as admin; <paramref name="memberClientIds"/> are recorded as members.
+  /// <paramref name="encrypted"/> marks the channel end-to-end encrypted (the caller has already required <c>private</c>).
   /// Throws <see cref="ChannelAlreadyExistsException"/> if the channel already exists.
   /// </summary>
   Task CreateChannelAsync(
@@ -107,6 +115,7 @@ public interface IChannelAccessStore
       ChannelVisibility visibility,
       string adminClientId,
       IReadOnlyList<string> memberClientIds,
+      bool encrypted = false,
       CancellationToken cancellationToken = default);
 
   /// <summary>
@@ -119,11 +128,26 @@ public interface IChannelAccessStore
       CancellationToken cancellationToken = default);
 
   /// <summary>
+  /// Remove a client's access entry. Idempotent; returns true when an entry was removed.
+  /// The caller is expected to have already verified admin rights and that the target is not the caller.
+  /// </summary>
+  Task<bool> RevokeAccessAsync(
+      string channelId,
+      string clientId,
+      CancellationToken cancellationToken = default);
+
+  /// <summary>
   /// Count channels belonging to the given app namespace. A channel belongs to the app
   /// when its ID equals <paramref name="appId"/> or starts with <c>"{appId}/"</c>.
   /// Used by per-app quota enforcement (max_channels).
   /// </summary>
   Task<int> CountChannelsByAppAsync(string appId, CancellationToken cancellationToken = default);
+
+  /// <summary>
+  /// Count encrypted channels belonging to the given app namespace (same membership rule as
+  /// <see cref="CountChannelsByAppAsync"/>). Used by <c>max_encrypted_channels</c> and the admin API.
+  /// </summary>
+  Task<int> CountEncryptedChannelsByAppAsync(string appId, CancellationToken cancellationToken = default);
 
   /// <summary>
   /// Returns true if the channel exists and has been soft-deleted (tombstoned).

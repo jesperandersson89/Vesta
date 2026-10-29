@@ -160,6 +160,10 @@ namespace VestaServer.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_connections");
 
+                    b.Property<int?>("MaxEncryptedChannels")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_encrypted_channels");
+
                     b.Property<int?>("MaxEventsPerChannel")
                         .HasColumnType("integer")
                         .HasColumnName("max_events_per_channel");
@@ -288,6 +292,12 @@ namespace VestaServer.Data.Migrations
                     b.Property<DateTimeOffset?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
+
+                    b.Property<bool>("Encrypted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("encrypted");
 
                     b.Property<string>("Metadata")
                         .HasColumnType("jsonb")

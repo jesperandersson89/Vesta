@@ -89,6 +89,17 @@ class ChallengeMessage:
 class WelcomeMessage:
     server_id: str
     channels: list[str]
+    # Optional relay capabilities (see ``RelayFeatures``); empty on relays that predate the field.
+    features: list[str] = field(default_factory=list)
+
+
+class RelayFeatures:
+    """Names of optional relay capabilities advertised in ``WelcomeMessage.features``."""
+
+    # The relay understands ``encrypted`` on CREATE_CHANNEL, enforces the encrypted envelope on
+    # encrypted channels and supports REVOKE_ACCESS. Never create an encrypted channel on a relay
+    # that does not advertise this: an older relay would ignore the flag and store plaintext.
+    ENCRYPTED_CHANNELS = "encrypted-channels"
 
 
 @dataclass
@@ -137,6 +148,7 @@ def parse_server_message(data: dict[str, Any]) -> ServerMessage:
             return WelcomeMessage(
                 server_id=data["serverId"],
                 channels=data["channels"],
+                features=list(data.get("features") or []),
             )
         case "EVENT":
             return EventMessage(

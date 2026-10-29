@@ -44,6 +44,7 @@ public static class VestaJsonOptions
 [JsonSerializable(typeof(FetchMessage))]
 [JsonSerializable(typeof(CreateChannelMessage))]
 [JsonSerializable(typeof(GrantAccessMessage))]
+[JsonSerializable(typeof(RevokeAccessMessage))]
 [JsonSerializable(typeof(WelcomeMessage))]
 [JsonSerializable(typeof(EventMessage))]
 [JsonSerializable(typeof(EventsBatchMessage))]

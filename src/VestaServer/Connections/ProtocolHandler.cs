@@ -81,6 +81,9 @@ public sealed class ProtocolHandler(
 {
     private static readonly string _serverId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
 
+    /// <summary>Optional capabilities this relay advertises in WELCOME (see <see cref="RelayFeatures"/>).</summary>
+    private static readonly IReadOnlyList<string> SupportedFeatures = [RelayFeatures.EncryptedChannels];
+
     // Real client ids are base64url, so "*" can never collide with a per-client bucket.
     private const string AppThrottleBucketKey = "*throttle";
     private static readonly TimeSpan HelloProofWindow = TimeSpan.FromSeconds(30);
@@ -172,6 +175,10 @@ public sealed class ProtocolHandler(
 
             case GrantAccessMessage grant:
                 await HandleGrantAccessAsync(connection, grant, cancellationToken);
+                break;
+
+            case RevokeAccessMessage revoke:
+                await HandleRevokeAccessAsync(connection, revoke, cancellationToken);
                 break;
 
             case RegisterAppMessage register:
@@ -362,7 +369,7 @@ public sealed class ProtocolHandler(
 
         // Send WELCOME
         await connection.SendAsync(
-            new WelcomeMessage(_serverId, connection.Subscriptions.ToList()),
+            new WelcomeMessage(_serverId, connection.Subscriptions.ToList(), SupportedFeatures),
             cancellationToken);
 
         // Catch-up: send missed events for channels with lastSequences
@@ -426,6 +433,20 @@ public sealed class ProtocolHandler(
 
         if (!await EnsureManifestPublisherIsOwnerAsync(connection, publish, cancellationToken))
             return;
+
+        // Encrypted channels: every app event must be an EncryptedPayload envelope. The relay checks
+        // the shape only (it holds no key); vesta.* control events (key distribution) stay in the clear.
+        if (!publish.Event.EventType.StartsWith("vesta.", StringComparison.Ordinal) &&
+            !EncryptedPayload.IsEnvelope(publish.Event.Payload) &&
+            await accessStore.IsEncryptedAsync(publish.ChannelId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ENCRYPTION_REQUIRED",
+                    $"Channel '{publish.ChannelId}' is encrypted; payload must be an encrypted envelope",
+                    publish.Event.Id, publish.ChannelId),
+                cancellationToken);
+            return;
+        }
 
         // Anti-impersonation: the event's clientId must match this connection's clientId.
         // Without this check, a connection could publish events claiming to be from another
@@ -797,10 +818,24 @@ public sealed class ProtocolHandler(
         if (!await EnforceMaxChannelsAsync(connection, create.ChannelId, cancellationToken))
             return;
 
-        if (!await JoinAppAsync(connection, create.ChannelId, eventId: null, cancellationToken))
+        bool encrypted = create.Encrypted is true;
+        ChannelVisibility visibility = ChannelVisibilityNames.Parse(create.Visibility);
+
+        // Keys on an encrypted channel are distributed by membership, so it must be private.
+        if (encrypted && visibility != ChannelVisibility.Private)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_CHANNEL",
+                    $"Encrypted channel '{create.ChannelId}' must have visibility 'private'", null, create.ChannelId),
+                cancellationToken);
+            return;
+        }
+
+        if (encrypted && !await EnforceMaxEncryptedChannelsAsync(connection, create.ChannelId, cancellationToken))
             return;
 
-        ChannelVisibility visibility = ChannelVisibilityNames.Parse(create.Visibility);
+        if (!await JoinAppAsync(connection, create.ChannelId, eventId: null, cancellationToken))
+            return;
 
         try
         {
@@ -809,6 +844,7 @@ public sealed class ProtocolHandler(
                 visibility,
                 adminClientId: connection.ClientId,
                 memberClientIds: create.InitialMembers,
+                encrypted,
                 cancellationToken);
         }
         catch (ChannelAlreadyExistsException)
@@ -827,8 +863,8 @@ public sealed class ProtocolHandler(
             cancellationToken);
 
         logger.LogInformation(
-            "Channel created: {ChannelId} ({Visibility}) by {ClientId} with {MemberCount} initial members",
-            create.ChannelId, visibility, connection.ClientId, create.InitialMembers.Count);
+            "Channel created: {ChannelId} ({Visibility}{Encrypted}) by {ClientId} with {MemberCount} initial members",
+            create.ChannelId, visibility, encrypted ? ", encrypted" : "", connection.ClientId, create.InitialMembers.Count);
     }
 
     private async Task HandleGrantAccessAsync(
@@ -866,6 +902,55 @@ public sealed class ProtocolHandler(
         await connection.SendAsync(
             new AckMessage(grant.ChannelId, Guid.Empty, 0),
             cancellationToken);
+    }
+
+    private async Task HandleRevokeAccessAsync(
+        ClientConnection connection,
+        RevokeAccessMessage revoke,
+        CancellationToken cancellationToken)
+    {
+        if (connection.ClientId is null)
+        {
+            await connection.SendAsync(
+                new ErrorMessage("HELLO_REQUIRED", "Must send HELLO before REVOKE_ACCESS"),
+                cancellationToken);
+            return;
+        }
+
+        if (!ChannelId.IsValid(revoke.ChannelId))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("INVALID_CHANNEL", $"Invalid channel ID: '{revoke.ChannelId}'"),
+                cancellationToken);
+            return;
+        }
+
+        if (!await accessStore.IsAdminAsync(revoke.ChannelId, connection.ClientId, cancellationToken))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", "Only channel admins can revoke access", null, revoke.ChannelId),
+                cancellationToken);
+            return;
+        }
+
+        // A channel must never lose its last admin; an admin steps down by having another admin revoke it.
+        if (string.Equals(revoke.ClientId, connection.ClientId, StringComparison.Ordinal))
+        {
+            await connection.SendAsync(
+                new ErrorMessage("ACCESS_DENIED", "An admin cannot revoke its own access", null, revoke.ChannelId),
+                cancellationToken);
+            return;
+        }
+
+        await accessStore.RevokeAccessAsync(revoke.ChannelId, revoke.ClientId, cancellationToken);
+
+        await connection.SendAsync(
+            new AckMessage(revoke.ChannelId, Guid.Empty, 0),
+            cancellationToken);
+
+        logger.LogInformation(
+            "Access revoked on {ChannelId}: {Target} by admin {ClientId}",
+            revoke.ChannelId, revoke.ClientId, connection.ClientId);
     }
 
     private async Task HandleRegisterAppAsync(
@@ -1243,6 +1328,41 @@ public sealed class ProtocolHandler(
                 new ErrorMessage(
                     "QUOTA_EXCEEDED",
                     $"App '{appId}' already owns {current} channels (max_channels = {max})"),
+                cancellationToken);
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Enforces <c>max_encrypted_channels</c> on CREATE_CHANNEL with <c>encrypted: true</c>.
+    /// Pause and app existence were already checked by <see cref="EnforceMaxChannelsAsync"/>.
+    /// </summary>
+    private async Task<bool> EnforceMaxEncryptedChannelsAsync(
+        ClientConnection connection,
+        string channelId,
+        CancellationToken cancellationToken)
+    {
+        if (appStore is null)
+            return true;
+
+        string? appId = AppId.ExtractFromChannelId(channelId);
+        if (appId is null)
+            return true;
+
+        AppInfo? app = await appStore.GetAsync(appId, cancellationToken);
+        if (app?.Quotas.MaxEncryptedChannels is not int max)
+            return true;
+
+        int current = await accessStore.CountEncryptedChannelsByAppAsync(appId, cancellationToken);
+        if (current >= max)
+        {
+            await connection.SendAsync(
+                new ErrorMessage(
+                    "QUOTA_EXCEEDED",
+                    $"App '{appId}' already owns {current} encrypted channels (max_encrypted_channels = {max})",
+                    null, channelId),
                 cancellationToken);
             return false;
         }

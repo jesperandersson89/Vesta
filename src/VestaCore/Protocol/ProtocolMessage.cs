@@ -14,6 +14,7 @@ namespace Vesta;
 [JsonDerivedType(typeof(FetchMessage), "FETCH")]
 [JsonDerivedType(typeof(CreateChannelMessage), "CREATE_CHANNEL")]
 [JsonDerivedType(typeof(GrantAccessMessage), "GRANT_ACCESS")]
+[JsonDerivedType(typeof(RevokeAccessMessage), "REVOKE_ACCESS")]
 [JsonDerivedType(typeof(RegisterAppMessage), "REGISTER_APP")]
 [JsonDerivedType(typeof(DeleteChannelMessage), "DELETE_CHANNEL")]
 [JsonDerivedType(typeof(ProveMessage), "PROVE")]

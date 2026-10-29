@@ -120,6 +120,16 @@ This gives you "live for a while, then forget" semantics — perfect for presenc
 
 A causal pointer to another event by `id`. Vesta does **not** enforce parent ordering — the server still assigns sequences in receive order. `parentId` is purely a hint for app-level conflict resolution (e.g. "this edit was based on event X, reject if X was superseded").
 
+## Payloads on encrypted channels
+
+Payloads are stored **as sent**: on an ordinary channel the relay operator (and anyone who copies the database) can read them, so do not put secrets in events there. A channel created with `encrypted: true` ([protocol.md](protocol.md#encrypted-channels)) is different: the relay requires every non-`vesta.*` payload to be an **encrypted envelope** and refuses anything else with `ENCRYPTION_REQUIRED`:
+
+```jsonc
+{ "enc": 1, "kid": 3, "n": "<base64url 12-byte nonce>", "ct": "<base64url ciphertext+tag>" }
+```
+
+The envelope is the signed `payload`, so everything on this page still applies: the signature covers the ciphertext, `replace` and `ttlSeconds` work unchanged, and `eventType` stays in the clear (it drives `replace` and projections; an app that must hide it uses one opaque type and carries the real type inside the plaintext). The SDK-side encryption, key distribution and decrypting projections are the next phases of `PLANNING.md` #33; until they ship, treat encrypted channels as a relay capability without an SDK yet.
+
 ## Client identity
 
 `clientId` is `base64url(sha256(publicKey))[:22]`. It is derived deterministically from the Ed25519 public key, which means:

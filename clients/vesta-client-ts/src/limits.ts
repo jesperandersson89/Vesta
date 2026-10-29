@@ -30,6 +30,8 @@ export const VestaErrorCodes = {
     AppPaused: "APP_PAUSED",
     /** The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event. */
     ConnectionLimited: "CONNECTION_LIMITED",
+    /** The channel is end-to-end encrypted and the payload was not an encrypted envelope; the event can never succeed as sent. */
+    EncryptionRequired: "ENCRYPTION_REQUIRED",
 } as const;
 
 /** The outcome of classifying a server error code. */
@@ -65,6 +67,7 @@ export function classifyErrorCode(code: string): ErrorClassification {
         case "CLIENT_ID_MISMATCH":
         case "PROTOCOL_NAMESPACE_RESERVED":
         case "CHANNEL_DELETED":
+        case VestaErrorCodes.EncryptionRequired:
             return { isLimit: false, isTransient: false, isEventFatal: true };
 
         // Unknown codes: be conservative — don't dead-letter, don't claim it's a limit.

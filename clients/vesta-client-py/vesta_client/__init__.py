@@ -3,6 +3,7 @@
 __version__ = "0.3.1"
 
 from vesta_client.connection import (
+    NotSupportedError,
     VestaConnection,
     set_relay_picker_enabled,
     set_relay_picker_factory,
@@ -128,6 +129,7 @@ from vesta_client.types import (
     ErrorMessage,
     EventMessage,
     EventsBatchMessage,
+    RelayFeatures,
     SequencedEvent,
     ServerMessage,
     VestaEvent,
@@ -199,8 +201,10 @@ __all__ = [
     "WebRelayPicker",
     "is_valid_app_id",
     "normalize_relay_url",
+    "NotSupportedError",
     "open_system_browser",
     "parse_relay_override",
+    "RelayFeatures",
     "set_relay_picker_enabled",
     "set_relay_picker_factory",
     "SequencedEvent",

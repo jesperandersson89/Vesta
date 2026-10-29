@@ -21,11 +21,16 @@ public sealed record HelloMessage(
 /// are added as members in addition to the creator.
 /// When <see cref="Visibility"/> is "private", only members can subscribe/publish/fetch; when it is
 /// "broadcast", anyone can subscribe/fetch but only members (and the admin) can publish.
+/// <see cref="Encrypted"/> marks the channel as end-to-end encrypted: the relay requires every
+/// non-<c>vesta.*</c> payload to be an <see cref="EncryptedPayload"/> envelope and never holds a key.
+/// Encrypted channels must be <c>private</c> (keys are distributed by membership) and can only be
+/// created on relays that advertise <see cref="RelayFeatures.EncryptedChannels"/> in WELCOME.
 /// </summary>
 public sealed record CreateChannelMessage(
     string ChannelId,
     string Visibility,                              // "public" | "private" | "broadcast"
-    IReadOnlyList<string> InitialMembers
+    IReadOnlyList<string> InitialMembers,
+    bool? Encrypted = null
 ) : ProtocolMessage;
 
 /// <summary>
@@ -36,6 +41,17 @@ public sealed record GrantAccessMessage(
     string ChannelId,
     string ClientId,
     string Role                                     // "member" | "admin" | "reader"
+) : ProtocolMessage;
+
+/// <summary>
+/// CLIENT → SERVER: Remove a client's access entry from a private or broadcast channel. Admin-only.
+/// Idempotent: revoking a client that has no entry still answers with an <see cref="AckMessage"/>.
+/// An admin cannot revoke itself (<c>ACCESS_DENIED</c>) so a channel is never left without an admin.
+/// On an encrypted channel the admin is expected to rotate the channel key afterwards.
+/// </summary>
+public sealed record RevokeAccessMessage(
+    string ChannelId,
+    string ClientId
 ) : ProtocolMessage;
 
 /// <summary>

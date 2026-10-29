@@ -69,6 +69,7 @@ public static class AdminEndpoints
       {
         id = r.Id,
         visibility = r.Visibility.ToString().ToLowerInvariant(),
+        encrypted = r.Encrypted,
         createdAt = r.CreatedAt,
         deletedAt = r.DeletedAt,
       }));
@@ -101,6 +102,7 @@ public static class AdminEndpoints
       {
         id = summary.Id,
         visibility = summary.Visibility.ToString().ToLowerInvariant(),
+        encrypted = summary.Encrypted,
         createdAt = summary.CreatedAt,
         deletedAt = summary.DeletedAt,
         eventCount = channelStats.EventCount,
@@ -169,6 +171,7 @@ public static class AdminEndpoints
       AppInfo? app = await apps.GetAsync(id, ct);
       if (app is null) return Results.NotFound();
       int channelCount = await access.CountChannelsByAppAsync(id, ct);
+      int encryptedChannels = await access.CountEncryptedChannelsByAppAsync(id, ct);
       return Results.Ok(new
       {
         id = app.Id,
@@ -178,6 +181,7 @@ public static class AdminEndpoints
         discoverable = app.Discoverable,
         storageBytes = accountant.Get(app.Id),
         channelCount,
+        encryptedChannels,
         deletedAt = app.DeletedAt,
         pausedAt = app.PausedAt,
         throttlePerMinute = app.ThrottlePerMinute,
@@ -198,6 +202,7 @@ public static class AdminEndpoints
       AppInfo? app = await apps.GetAsync(id, ct);
       if (app is null) return Results.NotFound();
       int channelCount = await access.CountChannelsByAppAsync(id, ct);
+      int encryptedChannels = await access.CountEncryptedChannelsByAppAsync(id, ct);
       return Results.Ok(new
       {
         id = app.Id,
@@ -205,6 +210,7 @@ public static class AdminEndpoints
         messages = usageAccountant.GetMessages(app.Id),
         storageBytes = storageAccountant.Get(app.Id),
         channelCount,
+        encryptedChannels,
         quotas = app.Quotas,
       });
     });
@@ -241,6 +247,7 @@ public static class AdminEndpoints
             {
               id = c.Id,
               visibility = c.Visibility.ToString().ToLowerInvariant(),
+              encrypted = c.Encrypted,
               createdAt = c.CreatedAt,
               deletedAt = c.DeletedAt,
               eventCount = s?.EventCount ?? 0,

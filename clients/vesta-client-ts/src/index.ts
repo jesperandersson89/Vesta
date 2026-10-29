@@ -134,6 +134,7 @@ export type {
     ProveMessage,
     PublishMessage,
     RegisterAppMessage,
+    RevokeAccessMessage,
     SequencedEvent,
     ServerMessage,
     SubscribeMessage,
@@ -141,3 +142,4 @@ export type {
     VestaEvent,
     WelcomeMessage,
 } from "./types.js";
+export { RelayFeatures } from "./types.js";

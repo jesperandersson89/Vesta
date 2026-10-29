@@ -32,6 +32,8 @@ class VestaErrorCodes:
     APP_PAUSED = "APP_PAUSED"
     # The connection hit a relay per-connection cap (e.g. subscriptions); not tied to any outbox event.
     CONNECTION_LIMITED = "CONNECTION_LIMITED"
+    # The channel is end-to-end encrypted and the payload was not an encrypted envelope; the event can never succeed as sent.
+    ENCRYPTION_REQUIRED = "ENCRYPTION_REQUIRED"
 
 @dataclass(frozen=True)
 class ErrorClassification:
@@ -57,6 +59,7 @@ _FATAL_PROTOCOL_CODES = (
     "CLIENT_ID_MISMATCH",
     "PROTOCOL_NAMESPACE_RESERVED",
     "CHANNEL_DELETED",
+    VestaErrorCodes.ENCRYPTION_REQUIRED,
 )
 
 
