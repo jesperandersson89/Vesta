@@ -207,6 +207,39 @@ Every descriptor is verified (self-signature) and cross-checked against the app'
 spoof hosting your app under a different owner. Uses the stdlib `urllib.request` internally — no
 extra dependency.
 
+### Encrypted channels
+
+A channel created with `encrypted=True` is private **and** end-to-end encrypted: the relay stores only
+ciphertext and cannot read it. Members hold the keys; an admin hands them out over the channel itself.
+
+```python
+from vesta_client import EncryptedChannelOptions, SqliteChannelKeyStore
+
+# Admin: create the channel, hold epoch 1, add members with grant_access()
+channel = await conn.create_encrypted_channel(
+    "household/notes",
+    members=[partner_client_id],
+    options=EncryptedChannelOptions(key_store=SqliteChannelKeyStore("~/.vesta/keys.db")),
+)
+channel.on_event(lambda e: print(e.event.event.payload))  # plaintext; e.sealed is the original
+await channel.publish("app.note", {"text": "buy milk"})
+
+# Member: needs the admin's Ed25519 public key (compiled in or from an invite)
+channel = await conn.open_encrypted_channel(
+    "household/notes", EncryptedChannelOptions(admin_public_keys=[admin_public_key])
+)
+await channel.wait_for_key()  # an admin must be online the first time
+await channel.publish("app.note", {"text": "done"})
+
+# Admin: remove someone — REVOKE_ACCESS + forget + rotate to a new epoch
+await channel.remove_member(partner_client_id)
+```
+
+Requires a relay that advertises `encrypted-channels` in `WELCOME` (`conn.supports_feature(RelayFeatures.ENCRYPTED_CHANNELS)`);
+`create_channel(..., encrypted=True)` raises `NotSupportedError` otherwise so an old relay never stores plaintext
+by mistake. The primitives (`ChannelKeyPair`, `encrypt_payload`, `seal_key`, …) are exported too. Full guide:
+`docs/encryption.md` in the Vesta repo.
+
 ### `create_event(channel_id, client_id, event_type, payload, **kwargs)`
 
 Create a `VestaEvent` with a UUID and current timestamp.

@@ -171,9 +171,10 @@ independence, federation, relay recovery, SDK publishing, relay container image,
 (per-app dashboard, app soft-delete/restore/purge, JSON Lines export, quota alerts, audit log,
 rate-limited `/admin/auth/*`, self-contained GUI with no CDN dependency).
 
-**Open:** #13 client READMEs (TS/Py getting-started), #14 observability (metrics, structured
-logging), #15 multi-server (scale-out sticky sessions / shared rate-limit + token store),
-**the 0.4.0 release** (relay image + SDKs; #33 is built but unreleased, see its entry below for the order).
+**Open:** #14 observability (metrics, structured logging), #15 multi-server (scale-out sticky
+sessions / shared rate-limit + token store); after the 0.4.0 release lands: an encrypted example app and
+the Dependabot example bumps. (#13 client READMEs: ✅ done — both have getting-started, API, limits,
+persistence, snapshots, relay independence, federation and encrypted-channel sections.)
 
 **Hardening** (originally surfaced by a multiplayer-game-with-store evaluation, kept because every
 item is general: signature verification, ACL, or operator-configurable limits, never payload logic;
@@ -515,7 +516,8 @@ non-game example such as the tool-library "librarian" from `docs/patterns.md`).
 
 - **Shared version lives in 3 manifests**: `Directory.Build.props` (`VersionPrefix`),
   `clients/vesta-client-ts/package.json`, `clients/vesta-client-py/vesta_client/__init__.py`
-  (`pyproject.toml` reads it dynamically). Current: **0.3.1**.
+  (`pyproject.toml` reads it dynamically). Current: **0.4.0** (encrypted channels, `REVOKE_ACCESS`,
+  `WELCOME.features`; relay image `server-v0.4.0` carries the same feature set and the `AddEncryptedChannels` migration).
 - Bump all three → `powershell -File .github/scripts/check-version.ps1 -Tag vX.Y.Z` →
   `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` verifies, publishes NuGet
   (`VestaProtocol.Core`, `VestaProtocol.Client`), npm + PyPI (`vesta-client`) via OIDC trusted

@@ -201,6 +201,34 @@ Every descriptor is verified (self-signature) and cross-checked against the app'
 (`ownerClientId` must match `deriveClientId(appConfig.ownerPublicKey)`) — a relay cannot spoof
 hosting your app under a different owner.
 
+### Encrypted channels
+
+A channel created with `encrypted: true` is private **and** end-to-end encrypted: the relay stores only
+ciphertext and cannot read it. Members hold the keys; an admin hands them out over the channel itself.
+
+```typescript
+// Admin: create the channel, hold epoch 1, add members with grantAccess()
+const channel = await connection.createEncryptedChannel("household/notes", {
+    members: [partnerClientId],
+    keyStore: new FileChannelKeyStore("~/.vesta/keys.json"), // from "vesta-client/node"; LocalStorageChannelKeyStore in browsers
+});
+channel.on("event", (e) => console.log(e.event.event.payload)); // plaintext; e.sealed is the original
+await channel.publish("app.note", { text: "buy milk" });
+
+// Member: needs the admin's Ed25519 public key (compiled in or from an invite)
+const channel = await connection.openEncryptedChannel("household/notes", { adminPublicKeys: [adminPublicKey] });
+await channel.waitForKey(); // an admin must be online the first time
+await channel.publish("app.note", { text: "done" });
+
+// Admin: remove someone — REVOKE_ACCESS + forget + rotate to a new epoch
+await channel.removeMember(partnerClientId);
+```
+
+Requires a relay that advertises `encrypted-channels` in `WELCOME` (`connection.supportsFeature(RelayFeatures.EncryptedChannels)`);
+`createChannel({ encrypted: true })` throws otherwise so an old relay never stores plaintext by mistake.
+The primitives (`ChannelKeyPair`, `encryptPayload`, `sealKey`, …) are exported too. Full guide: `docs/encryption.md`
+in the Vesta repo.
+
 ### `createEvent(channelId, clientId, eventType, payload, options?)`
 
 Helper to create a `VestaEvent` with a UUID and timestamp.

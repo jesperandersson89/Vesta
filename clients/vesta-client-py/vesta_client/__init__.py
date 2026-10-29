@@ -1,6 +1,6 @@
 """Vesta protocol client library for Python."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 from vesta_client.connection import (
     NotSupportedError,
