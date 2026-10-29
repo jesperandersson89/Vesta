@@ -529,6 +529,12 @@ non-game example such as the tool-library "librarian" from `docs/patterns.md`).
   packages (C# `VestaProtocol.Client`, TS `^X.Y.Z` — regenerate lockfiles, Py `>=X.Y.Z`); bump
   them *after* the release is live (Dependabot or manual). `examples.yml` can be re-dispatched
   with `sdk_version`.
+- **Expect the post-release `examples.yml` run to fail and re-dispatch it** (observed 0.4.0, 2026-10-29): it
+  starts the moment `release.yml` finishes, but npm takes a few minutes to serve a new version and nuget.org
+  indexes `VestaProtocol.Client` *before* its dependency `VestaProtocol.Core`, so the C# examples see
+  `NU1102 … VestaProtocol.Core (>= X.Y.Z)` for ~15 minutes. PyPI is instant. Poll
+  `https://api.nuget.org/v3-flatcontainer/vestaprotocol.core/index.json` until it lists the version, then
+  `gh workflow run examples.yml -f sdk_version=X.Y.Z`.
 - Atrium pins `VestaProtocol.Core` separately — bump it there after each release.
 
 ## Conventions
