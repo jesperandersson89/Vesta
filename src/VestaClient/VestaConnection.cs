@@ -1225,6 +1225,108 @@ public sealed class VestaConnection : IAsyncDisposable, IRelayRecoveryHost
     }
 
     /// <summary>
+    /// Create an end-to-end encrypted (private) channel with this identity as admin, wait for the relay to
+    /// confirm it, generate the first epoch key and return the channel ready to publish. Add members with
+    /// <see cref="GrantAccessAsync"/>; they receive keys when they open the channel. Requires an identity and a
+    /// relay that advertises <see cref="RelayFeatures.EncryptedChannels"/>.
+    /// </summary>
+    public async Task<EncryptedChannel> CreateEncryptedChannelAsync(
+        string channelId,
+        IReadOnlyList<string>? initialMembers = null,
+        EncryptedChannelOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        VestaIdentity identity = RequireIdentity(nameof(CreateEncryptedChannelAsync));
+        options ??= new EncryptedChannelOptions();
+        EncryptedChannelOptions adminOptions = new()
+        {
+            KeyStore = options.KeyStore,
+            AdminPublicKeys = options.AdminPublicKeys,
+            IsAdmin = true,
+            ApproveKeyRequest = options.ApproveKeyRequest,
+            FromSequence = options.FromSequence,
+            CreateTimeout = options.CreateTimeout,
+        };
+
+        await AwaitControlAckAsync(
+            channelId,
+            () => CreateChannelAsync(channelId, "private", initialMembers, encrypted: true, cancellationToken),
+            adminOptions.CreateTimeout,
+            cancellationToken).ConfigureAwait(false);
+
+        EncryptedChannel channel = new(this, identity, channelId, adminOptions);
+        try
+        {
+            await channel.CreateInitialKeyAsync(cancellationToken).ConfigureAwait(false);
+            await channel.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+        return channel;
+    }
+
+    /// <summary>
+    /// Open an existing encrypted channel. A member passes the admin public keys it trusts in
+    /// <paramref name="options"/>; it subscribes, publishes a key request if it holds no key yet, and starts
+    /// decrypting once an admin answers (<see cref="EncryptedChannel.WaitForKeyAsync"/>). An admin re-opening
+    /// its channel sets <see cref="EncryptedChannelOptions.IsAdmin"/> and brings the same key store.
+    /// </summary>
+    public async Task<EncryptedChannel> OpenEncryptedChannelAsync(
+        string channelId,
+        EncryptedChannelOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        VestaIdentity identity = RequireIdentity(nameof(OpenEncryptedChannelAsync));
+        ArgumentNullException.ThrowIfNull(options);
+        EncryptedChannel channel = new(this, identity, channelId, options);
+        try
+        {
+            await channel.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+        return channel;
+    }
+
+    /// <summary>
+    /// Send a control request and wait for the relay's nil-event-id <see cref="AckMessage"/> for
+    /// <paramref name="channelId"/>, or throw on an <see cref="ErrorMessage"/> that names the channel (or no channel).
+    /// </summary>
+    private async Task AwaitControlAckAsync(string channelId, Func<Task> send, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<AckMessage> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnAckHandler(AckMessage ack)
+        {
+            if (ack.EventId == Guid.Empty && ack.ChannelId == channelId)
+                completion.TrySetResult(ack);
+        }
+        void OnErrorHandler(ErrorMessage error)
+        {
+            if (error.ChannelId is null || error.ChannelId == channelId)
+                completion.TrySetException(new InvalidOperationException($"{error.Code}: {error.Message}"));
+        }
+
+        OnAck += OnAckHandler;
+        OnError += OnErrorHandler;
+        try
+        {
+            await send().ConfigureAwait(false);
+            await completion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            OnAck -= OnAckHandler;
+            OnError -= OnErrorHandler;
+        }
+    }
+
+    /// <summary>
     /// Register an app namespace. The first slug segment of every channel ID belongs to an app.
     /// When the server is configured with <c>Vesta:RequireAppRegistration=true</c>, the app must
     /// be registered before publishing or subscribing on any channel in its namespace.

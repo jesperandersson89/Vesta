@@ -34,6 +34,19 @@ export {
 } from "./channel-crypto.js";
 export type { ChannelKey, EncryptedEnvelope, SealedChannelKey } from "./channel-crypto.js";
 export {
+    buildKeyGrant,
+    buildKeyRequest,
+    KEY_GRANT_EVENT_TYPE,
+    KEY_REQUEST_EVENT_TYPE,
+    tryParseKeyGrant,
+    tryParseKeyRequest,
+} from "./channel-key-events.js";
+export type { ChannelKeyGrant, ChannelKeyRequest } from "./channel-key-events.js";
+export { InMemoryChannelKeyStore, LocalStorageChannelKeyStore } from "./channel-key-store.js";
+export type { ChannelKeyStore } from "./channel-key-store.js";
+export { EncryptedChannel } from "./encrypted-channel.js";
+export type { DecryptedEvent, EncryptedChannelEvents, EncryptedChannelOptions } from "./encrypted-channel.js";
+export {
     ANNOUNCE_EVENT_TYPE,
     buildAnnounce,
     buildLink,

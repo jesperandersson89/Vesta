@@ -11,6 +11,8 @@ import type {
     WelcomeMessage,
 } from "./types.js";
 import { RelayFeatures } from "./types.js";
+import { EncryptedChannel } from "./encrypted-channel.js";
+import type { EncryptedChannelOptions } from "./encrypted-channel.js";
 import { VestaIdentity } from "./identity.js";
 import type { IdentityBackupOptions, RelayBackup } from "./backup.js";
 import {
@@ -910,6 +912,86 @@ export class VestaConnection {
             type: "REVOKE_ACCESS",
             channelId,
             clientId,
+        });
+    }
+
+    /**
+     * Create an end-to-end encrypted (private) channel with this identity as admin, wait for the relay to
+     * confirm it, generate the first epoch key and return the channel ready to publish. Add members with
+     * `grantAccess`; they receive keys when they open the channel. Requires an identity and a relay that
+     * advertises `RelayFeatures.EncryptedChannels`.
+     */
+    async createEncryptedChannel(
+        channelId: string,
+        options?: EncryptedChannelOptions & { members?: string[] },
+    ): Promise<EncryptedChannel> {
+        const identity = this.requireIdentity("createEncryptedChannel");
+        const adminOptions: EncryptedChannelOptions = { ...options, isAdmin: true };
+        await this.awaitControlAck(
+            channelId,
+            () => this.createChannel(channelId, { visibility: "private", members: options?.members, encrypted: true }),
+            options?.createTimeoutMs ?? 10_000,
+        );
+        const channel = new EncryptedChannel(this, identity, channelId, adminOptions);
+        try {
+            await channel.createInitialKey();
+            await channel.initialize();
+        } catch (error) {
+            channel.close();
+            throw error;
+        }
+        return channel;
+    }
+
+    /**
+     * Open an existing encrypted channel. A member passes the admin public keys it trusts; it subscribes,
+     * publishes a key request if it holds no key yet, and starts decrypting once an admin answers
+     * (`channel.waitForKey()`). An admin re-opening its channel sets `isAdmin` and brings the same key store.
+     */
+    async openEncryptedChannel(channelId: string, options: EncryptedChannelOptions): Promise<EncryptedChannel> {
+        const identity = this.requireIdentity("openEncryptedChannel");
+        const channel = new EncryptedChannel(this, identity, channelId, options);
+        try {
+            await channel.initialize();
+        } catch (error) {
+            channel.close();
+            throw error;
+        }
+        return channel;
+    }
+
+    /** Send a control request and wait for the relay's nil-event-id ACK for `channelId`, or throw on an error that names it (or no channel). */
+    private awaitControlAck(channelId: string, send: () => void, timeoutMs: number): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const cleanup = (): void => {
+                clearTimeout(timer);
+                this.off("ack", onAck);
+                this.off("error", onError);
+            };
+            const onAck = (ack: AckMessage): void => {
+                if (ack.eventId === NIL_EVENT_ID && ack.channelId === channelId) {
+                    cleanup();
+                    resolve();
+                }
+            };
+            const onError = (error: ErrorMessage): void => {
+                if (error.channelId == null || error.channelId === channelId) {
+                    cleanup();
+                    reject(new Error(`${error.code}: ${error.message}`));
+                }
+            };
+            const timer = setTimeout(() => {
+                cleanup();
+                reject(new Error(`Timed out waiting for the relay to acknowledge '${channelId}'.`));
+            }, timeoutMs);
+            this.on("ack", onAck);
+            this.on("error", onError);
+            try {
+                send();
+            } catch (error) {
+                cleanup();
+                reject(error);
+            }
         });
     }
 

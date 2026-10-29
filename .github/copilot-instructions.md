@@ -171,6 +171,7 @@ When you change something that has user-visible impact, update the relevant doc 
 | -------------------------------------------------------------------------------- | ------------------------------------- |
 | `VestaEvent` shape, signing rules, `replace` / `volatile` / `metadata` semantics | `docs/events.md`                      |
 | Projection primitives (new primitive, new method, semantics)                     | `docs/projections.md`                 |
+| Encrypted channels (key handshake, `EncryptedChannel` API, key stores, rotation) | `docs/encryption.md`                  |
 | Protocol message types, `$type` discriminators, wire format                      | `docs/protocol.md`                    |
 | Server config keys (`appsettings.json`), hosted services, ACL behaviour          | `docs/server-configuration.md`        |
 | Anything user-visible at the SDK or CLI surface                                  | `README.md` if it affects quick-start |

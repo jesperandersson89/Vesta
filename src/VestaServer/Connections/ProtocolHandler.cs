@@ -850,7 +850,7 @@ public sealed class ProtocolHandler(
         catch (ChannelAlreadyExistsException)
         {
             await connection.SendAsync(
-                new ErrorMessage("CHANNEL_EXISTS", $"Channel '{create.ChannelId}' already exists"),
+                new ErrorMessage("CHANNEL_EXISTS", $"Channel '{create.ChannelId}' already exists", null, create.ChannelId),
                 cancellationToken);
             return;
         }
@@ -1327,7 +1327,8 @@ public sealed class ProtocolHandler(
             await connection.SendAsync(
                 new ErrorMessage(
                     "QUOTA_EXCEEDED",
-                    $"App '{appId}' already owns {current} channels (max_channels = {max})"),
+                    $"App '{appId}' already owns {current} channels (max_channels = {max})",
+                    null, channelId),
                 cancellationToken);
             return false;
         }

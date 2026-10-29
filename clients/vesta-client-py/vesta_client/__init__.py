@@ -20,6 +20,23 @@ from vesta_client.channel_crypto import (
     read_epoch,
     seal_key,
 )
+from vesta_client.channel_key_events import (
+    KEY_GRANT_EVENT_TYPE,
+    KEY_REQUEST_EVENT_TYPE,
+    ChannelKeyGrant,
+    ChannelKeyRequest,
+    build_key_grant,
+    build_key_request,
+    try_parse_key_grant,
+    try_parse_key_request,
+)
+from vesta_client.channel_key_store import (
+    ChannelKeyStore,
+    FileChannelKeyStore,
+    InMemoryChannelKeyStore,
+    SqliteChannelKeyStore,
+)
+from vesta_client.encrypted_channel import DecryptedEvent, EncryptedChannel, EncryptedChannelOptions
 from vesta_client.events import create_event
 from vesta_client.federation import (
     DiscoverableApp,
@@ -153,14 +170,29 @@ __all__ = [
     "AckMessage",
     "ChannelCryptoError",
     "ChannelKey",
+    "ChannelKeyGrant",
     "ChannelKeyPair",
+    "ChannelKeyRequest",
+    "ChannelKeyStore",
+    "DecryptedEvent",
+    "EncryptedChannel",
+    "EncryptedChannelOptions",
+    "FileChannelKeyStore",
+    "InMemoryChannelKeyStore",
+    "KEY_GRANT_EVENT_TYPE",
+    "KEY_REQUEST_EVENT_TYPE",
     "SealedChannelKey",
+    "SqliteChannelKeyStore",
+    "build_key_grant",
+    "build_key_request",
     "decrypt_payload",
     "encrypt_payload",
     "is_envelope",
     "open_key",
     "read_epoch",
     "seal_key",
+    "try_parse_key_grant",
+    "try_parse_key_request",
     "IdentityBackupError",
     "IdentityBackupOptions",
     "RecoveryPhraseError",

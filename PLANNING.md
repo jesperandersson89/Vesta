@@ -84,7 +84,8 @@ tests/*           xUnit; server integration tests use Testcontainers Postgres
 
 - Messages: HELLO/WELCOME, PUBLISH/EVENT/ACK, SUBSCRIBE, FETCH/EVENTS_BATCH, ERROR,
   CREATE_CHANNEL, GRANT_ACCESS/REVOKE_ACCESS, DELETE_CHANNEL (admin), REGISTER_APP. WELCOME carries an
-  optional `features` list (`encrypted-channels`). Details: [docs/protocol.md](docs/protocol.md).
+  optional `features` list (`encrypted-channels`). Reserved `vesta.*` event types on app channels:
+  `vesta.relay-manifest`, `vesta.channel-key-request`, `vesta.channel-key`. Details: [docs/protocol.md](docs/protocol.md).
 - **Signing:** RFC 8785 JCS canonical JSON + Ed25519 over every client-authored field except
   `signature`; `sequence`, `receivedAt` and `metadata` are never signed. Libraries:
   `JsonCanonicalization` (C#), `canonicalize` (TS), `json-canonicalization` (Py).
@@ -319,7 +320,7 @@ games themselves are not a target, see *Target audience*):
   deploy remains, and proof binds the connection, not each message, so a TLS-terminating
   middlebox could still relay a live session; the federation HTTP and `/admin` surfaces are unchanged;
   `VestaTestClient` does not do the proof.
-- **#33 Per-channel encryption.** ⏳ **Phases A (relay + wire types) and B (SDK crypto primitives) done, 2026-10-29; C–D open.**
+- **#33 Per-channel encryption.** ✅ **Phases A (relay), B (primitives) and C (SDK glue) done, 2026-10-29; D (Atrium) open; unreleased.**
   (Audience decision 2026-10-28, design 2026-10-29.) Today every payload is stored in the clear, so the
   relay operator (and anyone with
   the database, and any *stranger's relay a user fails over to*) can read it; the README's fit table says
@@ -445,6 +446,40 @@ games themselves are not a target, see *Target audience*):
   (`vesta.channel-key-request` / `vesta.channel-key` events, `OpenEncryptedChannel`, `IChannelKeyStore`,
   decrypting projections, buffering of events whose epoch key has not arrived) and phase D (Atrium).
 
+  ✅ **Phase C shipped (2026-10-29, unreleased).** The glue, in all three SDKs: `ChannelKeyEvents`
+  (`vesta.channel-key-request { publicKey, x25519PublicKey }`, self-authenticating; `vesta.channel-key { recipient,
+  keys:[{epoch,epk,n,ct}] }`, accepted only from trusted admin keys), `IChannelKeyStore` (+ `InMemory`, `Sqlite` in C#;
+  `InMemory`, `LocalStorage`, `File` in TS; `InMemory`, `File`, `Sqlite` in Py), `EncryptedChannel` with
+  `VestaConnection.{CreateEncryptedChannel,OpenEncryptedChannel}Async` / `createEncryptedChannel` / `create_encrypted_channel`
+  etc., and `docs/encryption.md` (indexed). **Decisions:** (1) *admins need no membership list*: the relay only lets
+  members publish on a private channel, so any key request seen on the channel came from a member; an
+  `ApproveKeyRequest` hook exists for apps that want to gate it anyway; (2) *trust is the trusted-writer pattern*: a
+  member accepts grants only from `AdminPublicKeys` passed by the app (compiled in or from an invite), never
+  trust-on-first-use; the admin's own key is added when `IsAdmin`; (3) *the first join needs an admin online* —
+  accepted, documented, the "run the admin as a small service" answer; (4) *history replay in three passes*
+  (grants, then requests, then app events) so an admin that restarts and replays the channel does not re-grant to
+  members already covered — `_grantedEpochs` is rebuilt from the grants it sees, including its own echoes; (5)
+  a new member is sealed **every** epoch (to read history), rotation seals only the new one; (6) `RemoveMember` =
+  `REVOKE_ACCESS` + forget + rotate, and **no forward secrecy** (a removed member keeps what it had); (7) decrypted
+  events are delivered as `DecryptedEvent { Event (plaintext payload), Sealed (original) }` so existing reducers
+  consume `Event` unchanged while the signature stays verifiable on `Sealed`; (8) events whose epoch key has not
+  arrived are buffered per epoch and flushed in sequence order; (9) `CreateEncryptedChannel` waits for the relay's
+  control ACK, which needed the relay to stamp `channelId` on `CHANNEL_EXISTS` and the `max_channels`
+  `QUOTA_EXCEEDED` (done, additive); (10) **Python** gained `add_listener("event"|"events_batch"|"ack"|"error", …)`
+  — the connection now also emits raw traffic to the multi-listener bus, because the single `on_event` callback
+  belongs to the app and the channel must not steal it; (11) key stores hold plaintext keys (the device already
+  holds them; mobile backs the interface with Keychain/Keystore). **Tests:** C# `EncryptedChannelFlowTests` run two
+  real `VestaConnection`s against the real relay on **Kestrel** via `WebApplicationFactory.UseKestrel()` +
+  `StartServer()` (.NET 10; `Server` is unavailable in that mode, read the address from `IServer.Features`, and set
+  `urls=http://127.0.0.1:0` or every test binds 5000) with `RequireSignedEvents=true`: create → join → both read
+  plaintext → stranger `ACCESS_DENIED` → remove → rotate → removed member cannot read or publish; a late joiner
+  reads two epochs in order; a duplicate create throws `CHANNEL_EXISTS`. TS and Python run the same scenarios plus
+  an impostor-grant and an admin-reopen case through an in-test fake relay (`encrypted-channel.test.mjs`,
+  `test_encrypted_channel.py`). Totals: Core 247, Client 149, Server 245, TS 163, Py 180. **Still open:** an example
+  app (deferred until SDK `0.4.0` is published, because examples pin the published packages); a `DecryptingReducer`
+  convenience wrapper (apps currently wire `OnEvent` to `reducer.Apply` themselves); multi-admin key handoff; the
+  admin GUI badge; phase D (Atrium tier values / add-on).
+
   **Cross-repo:** Atrium wants to **limit and/or charge per encrypted channel**: `AppQuotas.MaxEncryptedChannels`
   (`max_encrypted_channels`, enforced at `CREATE_CHANNEL`, `QUOTA_EXCEEDED`) and the `encryptedChannels`
   count on `GET /admin/apps/{id}`; the quota PATCH is replace-all, so Atrium's `RelayAppQuotas` must learn
@@ -503,8 +538,8 @@ change (table in `.github/copilot-instructions.md`). Stop and ask on environment
 - Python dev interpreter: `.venv` at the repo root (`.venv\Scripts\python.exe`; the Store `python` on PATH
   lacks `cryptography`). Run `python -m unittest discover -s tests` **from `clients/vesta-client-py`**
   (from the repo root the package is not importable). TS: `npm test` in `clients/vesta-client-ts`.
-- Expected test totals (all green): C# 243 Core + 142 Client + 245 Server (incl. Testcontainers Postgres
-  tests) + 9 AccountServer; TS 159; Py 176. Docker **is** available in this dev environment, so run the full server suite
+- Expected test totals (all green): C# 247 Core + 149 Client + 245 Server (incl. Testcontainers Postgres
+  tests) + 9 AccountServer; TS 163; Py 180. Docker **is** available in this dev environment, so run the full server suite
   (about 3–4 min); don't skip the Postgres tests. `build.yml` lists test projects explicitly: add new ones there.
 - PowerShell wraps a native command's stderr as `NativeCommandError` and shows `Exit code: 1` even when
   the run passed (Python `unittest` writes its result to stderr): read the `OK` / `FAILED` line, not the

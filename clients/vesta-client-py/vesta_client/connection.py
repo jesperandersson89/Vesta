@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +13,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from vesta_client.encrypted_channel import EncryptedChannel, EncryptedChannelOptions
 from vesta_client.events import create_event
 from vesta_client.federation import DiscoveredRelay, FederationClient
 from vesta_client.identity import VestaIdentity
@@ -249,9 +250,11 @@ class VestaConnection:
 
     def add_listener(self, event: str, listener: Callable[..., None]) -> Callable[[], None]:
         """
-        Add a listener for ``"disconnected"`` (reason), ``"reconnected"`` (welcome) or
-        ``"relays_exhausted"`` (:class:`RelaysExhaustedInfo`). Unlike the single ``on_*``
-        callbacks, any number of listeners coexist. Returns an unsubscribe function.
+        Add a listener for ``"disconnected"`` (reason), ``"reconnected"`` (welcome),
+        ``"relays_exhausted"`` (:class:`RelaysExhaustedInfo`), or the raw protocol traffic
+        ``"event"``, ``"events_batch"``, ``"ack"`` and ``"error"`` (the same messages the single
+        ``on_*`` callbacks receive). Unlike those callbacks, any number of listeners coexist.
+        Returns an unsubscribe function.
         """
         self._listeners.setdefault(event, []).append(listener)
 
@@ -1008,6 +1011,76 @@ class VestaConnection:
             "clientId": client_id,
         })
 
+    # ── Encrypted channels ────────────────────────────────────────────────────
+
+    async def create_encrypted_channel(
+        self,
+        channel_id: str,
+        *,
+        members: list[str] | None = None,
+        options: EncryptedChannelOptions | None = None,
+    ) -> EncryptedChannel:
+        """
+        Create an end-to-end encrypted (private) channel with this identity as admin, wait for the
+        relay to confirm it, generate the first epoch key and return the channel ready to publish.
+        Add members with :meth:`grant_access`; they receive keys when they open the channel. Requires
+        an identity and a relay that advertises ``RelayFeatures.ENCRYPTED_CHANNELS``.
+        """
+        identity = self._require_identity("create_encrypted_channel")
+        base = options or EncryptedChannelOptions()
+        admin_options = replace(base, is_admin=True)
+        await self._await_control_ack(
+            channel_id,
+            lambda: self.create_channel(channel_id, visibility="private", members=members, encrypted=True),
+            admin_options.create_timeout,
+        )
+        channel = EncryptedChannel(self, identity, channel_id, admin_options)
+        try:
+            await channel._create_initial_key()
+            await channel._initialize()
+        except Exception:
+            channel.close()
+            raise
+        return channel
+
+    async def open_encrypted_channel(self, channel_id: str, options: EncryptedChannelOptions) -> EncryptedChannel:
+        """
+        Open an existing encrypted channel. A member passes the admin public keys it trusts; it
+        subscribes, publishes a key request if it holds no key yet, and starts decrypting once an admin
+        answers (``await channel.wait_for_key()``). An admin re-opening its channel sets ``is_admin``
+        and brings the same key store.
+        """
+        identity = self._require_identity("open_encrypted_channel")
+        channel = EncryptedChannel(self, identity, channel_id, options)
+        try:
+            await channel._initialize()
+        except Exception:
+            channel.close()
+            raise
+        return channel
+
+    async def _await_control_ack(self, channel_id: str, send: Callable[[], Awaitable[None]], timeout: float) -> None:
+        """Send a control request and wait for the relay's nil-event-id ACK for ``channel_id``, or raise on
+        an error that names it (or no channel)."""
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[None] = loop.create_future()
+
+        def on_ack(ack: AckMessage) -> None:
+            if ack.event_id == NIL_EVENT_ID and ack.channel_id == channel_id and not done.done():
+                done.set_result(None)
+
+        def on_error(error: ErrorMessage) -> None:
+            if (error.channel_id is None or error.channel_id == channel_id) and not done.done():
+                done.set_exception(RuntimeError(f"{error.code}: {error.message}"))
+
+        unsubscribe = [self.add_listener("ack", on_ack), self.add_listener("error", on_error)]
+        try:
+            await send()
+            await asyncio.wait_for(done, timeout)
+        finally:
+            for u in unsubscribe:
+                u()
+
     async def register_app(self, app_id: str) -> None:
         """
         Register an app namespace. The first slug segment of every channel ID
@@ -1261,6 +1334,7 @@ class VestaConnection:
                 self._maybe_apply_manifest_event(m.channel_id, m.event)
                 if self._on_event:
                     self._on_event(m)
+                self._emit("event", m)
             case EventsBatchMessage() as m:
                 if m.events:
                     self.update_sequence(m.channel_id, m.events[-1].sequence)
@@ -1274,6 +1348,7 @@ class VestaConnection:
                         self._maybe_apply_manifest_event(m.channel_id, se.event)
                 if self._on_events_batch:
                     self._on_events_batch(m)
+                self._emit("events_batch", m)
             case AckMessage() as m:
                 if m.event_id == NIL_EVENT_ID:
                     # Control ACK (REGISTER_APP, CREATE_CHANNEL, GRANT_ACCESS, DELETE_CHANNEL): no event, no
@@ -1282,12 +1357,14 @@ class VestaConnection:
                         self._registration.set_result(None)
                     elif self._on_ack:
                         self._on_ack(m)
+                    self._emit("ack", m)
                     return
                 self.update_sequence(m.channel_id, m.sequence)
                 if self._local_store is not None:
                     asyncio.create_task(self._cache_event_on_ack(m))
                 if self._on_ack:
                     self._on_ack(m)
+                self._emit("ack", m)
             case ErrorMessage() as m:
                 if self._registration is not None and not self._registration.done():
                     if m.code == "DUPLICATE_APP":
@@ -1299,6 +1376,7 @@ class VestaConnection:
                     self._probation_fail(f"{m.code}: {m.message}")
                 if self._on_error:
                     self._on_error(m)
+                self._emit("error", m)
                 self._handle_possible_limit(m)
 
     def _handle_possible_limit(self, msg: ErrorMessage) -> None:

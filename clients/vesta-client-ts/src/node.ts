@@ -15,6 +15,9 @@ import type { ClientEventStore, OutboxEntry, OutboxStatus } from "./storage.js";
 import type { SequencedEvent, VestaEvent } from "./types.js";
 import type { ProjectionSnapshot } from "./projections/index.js";
 import type { ProjectionStore } from "./projection-store.js";
+import type { ChannelKey } from "./channel-crypto.js";
+import { decodeRecord, encodeRecord } from "./channel-key-store.js";
+import type { ChannelKeyStore, ChannelKeyStoreRecord } from "./channel-key-store.js";
 import { parseRelayOverride, RelayDirectory, setDefaultRelayDirectoryFactory } from "./relay.js";
 import type {
     ManifestStore,
@@ -167,6 +170,53 @@ export class FileProjectionStore implements ProjectionStore {
         const file = this.readAll();
         delete file.snapshots[keyFor(channelId, projectionId)];
         writeJson(this.path, file);
+    }
+}
+
+// ─── Client event store ──────────────────────────────────────────────────────
+
+/** A single-JSON-file-backed `ChannelKeyStore` for Node.js apps (one record per channel). */
+export class FileChannelKeyStore implements ChannelKeyStore {
+    constructor(private readonly path: string) {}
+
+    private readAll(): Record<string, ChannelKeyStoreRecord> {
+        return readJson<Record<string, ChannelKeyStoreRecord>>(this.path) ?? {};
+    }
+
+    private read(channelId: string): { keys: Map<number, Uint8Array>; members: Map<string, Uint8Array> } {
+        return decodeRecord(this.readAll()[channelId] ?? null);
+    }
+
+    private write(channelId: string, keys: Map<number, Uint8Array>, members: Map<string, Uint8Array>): void {
+        const all = this.readAll();
+        all[channelId] = encodeRecord(keys, members);
+        writeJson(this.path, all);
+    }
+
+    async loadKeys(channelId: string): Promise<ChannelKey[]> {
+        return [...this.read(channelId).keys].map(([epoch, key]) => ({ epoch, key }));
+    }
+
+    async saveKey(channelId: string, key: ChannelKey): Promise<void> {
+        const { keys, members } = this.read(channelId);
+        keys.set(key.epoch, Uint8Array.from(key.key));
+        this.write(channelId, keys, members);
+    }
+
+    async loadMembers(channelId: string): Promise<Map<string, Uint8Array>> {
+        return this.read(channelId).members;
+    }
+
+    async saveMember(channelId: string, clientId: string, x25519PublicKey: Uint8Array): Promise<void> {
+        const { keys, members } = this.read(channelId);
+        members.set(clientId, Uint8Array.from(x25519PublicKey));
+        this.write(channelId, keys, members);
+    }
+
+    async removeMember(channelId: string, clientId: string): Promise<void> {
+        const { keys, members } = this.read(channelId);
+        members.delete(clientId);
+        this.write(channelId, keys, members);
     }
 }
 

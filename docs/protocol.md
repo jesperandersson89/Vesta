@@ -146,7 +146,7 @@ Admin is a role within a private or broadcast channel — only admins can `GRANT
 
 ## Encrypted channels
 
-> **Status: relay side (phase A) and the SDK crypto primitives (phase B) are built; key distribution on the channel and decrypting projections (phase C) are not.** Until then an app uses the primitives directly. See `PLANNING.md` #33 for the full design and byte formats.
+> **Status: built end to end (relay phase A, crypto primitives phase B, SDK key distribution phase C) in all three SDKs; unreleased until `server-v0.4.0` / SDK `0.4.0`.** User-facing guide: [encryption.md](encryption.md). Full design and byte formats: `PLANNING.md` #33.
 
 A channel created with `CREATE_CHANNEL { encrypted: true }` is **end-to-end encrypted**: the relay never holds a key and cannot read payloads. What the relay *does* enforce:
 
