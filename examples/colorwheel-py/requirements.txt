@@ -1,1 +1,1 @@
-vesta-client>=0.2.0
+vesta-client>=0.4.0
