@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "clipboardy": "^4.0.0",
-    "vesta-client": "^0.2.0"
+    "vesta-client": "^0.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
